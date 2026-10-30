@@ -54,7 +54,7 @@ from tablature.metrics import (
 from model.model import count_parameters, make_model
 from tablature.postproc import postprocess
 from core.schema import Note
-from tablature.tokenizer import DEFAULT_VOCAB, EOS_TOKEN, PAD_TOKEN, Vocab
+from tablature.tokenizer import DEFAULT_VOCAB, EOS_TOKEN, PAD_TOKEN, Vocab, tab_token
 
 
 @dataclass
@@ -347,8 +347,13 @@ def evaluate(
                     )
                 else:
                     # Use the model's own previous TAB as context.
-                    assert prev_pred_tab is not None
-                    context_ids = [vocab[tab_token(prev_pred_tab[0], prev_pred_tab[1])]]
+                    # Fall back to GT context if no previous prediction exists.
+                    if prev_pred_tab is not None:
+                        context_ids = [vocab[tab_token(prev_pred_tab[0], prev_pred_tab[1])]]
+                    elif chunk.meta.get("has_context"):
+                        context_ids = [vocab[tab_token(chunk.meta["context_s"], chunk.meta["context_f"])]]
+                    else:
+                        context_ids = []
 
                 dec_tokens = [eos_id] + context_ids
                 prompt = torch.tensor([dec_tokens], dtype=torch.long, device=device)
@@ -767,6 +772,7 @@ def train(cfg: TrainConfig, resume_from: str = "") -> None:
 
         for _ in range(cfg.batch_size * cfg.grad_accum):  # one optimizer step
             batch = next(batch_iter)
+            batch = {k: v.to(accelerator.device) for k, v in batch.items()}
             with accelerator.accumulate(model):
                 outputs = model(
                     input_ids=batch["input_ids"],
