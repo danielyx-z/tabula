@@ -1,6 +1,5 @@
 """FluidSynth-based guitar synthesis using a General MIDI SoundFont.
 
-Replaces the Karplus-Strong implementation with real sampled guitar sounds.
 Limits render duration to the actual MIDI length plus a short release tail.
 """
 
@@ -128,18 +127,3 @@ def synthesize(
             wav_path.unlink()
         except OSError:
             pass
-
-
-# Backwards-compatible alias for any code importing the old function
-# The old Karplus-Strong synthesize had signature (notes, bpm, sr, ppq)
-# This wrapper matches it.
-def synthesize_karplus(
-    notes,
-    bpm: float,
-    sr: int = 44100,
-    ppq: int = PPQ,
-) -> np.ndarray:
-    """Deprecated: Karplus-Strong synthesis (kept for compatibility)."""
-    # Import the old implementation if needed
-    from .synth_karplus import synthesize as _old_synthesize
-    return _old_synthesize(notes, bpm, sr, ppq)
