@@ -1,0 +1,20 @@
+# local data and model artifacts
+data/
+runs/
+logs/*
+!logs/.gitkeep
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# audio / midi / archives / weights
+*.wav
+*.mid
+*.midi
+*.zip
+*.npy
+*.pt
+*.safetensors

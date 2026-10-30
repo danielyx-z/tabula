@@ -1,0 +1,175 @@
+# Fretwire — data layer
+
+MVP target: symbolic MIDI in, 6-string standard-tuning ASCII tab out. See
+[PLAN.md](PLAN.md) for the model plan; this README covers the data layer that
+exists today.
+
+## Contract
+
+| Thing | Value |
+| --- | --- |
+| PPQ | 960 |
+| Time storage | exact integer ticks (no quantisation yet) |
+| Grid check | 99.8 % of note onsets on 20 ticks, 95.7 % on 60 ticks |
+| Strings | 1 = thickest (low E) … 6 = thinnest (high E) |
+| Tuning | standard only, `(40, 45, 50, 55, 59, 64)` |
+| Pitch | `pitch = tuning[s-1] + fret`, frets 0–24 |
+| Chords | notes sorted ascending by pitch |
+| Capo | out of scope |
+
+`src/fretwire/fretboard.py` is the only place pitch ↔ (string, fret) happens;
+`parse/alphatex.py` is the only place notation is interpreted.
+
+## Setup
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+
+On a GPU host, install the CUDA PyTorch build that matches the driver if the
+plain wheel reports `False`.
+
+## Tests
+
+```bash
+.venv/bin/python tests/test_core.py     # parser / fretboard unit checks
+.venv/bin/python tests/test_metrics.py  # quantiser / post-processing / metrics checks
+.venv/bin/python scripts/verify.py      # invariants over the built dataset
+```
+
+## Preprocess
+
+```bash
+.venv/bin/python scripts/preprocess.py --out data/processed
+# ~8 min for 47k files, single core, ~800 MB output
+```
+
+Output is sharded and memory-mappable:
+
+```
+data/processed/
+  manifest.json          contract + counts + reject histogram + grid stats
+  rejects.jsonl          every dropped track and why
+  shard-00000/
+    notes.npy            structured dtype, 11 B/note: (t, dur, pitch, s, f)
+    offsets.npy          int64[n_tracks+1] -> slice per track
+    tracks.jsonl         one metadata record per track
+```
+
+Load without copying:
+
+```python
+import numpy as np
+notes = np.load("data/processed/shard-00000/notes.npy", mmap_mode="r")
+offsets = np.load("data/processed/shard-00000/offsets.npy")
+track = notes[offsets[i]:offsets[i + 1]]
+```
+
+or, across shards, `fretwire.dataset.iter_tracks(root, split="train")`.
+
+### What the corpus gives us
+
+| | |
+| --- | --- |
+| files | 47,299 |
+| tracks seen | 188,296 |
+| tracks kept | 89,175 |
+| notes | 70,445,486 |
+| songs (split unit) | 33,218 |
+| train / valid / test tracks | 71,571 / 8,842 / 8,762 |
+
+Drops: non-standard tuning 45,323 · not 6-string 35,937 · too few notes 9,539 ·
+duplicate arrangement 5,029 · invalid fret/string 3,042 · harmonic-heavy 180 ·
+fret > 24 57 · too few bars 14.
+
+Harmonic notes (~0.4 % of corpus) are dropped note-by-note rather than
+mislabelled: their sounding pitch is not implied by the fret.
+
+### Things the measurement changed
+
+- **Bare `r` means a whole-measure rest.** The exporter writes `r |`, not
+  `:1 r |`. Snapping those bars to the track's modal bar length moved the
+  4/4-bar share from 78 % to 85 % and stopped every following note from
+  drifting.
+- **Time signatures vary and are never declared.** 85 % of bars are 4/4, 7 %
+  are 3/4, the rest are floaty/odd meters. Nothing in the MVP needs a meter,
+  so meter is stored as `bar_ticks` / `bar_consistency` per track rather than
+  filtered on.
+- **Tuplets are 4.3 % of onsets.** A 60-tick (1/16) grid silently rewrites
+  every triplet; a 20-tick (1/48) grid represents triplets, dotted values and
+  32nds exactly, and leaves only 0.2 % of notes off-grid (quintuplets,
+  septuplets). Storage keeps exact ticks. The paper's frozen 423-token
+  vocabulary uses 60-tick `TIME_SHIFT` steps, so the model still sees that
+  quantisation even though the source timing is finer.
+- **No capo, no repeats, no ties, no dead notes, no time-signature directives**
+  in this export — those parser branches are defensive only.
+
+## Training (WATcloud)
+
+Training is intended for the WATcloud Slurm cluster; see [`AGENTS.md`](AGENTS.md)
+for resource choices and monitoring. From the repository root:
+
+```bash
+export PATH=/opt/slurm/bin:$PATH   # the cluster login PATH omits Slurm
+mkdir -p logs
+sbatch slurm/train_t5.sh
+```
+
+Before a long run, the GPU smoke test checks CUDA, bf16 and two optimizer
+steps without decoding full tracks:
+
+```bash
+srun --partition=compute --gres=shard:rtx_3090:4096,tmpdisk:2048 \
+     --cpus-per-task=4 --mem=8G --time=00:20:00 \
+     bash slurm/smoke_t5.sh
+```
+
+The defaults are paper-sized: batch 8 × grad-accum 8 (effective batch 64),
+2,000 micro-batches per epoch (~16k sequences), 512-token training chunks, and
+20-note inference chunks. Validation loss is checked every 250 optimizer steps;
+full-track tab metrics are decoded every 1,250 steps. `--resume-from
+runs/pretrain_t5_v5/best` reloads weights, vocabulary, optimizer/schedule and
+early-stopping state. Post-processing runs per 20-note inference chunk so one
+missing note cannot shift every later chunk.
+
+To evaluate a saved checkpoint without training (same metrics as the job):
+
+```bash
+PYTHONPATH=src .venv/bin/python3 scripts/eval_checkpoint.py \
+  --checkpoint runs/pretrain_t5_v5/best --tracks 10 --postproc full
+```
+
+```bash
+# local smoke test, no long training
+PYTHONPATH=src .venv/bin/python3 -m fretwire.train \
+  --max-epochs 1 --max-tracks 5 --steps-per-epoch 2 \
+  --batch-size 2 --grad-accum 1 --no-bf16 \
+  --eval-every 1 --eval-loss-batches 1 --eval-batches 1 \
+  --metrics-every 0 --output-dir /tmp/fretwire-smoke
+```
+
+To inspect one real inference chunk, including the exact encoder/decoder
+tokens, teacher-forcing answer, generated tokens and target/raw/post tabs:
+
+```bash
+PYTHONPATH=src .venv/bin/python3 scripts/infer_sample.py \
+  --checkpoint runs/pretrain_t5_v5/best --track-id 93 --chunk 1
+```
+
+## Preview (see it, hear it)
+
+```bash
+.venv/bin/python scripts/preview.py --index 8 --bars 8
+.venv/bin/python scripts/preview.py --song nepali --bars 4
+.venv/bin/python scripts/preview.py --tex path/to/song.tex --bars 4
+.venv/bin/python scripts/preview.py --index 8 --no-play --mid out.mid
+```
+
+It prints the tab, synthesises a plucked-string rendition, plays it through
+`aplay`, and walks a playhead through the tab in time with the audio. The tab is
+wrapped into systems that fit the terminal width (override with `--width`);
+while it plays it pages system by system, highlighting the sounding frets.
+`--mid` also writes a Standard MIDI File for a DAW or MuseScore, and `--wav`
+keeps the rendered audio.
