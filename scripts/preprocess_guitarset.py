@@ -44,9 +44,22 @@ MIN_PITCH = 36
 MAX_PITCH = 96
 
 
+def performance_key(song: str) -> str:
+    """Strip the ``_comp`` / ``_solo`` take suffix.
+
+    Both takes are the same underlying performance, so they must land in
+    the same split or the model sees the same song on both sides.
+    """
+    for suffix in ("_comp", "_solo"):
+        if song.endswith(suffix):
+            return song[: -len(suffix)]
+    return song
+
+
 def split_of(song: str) -> str:
-    """Stable 80/10/10 split keyed on the performance name."""
-    h = int.from_bytes(hashlib.blake2b(song.encode(), digest_size=8).digest(), "big")
+    """Stable 80/10/10 split keyed on the underlying performance."""
+    key = performance_key(song)
+    h = int.from_bytes(hashlib.blake2b(key.encode(), digest_size=8).digest(), "big")
     bucket = h % 100
     if bucket < 80:
         return "train"
@@ -134,7 +147,7 @@ def parse_jams(path: Path) -> tuple[list[Note], dict, list[str]]:
 
     # One note per string per onset; GuitarSet occasionally digitisations share
     # a tick after snapping.
-    notes.sort(key=lambda n: (n.t, n.pitch, n.s, n.f))
+    notes.sort(key=lambda n: (n.t, n.s, n.pitch, n.f))
     seen: set[tuple[int, int]] = set()
     unique: list[Note] = []
     for n in notes:
@@ -200,13 +213,14 @@ def main() -> int:
             reasons["same_string_same_tick_after_grouping"] += merged
 
         arr = notes_to_array(notes)
-        arr = arr[np.lexsort((arr["pitch"], arr["t"]))]
+        arr = arr[np.lexsort((arr["s"], arr["t"]))]
         split = split_of(song)
 
         meta = {
             "id": n_kept,
             "source": path.name,
             "song": song,
+            "performance": performance_key(song),
             "track": 0,
             "dataset": "guitarset",
             "tuning": list(STANDARD),

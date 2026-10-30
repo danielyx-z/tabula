@@ -222,16 +222,17 @@ def notes_to_target(notes: list[Note], base_t: int = 0) -> list[str]:
 
 
 def build_vocab_from_tracks(tracks_iter: Iterator[tuple[dict, list[Note]]],
-                            min_freq: int = 2,
+                            min_freq: int = 1,
                             max_tracks: int = 0) -> Vocab:
-    """Build vocabulary from tracks, pruning by minimum frequency."""
+    """Build vocabulary from tracks, pruning tokens absent from the corpus."""
     base = build_base_vocab()
     freq = count_token_frequencies(tracks_iter, max_tracks)
 
     # Always keep special tokens and all TAB tokens (they're the target)
     # Keep the specials, all TAB tokens and the full (small) TIME_SHIFT set.
-    # Only NOTE_ON / NOTE_OFF are pruned, because an unseen pitch cannot be
-    # recovered but an unseen duration can be composed from the shift set.
+    # Only NOTE_ON / NOTE_OFF are pruned.  Keep every pitch that occurs at
+    # least once: pruning a rare pitch creates an <unk> in its own training
+    # data.  An unseen duration is different; TIME_SHIFT is compositional.
     keep = set()
     for tok in base:
         if tok in (PAD_TOKEN, EOS_TOKEN, UNK_TOKEN):

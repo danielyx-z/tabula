@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Build a frozen vocabulary from a shard dataset.
 
-    python scripts/build_vocab.py --data-dir data/processed_guitarset_guitarset \
-        --out vocab_guitarset.json
+    python scripts/build_vocab.py --data-dir data/processed_guitarset \
+        --out vocab/guitarset.json
 
-NOTE_ON / NOTE_OFF / TIME_SHIFT tokens are kept only if they occur at least
-``--min-freq`` times.  All TAB tokens and the special tokens are always kept.
-Rebuild the vocab whenever the new corpus uses pitches or timing values that
-the old vocab does not contain.
+NOTE_ON / NOTE_OFF tokens are kept if they occur at least ``--min-freq``
+times (default 1, i.e. every pitch in the corpus).  All TAB and all
+TIME_SHIFT tokens are always kept.  Rebuild the vocab whenever the corpus
+changes.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-dir", default=str(ROOT / "data/processed_guitarset"))
     ap.add_argument("--out", default=str(ROOT / "vocab.json"))
-    ap.add_argument("--min-freq", type=int, default=2)
+    ap.add_argument("--min-freq", type=int, default=1)
     ap.add_argument("--max-tracks", type=int, default=0)
     args = ap.parse_args()
 

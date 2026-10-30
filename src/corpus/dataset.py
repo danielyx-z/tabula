@@ -16,7 +16,7 @@ slices per track without materialising Python objects::
     offsets = np.load("shard-00000/offsets.npy")
     track = notes[offsets[i]:offsets[i + 1]]
 
-Notes are sorted by (onset, pitch) and carry (t, dur, pitch, s, f).
+Notes are sorted by (onset, string) and carry (t, dur, pitch, s, f).
 """
 
 from __future__ import annotations

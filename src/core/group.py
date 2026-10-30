@@ -24,7 +24,7 @@ def group_chords(
     if not notes or window <= 0:
         return notes, 0
 
-    notes.sort(key=lambda n: (n.t, n.pitch, n.s, n.f))
+    notes.sort(key=lambda n: (n.t, n.s, n.pitch, n.f))
     grouped: list[Note] = []
     i = 0
     while i < len(notes):
@@ -39,7 +39,7 @@ def group_chords(
         grouped.extend(notes[i:j])
         i = j
 
-    grouped.sort(key=lambda n: (n.t, n.pitch, n.s, n.f))
+    grouped.sort(key=lambda n: (n.t, n.s, n.pitch, n.f))
     seen: set[tuple[int, int]] = set()
     unique: list[Note] = []
     dropped = 0

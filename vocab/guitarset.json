@@ -85,6 +85,8 @@
     "NOTE_OFF<79>",
     "NOTE_ON<80>",
     "NOTE_OFF<80>",
+    "NOTE_ON<81>",
+    "NOTE_OFF<81>",
     "TIME_SHIFT<20>",
     "TIME_SHIFT<40>",
     "TIME_SHIFT<60>",
@@ -247,5 +249,5 @@
     "TAB<6,23>",
     "TAB<6,24>"
   ],
-  "hash": "48e4e69c4e961a05"
+  "hash": "6265d9bb91e68095"
 }

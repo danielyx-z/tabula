@@ -1,9 +1,11 @@
 """Chunking that follows the Fretting-Transformer paper.
 
 * Training: sequences are filled up to ``max_tokens`` (512) with notes.
-* Inference: chunks of 20 notes.  The last note of the previous chunk is
-  repeated at the start of both the encoder and the decoder, which is the
+* Inference: chunks of about 20 notes.  The last note of the previous chunk
+  is repeated at the start of both the encoder and the decoder, which is the
   paper's context carry-over rule.
+* Chords (notes with the same onset) are never split across a chunk boundary.
+  A chunk may therefore contain a few notes more or fewer than 20.
 
 The decoder is prompted with the previous note's TAB token only.  The encoder
 keeps the previous note's complete ON/OFF events, so the model still sees its
@@ -45,6 +47,34 @@ class ChunkConfig:
 
 
 CFG = ChunkConfig()
+
+
+def _onset_bounds(notes: list[Note], index: int) -> tuple[int, int]:
+    """Return the half-open index range of notes sharing ``notes[index].t``."""
+    t = notes[index].t
+    lo = index
+    while lo > 0 and notes[lo - 1].t == t:
+        lo -= 1
+    hi = index + 1
+    while hi < len(notes) and notes[hi].t == t:
+        hi += 1
+    return lo, hi
+
+
+def _avoid_chord_split(notes: list[Note], start: int, end: int, total: int) -> int:
+    """Move a proposed chunk boundary so an onset group is not cut in half.
+
+    If the chord straddles ``end``, end the chunk *before* the chord when that
+    leaves at least one note, otherwise extend the chunk through the chord.
+    """
+    if end <= start or end >= total:
+        return end
+    if notes[end - 1].t != notes[end].t:
+        return end
+    group_start, group_end = _onset_bounds(notes, end)
+    if group_start > start:
+        return group_start
+    return group_end
 
 
 def _build_chunk(
@@ -123,7 +153,7 @@ def make_training_chunks(
     if not notes:
         return []
 
-    notes = sorted(notes, key=lambda n: (n.t, n.pitch, n.s, n.f))
+    notes = sorted(notes, key=lambda n: (n.t, n.s, n.pitch, n.f))
     total = len(notes)
     chunks: list[Chunk] = []
     start = 0
@@ -131,14 +161,10 @@ def make_training_chunks(
     while start < total:
         if cfg.training_chunk_notes > 0:
             end = min(start + cfg.training_chunk_notes, total)
-            chunk = _build_chunk(
-                notes, start, end, vocab, track_id, cfg, training=True
+            end = _avoid_chord_split(notes, start, end, total)
+            chunks.append(
+                _build_chunk(notes, start, end, vocab, track_id, cfg, training=True)
             )
-            if (
-                len(chunk.enc_tokens) <= cfg.max_tokens
-                and len(chunk.dec_tokens) <= cfg.max_tokens
-            ):
-                chunks.append(chunk)
             start = end
             continue
 
@@ -167,6 +193,9 @@ def make_training_chunks(
             else:
                 hi = mid - 1
 
+        # A token boundary can fall inside a strummed chord.  Move it to the
+        # chord edge so the decoder never learns half a chord.
+        best = _avoid_chord_split(notes, start, best, total)
         chunks.append(
             _build_chunk(notes, start, best, vocab, track_id, cfg, training=True)
         )
@@ -185,10 +214,13 @@ def make_inference_chunks(
     if not notes:
         return []
 
-    notes = sorted(notes, key=lambda n: (n.t, n.pitch, n.s, n.f))
+    notes = sorted(notes, key=lambda n: (n.t, n.s, n.pitch, n.f))
+    total = len(notes)
     chunks: list[Chunk] = []
-    for start in range(0, len(notes), max(1, cfg.k)):
-        end = min(start + cfg.k, len(notes))
+    start = 0
+    while start < total:
+        end = min(start + max(1, cfg.k), total)
+        end = _avoid_chord_split(notes, start, end, total)
         chunk = _build_chunk(notes, start, end, vocab, track_id, cfg, training=False)
         # A pathological 20-note chunk can exceed the encoder budget; the
         # paper's chunks normally fit comfortably, so truncation is a safety net.
@@ -200,6 +232,7 @@ def make_inference_chunks(
                 meta=chunk.meta,
             )
         chunks.append(chunk)
+        start = end
     return chunks
 
 
