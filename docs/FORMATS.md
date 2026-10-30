@@ -56,7 +56,8 @@ Invariants:
 * `pitch == STANDARD[s - 1] + f`
 * `STANDARD = (40, 45, 50, 55, 59, 64)` (E2 A2 D3 G3 B3 E4)
 * one note per string per onset
-* notes sorted by `(t, pitch)`
+* notes sorted by **(t, s, pitch, f)** — same-onset notes strictly by string
+  ascending (low E → high E) for canonical tab column order.
 
 Numpy representation: 11 bytes per note.
 
@@ -77,12 +78,12 @@ data/processed_guitarset/
     tracks.jsonl         one metadata object per track, same order
 ```
 
-`tracks.jsonl` fields: `id`, `source`, `song`, `track`, `tuning`,
+`tracks.jsonl` fields: `id`, `source`, `song`, `performance`, `track`, `tuning`,
 `tuning_name`, `frets`, `instrument`, `tempo`, `n_notes`, `start`, `end`,
 `split`, `bar_ticks`, plus dataset-specific fields.
 
-Splits are assigned per song by a stable hash: 80 % train, 10 % valid,
-10 % test. A song never appears in two splits.
+Splits are assigned per **performance** by a stable hash: 80 % train, 10 % valid,
+10 % test. A performance never appears in two splits.
 
 Load with:
 
@@ -108,7 +109,7 @@ NOTE_ON<55>  TIME_SHIFT<120>  NOTE_OFF<55>  TIME_SHIFT<60>  NOTE_ON<57> ...
 * A shift of 960 costs one token; an odd value such as 340 costs three
   (`240 + 60 + 40`). A 640-tick triplet quarter is `480 + 120 + 40`.
 * Note-offs carry their own `TIME_SHIFT` when the clock advances.
-* At inference, a 20-note chunk is prefixed with the previous chunk's last
+* At inference, a ~20-note chunk is prefixed with the previous chunk's last
   note as context. `base_t` is the context onset, so events are relative.
 
 ## 6. Decoder tokens (model output)
@@ -116,10 +117,10 @@ NOTE_ON<55>  TIME_SHIFT<120>  NOTE_OFF<55>  TIME_SHIFT<60>  NOTE_ON<57> ...
 Built by `notes_to_target()` and produced by the model:
 
 ```
-</s>  TAB<5,0>  TIME_SHIFT<120>  TAB<4,2>  TIME_SHIFT<60> ...
+<eos>  TAB<5,0>  TIME_SHIFT<120>  TAB<4,2>  TIME_SHIFT<60> ...
 ```
 
-* `</s>` is the decoder start token.
+* `<eos>` is the decoder start token.
 * One context `TAB<s,f>` may follow it during inference.
 * `TAB<s,f>` only at note onsets. **There are no note-offs.**
 * `TIME_SHIFT<n>` is emitted whenever the clock advances.
@@ -127,15 +128,19 @@ Built by `notes_to_target()` and produced by the model:
 Because there are no note-offs, `src/tablature/stream.py` infers a note's
 duration from the next onset on the same string, capped at 960 ticks.
 
+**Chord onset ordering:** within a shared onset, `TAB` tokens appear in
+strictly ascending string order (`s=1` low E → `s=6` high E), regardless of
+the input note order.
+
 ## 7. Vocabulary
 
-`vocab/guitarset.json` has **246 tokens**:
+`vocab/guitarset.json` has **248 tokens**:
 
 | Class | Count | Notes |
 | --- | --- | --- |
-| `<pad>`, `</s>`, `<unk>` | 3 | T5 specials |
-| `NOTE_ON<p>` | 41 | pitches seen in GuitarSet |
-| `NOTE_OFF<p>` | 41 | same pitches |
+| `<pad>`, `<eos>`, `<unk>` | 3 | T5 specials |
+| `NOTE_ON<p>` | 42 | pitches seen in GuitarSet (40–81) |
+| `NOTE_OFF<p>` | 42 | same pitches |
 | `TIME_SHIFT<n>` | 11 | compositional; see above |
 | `TAB<s,f>` | 150 | 6 strings × 25 frets |
 
@@ -143,11 +148,16 @@ Only `NOTE_ON` / `NOTE_OFF` are pruned to the corpus. Every `TAB` and
 `TIME_SHIFT` token is always kept, because an unseen duration can be composed
 and an unseen pitch cannot be recovered.
 
+**OOV fix:** `min_freq` default is 1, so every pitch that occurs at least once
+is kept. Pitch 81 (high E, 17th fret) occurred once in GuitarSet and was
+previously pruned by `min_freq=2`, causing 2 OOV tokens in its own training
+data. Now all 42 pitches (40–81) are present.
+
 Rebuild the vocabulary when a new corpus uses pitches outside the current set:
 
 ```bash
 python scripts/build_vocab.py --data-dir data/processed_guitarset \
-    --out vocab/guitarset.json
+    --out vocab/guitarset.json [--min-freq 1]
 ```
 
 The checkpoint's `config.vocab_size` must equal the vocabulary size.

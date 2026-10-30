@@ -10,11 +10,12 @@ PyTorch 2.5.1+cu121.
 | --- | --- | --- |
 | Convert GuitarSet | `scripts/preprocess_guitarset.py` | 360 tracks, 62,476 notes, 38,052 onsets |
 | Dataset invariants | `scripts/verify.py` | **all invariants hold** |
-| Vocabulary | `scripts/build_vocab.py` | **246 tokens**, 11 TIME_SHIFT |
+| Full audit | `scripts/audit_guitarset.py` | **AUDIT PASSED** (0/360 files differ) |
+| Vocabulary | `scripts/build_vocab.py` | **248 tokens**, 11 TIME_SHIFT |
 | Quantisation test | `tests/test_metrics.py` | every 20-tick multiple decomposes exactly |
 | Training | `python -m model.train` | 15 steps, val loss 6.27, checkpoints written |
 | Inference | `scripts/midi2tab.py` | input/raw/final MIDI + WAV + tab + report |
-| Unit tests | `test_core.py`, `test_metrics.py`, `test_synth.py` | all checks passed |
+| Unit tests | `test_core.py`, `test_metrics.py`, `test_synth.py`, `test_chunk.py` | all checks passed |
 
 ## 1. Chord grouping
 
@@ -27,6 +28,10 @@ inside a 40-tick window changes the corpus from fast arpeggios into chords:
 | chord onsets | 8,867 (17.2 %) | 13,520 (35.5 %) |
 | mean notes per onset | 1.21 | 1.64 |
 | total notes | 62,476 | 62,476 |
+
+**Chord ordering:** same-onset notes sorted strictly by string ascending
+(`s=1` low E → `s=6` high E). `tests/test_chunk.py::test_chord_string_order`
+verifies the decoder target emits `TAB` tokens in this order.
 
 ## 2. TIME_SHIFT vocabulary
 
@@ -43,7 +48,7 @@ The new scheme uses 11 values:
 | | old | new |
 | --- | --- | --- |
 | TIME_SHIFT tokens | 81 (172 unpruned) | **11** |
-| vocabulary size | 316 | **246** |
+| vocabulary size | 316 | **248** |
 | timing exactness | ~71 % of deltas | **100 %** |
 | avg tokens per delta | 0.71 | 1.69 |
 
@@ -54,25 +59,35 @@ The 1.69 average is measured on the grouped GuitarSet corpus (84,161 deltas).
 
 ```
 files: 360, tracks kept: 360, notes: 62,476, shards: 1
-splits: train 279, valid 43, test 38
+splits: train 272, valid 50, test 38
+performances: 180 (each has _comp and _solo take)
 ```
 
 `scripts/verify.py` confirms `pitch == tuning[s-1] + f`, one note per string
 per onset, valid ranges, time ordering, offset bookkeeping and no split
 leakage.
 
+`scripts/audit_guitarset.py` additionally verifies:
+- JAMS → shard note equality (content, ignoring within-onset order)
+- Vocab covers every encoder/decoder token used
+- No training/inference chunk boundary splits an onset group
+- Beat-map slope matches tempo (<5% deviation)
+- Extrapolation beyond beat map < 0.75 s
+
+All 360 tracks pass.
+
 ## 4. Vocabulary
 
 ```
-vocab size : 246
-NOTE_ON    : 41
-NOTE_OFF   : 41
+vocab size : 248
+NOTE_ON    : 42
+NOTE_OFF   : 42
 TIME_SHIFT : 11
 TAB        : 150
 ```
 
-Written to `vocab/guitarset.json` and used as the default by the training and
-inference CLIs.
+Written to `vocab/guitarset.json` (hash `6265d9bb91e68095`) and used as the
+default by the training and inference CLIs.
 
 ## 5. Training smoke test
 
@@ -85,7 +100,7 @@ python -m model.train --data-dir /tmp/gs3 \
 ```
 
 ```
-Vocab size: 246
+Vocab size: 248
 Model: T5, 2.79M params
 Validation loss @ step 10: 6.2705
 Epoch 0 | Avg Loss: 6.3544
@@ -115,6 +130,7 @@ one track per string so the fingering is stored.
 tests/test_core.py      all checks passed
 tests/test_metrics.py   all checks passed
 tests/test_synth.py     all checks passed
+tests/test_chunk.py     all checks passed
 ```
 
 `test_metrics.py` now also asserts:
@@ -127,6 +143,13 @@ tests/test_synth.py     all checks passed
 `test_synth.py` checks that a single E2 is in tune (dominant spectral peak
 within 2.5 Hz of 82.41 Hz), that levels are limited, that chords are finite,
 and that synthesis is deterministic.
+
+`test_chunk.py` verifies:
+
+* `_avoid_chord_split` retreats to chord start / extends through chord
+* Training chunks never split an onset group (0/697)
+* Inference chunks never split an onset group (0/3,391)
+* Decoder `TAB` tokens within a chord onset are strictly string-ascending
 
 ## 8. Synthesis
 
@@ -142,8 +165,7 @@ determinism.
 
 * **Model quality.** 15 steps is a smoke test. A real GuitarSet training run is
   still required.
-* **GAPS ingestion.** GAPS ships MusicXML rather than JAMS and still needs a
-  converter.
+* **GAPS ingestion.** GAPS is **out of scope** — no converter will be added.
 * **Techniques.** Hammer-ons, slides, bends and vibrato are not representable
   in the current record or vocabulary.
 
