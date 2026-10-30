@@ -56,7 +56,7 @@ from fretwire.tokenizer import DEFAULT_VOCAB, EOS_TOKEN, PAD_TOKEN, Vocab
 class TrainConfig:
     # Data
     data_dir: str = "data/processed"
-    vocab_path: str = "vocab_v1_full.json"
+    vocab_path: str = "vocab/guitarset.json"
     max_tracks: int = 0  # 0 = all tracks
     # Optimization
     lr: Optional[float] = None  # None = Adafactor self-adaptive
@@ -868,7 +868,7 @@ def train(cfg: TrainConfig, resume_from: str = "") -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-dir", default="data/processed")
-    ap.add_argument("--vocab-path", default="vocab_v1_full.json")
+    ap.add_argument("--vocab-path", default="vocab/guitarset.json")
     ap.add_argument("--output-dir", default="runs/exp1")
     ap.add_argument("--max-epochs", type=int, default=300)
     ap.add_argument("--lr", type=float, default=None,

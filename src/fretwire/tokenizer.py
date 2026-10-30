@@ -10,7 +10,15 @@ from pathlib import Path
 from typing import Iterator
 
 from .fretboard import STANDARD
-from .quantise import SHIFT_VOCAB, shift_to_token, token_to_shift, encode_shifts, decode_shifts
+from .quantise import (
+    GRID,
+    SHIFT_VOCAB,
+    decode_shifts,
+    encode_shifts,
+    quantise_tick,
+    shift_to_token,
+    token_to_shift,
+)
 from .schema import Note
 
 # Special tokens (T5 conventions)
@@ -179,9 +187,10 @@ def notes_to_events(notes: list[Note], base_t: int = 0,
         delta = time - last_t
         if delta > 0:
             if snap_shifts:
-                # Snap to nearest valid TIME_SHIFT token so the encoder sees
-                # the same token distribution it was trained on.
-                delta = min(SHIFT_VOCAB, key=lambda v: abs(v - delta))
+                # Snap to the encoder grid.  TIME_SHIFT is compositional, so
+                # any grid multiple decomposes exactly; snapping to a single
+                # token value would be far coarser.
+                delta = quantise_tick(delta, GRID)
             tokens.extend(encode_shifts([delta]))
             last_t = time
         tokens.append(note_on_token(n.pitch) if kind else note_off_token(n.pitch))
@@ -220,12 +229,14 @@ def build_vocab_from_tracks(tracks_iter: Iterator[tuple[dict, list[Note]]],
     freq = count_token_frequencies(tracks_iter, max_tracks)
 
     # Always keep special tokens and all TAB tokens (they're the target)
-    # Prune only NOTE_ON, NOTE_OFF, TIME_SHIFT below min_freq
+    # Keep the specials, all TAB tokens and the full (small) TIME_SHIFT set.
+    # Only NOTE_ON / NOTE_OFF are pruned, because an unseen pitch cannot be
+    # recovered but an unseen duration can be composed from the shift set.
     keep = set()
     for tok in base:
         if tok in (PAD_TOKEN, EOS_TOKEN, UNK_TOKEN):
             keep.add(tok)
-        elif tok.startswith("TAB<"):
+        elif tok.startswith("TAB<") or tok.startswith("TIME_SHIFT<"):
             keep.add(tok)
         elif freq.get(tok, 0) >= min_freq:
             keep.add(tok)

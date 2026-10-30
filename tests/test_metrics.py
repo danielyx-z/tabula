@@ -32,17 +32,19 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 def test_quantise() -> None:
     valid = set(SHIFT_VOCAB)
     bad: list[tuple] = []
-    for shift in range(1, 40_001):
+    # Every multiple of the 20-tick grid must decompose exactly.
+    for shift in range(20, 40_001, 20):
         parts = decompose_shift(shift)
         if any(part not in valid for part in parts):
             bad.append((shift, parts))
             break
-        if abs(sum(parts) - shift) > 30:
+        if sum(parts) != shift:
             bad.append((shift, parts, sum(parts)))
             break
-    check("shift decomposition stays in vocab and within half a grid", not bad, str(bad[:1]))
+    check("shift decomposition is exact and stays in vocab", not bad, str(bad[:1]))
     check("zero shift is empty", decompose_shift(0) == [])
     check("two-bar shift", sum(decompose_shift(23040)) == 23040)
+    check("shift token count is small", len(SHIFT_VOCAB) == 11, str(SHIFT_VOCAB))
 
 
 def test_first_valid() -> None:
@@ -101,6 +103,22 @@ def test_difficulty() -> None:
     check("paper's maximum is 18.5", abs(terms[0] - 18.5) < 1e-9, str(terms))
 
 
+def test_group_chords() -> None:
+    from fretwire.group import group_chords
+
+    notes = [
+        Note(560, 340, 56, 3, 6),
+        Note(560, 400, 60, 4, 5),
+        Note(580, 380, 63, 5, 4),
+        Note(1300, 280, 68, 6, 4),
+    ]
+    grouped, dropped = group_chords(notes, window=40)
+    check("strum collapses to one onset", grouped[0].t == grouped[2].t == 560)
+    check("chord keeps all notes", len(grouped) == 4 and dropped == 0)
+    check("late note stays separate", grouped[3].t == 1300)
+    check("release tick preserved", grouped[2].t + grouped[2].dur == 960)
+
+
 def main() -> int:
     test_quantise()
     test_first_valid()
@@ -108,6 +126,7 @@ def main() -> int:
     test_postprocess()
     test_playability()
     test_difficulty()
+    test_group_chords()
     print()
     if FAILS:
         print(f"{len(FAILS)} failure(s)")

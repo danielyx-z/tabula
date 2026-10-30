@@ -26,21 +26,23 @@ python3 -m venv .venv
 
 # Convert GuitarSet annotations into training shards
 PYTHONPATH=src .venv/bin/python3 scripts/preprocess_guitarset.py \
-    --jams-dir /path/to/guitarSet_annotation --out data/processed_guitarset
+    --jams-dir /path/to/guitarSet_annotation --out data/processed_guitarset \
+    --chord-window 40
 PYTHONPATH=src .venv/bin/python3 scripts/verify.py --dataset data/processed_guitarset
 
-# Build a vocabulary for that corpus (optional if the old one covers it)
+# Build a vocabulary for that corpus (vocab/guitarset.json is committed;
+# rebuild only when the corpus changes)
 PYTHONPATH=src .venv/bin/python3 scripts/build_vocab.py \
-    --data-dir data/processed_guitarset --out vocab_guitarset.json
+    --data-dir data/processed_guitarset --out vocab/guitarset.json
 
 # Train
 PYTHONPATH=src .venv/bin/python3 -m fretwire.train \
-    --data-dir data/processed_guitarset --vocab-path vocab_guitarset.json \
+    --data-dir data/processed_guitarset --vocab-path vocab/guitarset.json \
     --output-dir runs/guitarset
 
 # MIDI -> input/raw/final MIDI + WAV + tab + report
 PYTHONPATH=src:. .venv/bin/python3 scripts/midi2tab.py song.mid \
-    --checkpoint runs/guitarset/best --vocab vocab_guitarset.json \
+    --checkpoint runs/guitarset/best --vocab vocab/guitarset.json \
     --out-dir out/song
 ```
 
@@ -53,8 +55,8 @@ file only stores pitch and time and cannot represent a fingering.
 | Thing | Value |
 | --- | --- |
 | PPQ | 960 |
-| Time storage | exact integer ticks (no quantisation yet) |
-| Grid check | 99.8 % of note onsets on 20 ticks, 95.7 % on 60 ticks |
+| Time storage | integer ticks, 20-tick grid (1/48 note) |
+| TIME_SHIFT | 11 compositional values; exact for every grid multiple |
 | Strings | 1 = thickest (low E) … 6 = thinnest (high E) |
 | Tuning | standard only, `(40, 45, 50, 55, 59, 64)` |
 | Pitch | `pitch = tuning[s-1] + fret`, frets 0–24 |

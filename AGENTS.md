@@ -129,7 +129,7 @@ checkpoints are small (~11 MB each).
 ```bash
 PYTHONPATH=src .venv/bin/python3 -m fretwire.train \
   --data-dir data/processed \
-  --vocab-path vocab_v1_full.json \
+  --vocab-path vocab/guitarset.json \
   --output-dir runs/pretrain_t5_v5 \
   --batch-size 8 \
   --grad-accum 8 \
@@ -168,5 +168,5 @@ is off by default; enable it only if memory becomes tight. Do not use
 - `src/fretwire/metrics.py` — tab/pitch accuracy and difficulty.
 - `src/fretwire/train.py` — training, validation loss, full metrics.
 - `src/fretwire/decode.py` — T5 generation helpers.
-- `vocab_v1_full.json` — frozen 423-token vocab. Do not use the unpruned
+- `vocab/guitarset.json` — frozen 423-token vocab. Do not use the unpruned
   `DEFAULT_VOCAB` (531) for training.

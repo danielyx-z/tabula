@@ -196,7 +196,7 @@ never commit corpus data, derived JSONL, tokenised shards or rendered tabs. Ship
 | `TAB<s,f>` | 6 × 25 = 150 | s ∈ 1..6 (1 = lowest), f ∈ 0..24 |
 
 No `CAPO` tokens, no `TUNING` tokens in the MVP. Build from the training split with
-min-frequency pruning, freeze to `vocab_v1.json`, record its hash in every checkpoint.
+min-frequency pruning, freeze to `vocab/guitarset.json`, record its hash in every checkpoint.
 Keep the vocabulary small — at 2.81 M params the output softmax needs to stay sharp.
 
 ### 3.2 Time — lock this now

@@ -242,7 +242,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(prog="audio2tab")
     ap.add_argument("input", help="YouTube URL or local audio file (.wav/.mp3/.flac/...)")
     ap.add_argument("--checkpoint", default="runs/pretrain_t5_v5/best", help="Model checkpoint dir")
-    ap.add_argument("--vocab", default="vocab_v1_full.json", help="Vocab file")
+    ap.add_argument("--vocab", default="vocab/guitarset.json", help="Vocab file")
     ap.add_argument("--beam", type=int, default=4, help="Beam size (1=greedy)")
     ap.add_argument("--max-len", type=int, default=512, help="Max decode length")
     ap.add_argument("--no-play", action="store_true", help="Don't play audio")

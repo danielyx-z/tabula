@@ -1,12 +1,23 @@
-"""Quantisation: 960 PPQ, 60-tick grid (1/16 note). Single source of truth."""
+"""Quantisation: 960 PPQ, 20-tick grid (1/48 note). Single source of truth.
+
+A 20-tick grid represents triplets (320), dotted values (720) and 32nd notes
+(120) exactly. TIME_SHIFT is compositional: a small set of durations covers
+every multiple of the grid, so the vocabulary does not need one token per
+possible shift value.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 PPQ = 960
-GRID = 60  # 1/16 note
+GRID = 20  # 1/48 note
 MIN_DUR = GRID  # minimum duration
+
+# Every multiple of GRID is a sum of these.  The set is deliberately small:
+# a shift of 960 costs one token, while an odd value like 340 costs three
+# (240 + 60 + 40) instead of being unrepresentable.
+SHIFT_TOKENS: tuple[int, ...] = (20, 40, 60, 120, 180, 240, 480, 720, 960, 1920, 3840)
 
 
 @dataclass(frozen=True)
@@ -14,8 +25,8 @@ class QuantConfig:
     ppq: int = PPQ
     grid: int = GRID
     min_dur: int = MIN_DUR
-    max_shift: int = 15360  # 2 bars at 1/16
-    coarse_fallbacks: tuple[int, ...] = (11520, 15360)  # 1.5 bars, 2 bars
+    max_shift: int = 3840  # one 4/4 bar
+    shift_tokens: tuple[int, ...] = SHIFT_TOKENS
 
 
 CFG = QuantConfig()
@@ -28,48 +39,42 @@ def quantise_tick(t: int, grid: int = GRID) -> int:
 
 def quantise_dur(dur: int, grid: int = GRID, min_dur: int = MIN_DUR) -> int:
     """Quantise duration, clamp to minimum."""
-    q = round(dur / grid) * grid
+    q = quantise_tick(dur, grid)
     return max(min_dur, q)
 
 
-def decompose_shift(shift: int, grid: int = GRID, max_shift: int = 15360,
-                    coarse_fallbacks: tuple[int, ...] = (11520, 15360)) -> list[int]:
-    """
-    Decompose a time shift into available TIME_SHIFT tokens.
-    Uses fine grid shifts (multiples of grid up to max_shift) plus coarse fallbacks.
+def decompose_shift(
+    shift: int,
+    grid: int = GRID,
+    max_shift: int = 3840,
+    shift_tokens: tuple[int, ...] = SHIFT_TOKENS,
+) -> list[int]:
+    """Decompose a time shift into valid TIME_SHIFT token values.
+
+    Greedy largest-first.  Because the token set contains 20, 40 and 60, every
+    multiple of the 20-tick grid is representable exactly; a raw shift is first
+    rounded to that grid.
     """
     if shift <= 0:
         return []
-    out = []
-    remaining = shift
-    # Use coarse fallbacks first for large shifts
-    for coarse in sorted(coarse_fallbacks, reverse=True):
-        while remaining >= coarse:
-            out.append(coarse)
-            remaining -= coarse
-    # Then use fine grid
-    while remaining >= max_shift:
-        out.append(max_shift)
-        remaining -= max_shift
-    if remaining > 0:
-        # Round to the nearest grid step.  Do not try to "absorb" a sub-grid
-        # remainder into the previous token: that can produce a value that is
-        # not in SHIFT_VOCAB (e.g. 15360 + 20 -> 15380), which would encode as
-        # <unk>.  Dropping a remainder below half a grid step is the same
-        # quantisation the rest of the pipeline uses.
-        q = quantise_tick(remaining, grid)
-        if q > 0:
-            out.append(q)
+
+    remaining = quantise_tick(shift, grid)
+    if remaining <= 0:
+        return []
+
+    tokens = sorted(shift_tokens, reverse=True)
+    out: list[int] = []
+    while remaining > 0:
+        token = next((t for t in tokens if t <= remaining), None)
+        if token is None:  # sub-grid remainder; quantisation drops it
+            break
+        out.append(token)
+        remaining -= token
     return out
 
 
 def build_shift_vocab(cfg: QuantConfig = CFG) -> list[int]:
-    """All valid TIME_SHIFT values: multiples of grid up to max_shift + coarse fallbacks."""
-    shifts = list(range(cfg.grid, cfg.max_shift + 1, cfg.grid))
-    for c in cfg.coarse_fallbacks:
-        if c not in shifts:
-            shifts.append(c)
-    return sorted(set(shifts))
+    return list(cfg.shift_tokens)
 
 
 SHIFT_VOCAB = build_shift_vocab()
@@ -87,8 +92,8 @@ def token_to_shift(tok: str) -> int:
 
 
 def encode_shifts(shifts: list[int]) -> list[str]:
-    """Encode a list of raw shifts (ticks) into TIME_SHIFT tokens using decomposition."""
-    tokens = []
+    """Encode raw tick shifts into TIME_SHIFT tokens."""
+    tokens: list[str] = []
     for s in shifts:
         for part in decompose_shift(s):
             tokens.append(shift_to_token(part))
@@ -101,20 +106,9 @@ def decode_shifts(tokens: list[str]) -> list[int]:
 
 
 def shifts_roundtrip_error(original_shifts: list[int]) -> tuple[int, int]:
-    """
-    Check round-trip fidelity. Returns (exact_matches, total_shifts).
-    A shift matches if the sum of decoded tokens equals the original.
-    """
-    tokens = encode_shifts(original_shifts)
-    decoded = decode_shifts(tokens)
-    # Reconstruct by summing consecutive tokens
-    reconstructed = []
-    i = 0
-    for orig in original_shifts:
-        s = 0
-        while i < len(decoded) and s < orig:
-            s += decoded[i]
-            i += 1
-        reconstructed.append(s)
-    exact = sum(1 for a, b in zip(original_shifts, reconstructed) if a == b)
+    """Check round-trip fidelity. Returns (exact_matches, total_shifts)."""
+    exact = 0
+    for shift in original_shifts:
+        if sum(decompose_shift(shift)) == quantise_tick(shift):
+            exact += 1
     return exact, len(original_shifts)

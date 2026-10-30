@@ -2,7 +2,7 @@
 
 This page is the reference for every representation that crosses a stage
 boundary. All timing is integer ticks at **PPQ 960** (960 ticks = one quarter
-note).
+note) on a **20-tick grid** (1/48 note).
 
 ```
 audio file / YouTube URL
@@ -101,8 +101,12 @@ Built by `notes_to_events()` in `src/fretwire/tokenizer.py`.
 NOTE_ON<55>  TIME_SHIFT<120>  NOTE_OFF<55>  TIME_SHIFT<60>  NOTE_ON<57> ...
 ```
 
-* `TIME_SHIFT<n>` advances the clock by `n` ticks; values are grid-aligned
-  (60-tick grid plus coarse fallbacks up to 15360).
+* `TIME_SHIFT<n>` advances the clock by `n` ticks. There are only **11**
+  possible values: `20, 40, 60, 120, 180, 240, 480, 720, 960, 1920, 3840`.
+  Larger shifts are written as several tokens; every multiple of the 20-tick
+  grid is representable exactly.
+* A shift of 960 costs one token; an odd value such as 340 costs three
+  (`240 + 60 + 40`).
 * Note-offs carry their own `TIME_SHIFT` when the clock advances.
 * At inference, a 20-note chunk is prefixed with the previous chunk's last
   note as context. `base_t` is the context onset, so events are relative.
@@ -121,27 +125,29 @@ Built by `notes_to_target()` and produced by the model:
 * `TIME_SHIFT<n>` is emitted whenever the clock advances.
 
 Because there are no note-offs, `src/fretwire/stream.py` infers a note's
-duration from the next onset on the same string, capped at 960 ticks. This is
-the same assumption a human makes when reading a tab.
+duration from the next onset on the same string, capped at 960 ticks.
 
 ## 7. Vocabulary
 
-`vocab_v1_full.json` has 423 tokens:
+`vocab/guitarset.json` has **246 tokens**:
 
 | Class | Count | Notes |
 | --- | --- | --- |
 | `<pad>`, `</s>`, `<unk>` | 3 | T5 specials |
-| `NOTE_ON<p>` | 49 | pitches actually seen in the corpus |
-| `NOTE_OFF<p>` | 49 | same pitches |
-| `TIME_SHIFT<n>` | 172 | 60-tick grid, values 60–15360 |
+| `NOTE_ON<p>` | 41 | pitches seen in GuitarSet |
+| `NOTE_OFF<p>` | 41 | same pitches |
+| `TIME_SHIFT<n>` | 11 | compositional; see above |
 | `TAB<s,f>` | 150 | 6 strings × 25 frets |
 
-The vocabulary is pruned to the training corpus. Rebuild it when new data
-contains pitches or timing values the old vocabulary lacks:
+Only `NOTE_ON` / `NOTE_OFF` are pruned to the corpus. Every `TAB` and
+`TIME_SHIFT` token is always kept, because an unseen duration can be composed
+and an unseen pitch cannot be recovered.
+
+Rebuild the vocabulary when a new corpus uses pitches outside the current set:
 
 ```bash
 python scripts/build_vocab.py --data-dir data/processed_guitarset \
-    --out vocab_guitarset.json
+    --out vocab/guitarset.json
 ```
 
 The checkpoint's `config.vocab_size` must equal the vocabulary size.
@@ -191,3 +197,9 @@ Input MIDI without string information goes on a `pitch only` track.
 `tab_accuracy` is exact `(string, fret)` agreement with the input's fingering.
 For a plain MIDI input there is no ground-truth fingering, so it is only
 meaningful when the input came from an annotated dataset.
+
+## 9. Techniques
+
+The canonical record has no articulation field and the vocabulary has no
+technique tokens. Hammer-ons, pull-offs, slides, bends, vibrato and palm mute
+are **not represented**. GuitarSet does not annotate them either.

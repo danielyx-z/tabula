@@ -26,6 +26,28 @@ Required invariants:
 
 `scripts/verify.py` checks all of these plus shard bookkeeping.
 
+## Time grid
+
+Everything is quantised to a **20-tick grid** (1/48 note). That represents
+triplets (320), dotted values (720) and 32nd notes (120) exactly, unlike a
+60-tick grid, which silently discards sub-30-tick gaps.
+
+## Chord grouping
+
+Performed sources stagger a strum across 20–40 ticks. `fretwire.group.group_chords`
+collapses onsets inside a window onto the first attack and extends durations so
+each note keeps its release tick. The GuitarSet converter enables this by
+default with a 40-tick window.
+
+Effect on GuitarSet:
+
+| | before | after |
+| --- | --- | --- |
+| distinct onsets | 51,666 | 38,052 |
+| chord onsets | 8,867 (17.2 %) | 13,520 (35.5 %) |
+| mean notes per onset | 1.21 | 1.64 |
+| total notes | 62,476 | 62,476 |
+
 ## Shards on disk
 
 ```
@@ -86,13 +108,14 @@ of the same performance stay together.
 ```bash
 python scripts/preprocess_guitarset.py \
     --jams-dir /path/to/guitarSet_annotation \
-    --out data/processed_guitarset
+    --out data/processed_guitarset \
+    --chord-window 40
 ```
 
 Covers the six per-string `note_midi` annotations, maps seconds to beats with
-the `beat_position` annotation, snaps to the 20-tick grid, drops same-string
-same-tick duplicates, and writes the same shard layout as the GuitarPro
-converter.
+the `beat_position` annotation, snaps to the 20-tick grid, groups strummed
+chords, drops same-string same-tick duplicates, and writes the same shard
+layout as the GuitarPro converter.
 
 Produced from the full 360-file GuitarSet annotation set:
 
@@ -109,13 +132,14 @@ A converter only has to emit `(t, dur, pitch, s, f)` records and call
 1. Map the source's strings to `s=1` (low E) … `s=6` (high E).
 2. Convert time to ticks at PPQ 960. If the source is in seconds, use its beat
    or tempo annotation rather than assuming 120 BPM.
-3. Snap to the 20-tick grid if the source is performed rather than notated.
-4. Drop or merge same-string same-tick duplicates.
-5. Assign `split` per song.
-6. Run `scripts/verify.py --dataset <out>`; it must print
+3. Snap to the 20-tick grid.
+4. Group strummed onsets with `fretwire.group.group_chords`.
+5. Drop or merge same-string same-tick duplicates.
+6. Assign `split` per song.
+7. Run `scripts/verify.py --dataset <out>`; it must print
    `all invariants hold`.
-7. If the new corpus uses pitches or shift values outside the current vocab,
-   run `scripts/build_vocab.py` and pass the new vocab to training.
+8. If the new corpus uses pitches outside the current vocabulary, run
+   `scripts/build_vocab.py` and pass the new vocab to training.
 
 ## What GuitarSet gives us that GuitarPro did not
 
@@ -131,3 +155,5 @@ from pitch, which is what made the earlier synthetic corpus musically useless.
   proportional, but it is still quantised.
 * GuitarSet has six-string acoustic guitar only. Extended-range instruments
   would need a different tuning contract.
+* No technique annotations (hammer-on, slide, bend, …) exist in GuitarSet or
+  in the canonical record.

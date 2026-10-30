@@ -142,8 +142,8 @@ def playability_pass(raw: list[dict]) -> tuple[list[dict], dict]:
     nodes = repair_overlaps(nodes)  # no ground truth: pitch is preserved
     nodes, chord_moves = fix_chord_spans(nodes)
     nodes, jump_moves = limit_jumps(nodes)
-    nodes, dropped_b = cap_simultaneous(nodes)
     nodes = repair_overlaps(nodes)
+    nodes, dropped_b = cap_simultaneous(nodes)
     final = [{"t": n.t, "dur": n.dur, "pitch": n.pitch, "s": n.s, "f": n.f} for n in nodes]
     stats = {
         "dropped_impossible": dropped_a + dropped_b,

@@ -6,7 +6,7 @@ Layers, bottom up and deliberately isolated from each other:
     parse       alphaTex -> canonical Note events
     filter      which tracks are admitted into the corpus
     dataset     sharded memmap storage
-    quantise    960 PPQ / 60-tick grid (single source of truth)
+    quantise    960 PPQ / 20-tick grid, compositional TIME_SHIFT (single source of truth)
     tokenizer   v3 event encoding, vocab build/freeze
     chunk       512-token training windows, 20-note inference chunks
     model       reduced T5 encoder-decoder (~2.8M params)

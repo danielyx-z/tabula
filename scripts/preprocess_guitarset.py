@@ -12,6 +12,10 @@ Timing: GuitarSet is performed, not quantised.  Onsets are mapped from seconds
 to *beats* with the ``beat_position`` annotation, then to ticks at PPQ 960.
 Onsets and durations are snapped to a 20-tick grid so the encoder's TIME_SHIFT
 vocabulary can represent every delta exactly.
+
+A strum spreads a chord over 20–40 ticks.  ``--chord-window`` (default 40)
+collapses onsets inside that window to the first attack, which is how a
+human reads the result: one chord, not a fast arpeggio.
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from fretwire.dataset import ShardWriter, notes_to_array, write_manifest  # noqa: E402
 from fretwire.fretboard import STANDARD, format_tuning  # noqa: E402
+from fretwire.group import group_chords  # noqa: E402
 from fretwire.schema import Note  # noqa: E402
 
 PPQ = 960
@@ -153,6 +158,8 @@ def main() -> int:
     ap.add_argument("--out", default=str(ROOT / "data/processed_guitarset"))
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--min-notes", type=int, default=20)
+    ap.add_argument("--chord-window", type=int, default=40,
+                    help="collapse onsets within this many ticks (0 disables)")
     ap.add_argument("--shard-notes", type=int, default=1_000_000)
     args = ap.parse_args()
 
@@ -187,6 +194,10 @@ def main() -> int:
         if len(notes) < args.min_notes:
             reasons["too_few_notes"] += 1
             continue
+
+        notes, merged = group_chords(notes, args.chord_window)
+        if merged:
+            reasons["same_string_same_tick_after_grouping"] += merged
 
         arr = notes_to_array(notes)
         arr = arr[np.lexsort((arr["pitch"], arr["t"]))]
@@ -225,7 +236,7 @@ def main() -> int:
         "string_order": "1 = thickest (low E), 6 = thinnest (high E)",
         "tuning": list(STANDARD),
         "tuning_name": format_tuning(STANDARD),
-        "filters": {"min_notes": args.min_notes},
+        "filters": {"min_notes": args.min_notes, "chord_window_ticks": args.chord_window},
         "counts": {
             "files": n_files,
             "tracks_kept": n_kept,

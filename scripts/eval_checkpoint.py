@@ -31,7 +31,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", required=True)
     ap.add_argument("--data-dir", default=str(ROOT / "data/processed"))
-    ap.add_argument("--vocab", default=str(ROOT / "vocab_v1_full.json"))
+    ap.add_argument("--vocab", default=str(ROOT / "vocab/guitarset.json"))
     ap.add_argument("--split", default="valid")
     ap.add_argument("--tracks", type=int, default=1)
     ap.add_argument("--max-len", type=int, default=MAX_TOKENS)
