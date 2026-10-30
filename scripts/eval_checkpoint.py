@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from model.chunk import MAX_TOKENS  # noqa: E402
-from tablature.metrics import print_metrics  # noqa: E402
+from tablature.metrics import print_metrics, print_rhythm_metrics  # noqa: E402
 from tablature.tokenizer import Vocab  # noqa: E402
 from model.train import evaluate  # noqa: E402
 
@@ -39,6 +39,8 @@ def main() -> None:
     ap.add_argument("--postproc", choices=["none", "overlap", "full"], default="full")
     ap.add_argument("--shuffle", action="store_true")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--context-mode", choices=["pred", "gt"], default="pred",
+                    help="Decoder context at chunk boundaries: pred=model's own, gt=ground truth")
     args = ap.parse_args()
 
     vocab = Vocab.load(args.vocab)
@@ -50,7 +52,7 @@ def main() -> None:
 
     accelerator = Accelerator(mixed_precision="no")
     model = accelerator.prepare(model)
-    post, raw = evaluate(
+    post, raw, post_rhythm, raw_rhythm = evaluate(
         model,
         args.data_dir,
         args.split,
@@ -62,9 +64,11 @@ def main() -> None:
         postproc_mode=args.postproc,
         shuffle=args.shuffle,
         seed=args.seed,
+        context_mode=args.context_mode,
     )
     print_metrics(raw, "Raw ")
     print_metrics(post, "Post ")
+    print_rhythm_metrics(raw_rhythm, "Raw Rhythm ")
 
 
 if __name__ == "__main__":

@@ -35,14 +35,15 @@ PYTHONPATH=src .venv/bin/python3 scripts/verify.py --dataset data/processed_guit
 PYTHONPATH=src .venv/bin/python3 scripts/build_vocab.py \
     --data-dir data/processed_guitarset --out vocab/guitarset.json
 
-# Train
+# Train (max-steps counts optimizer steps; dataset cycles infinitely)
 PYTHONPATH=src .venv/bin/python3 -m model.train \
     --data-dir data/processed_guitarset --vocab-path vocab/guitarset.json \
-    --output-dir runs/guitarset
+    --output-dir runs/pretrain_t5_guitarset \
+    --max-steps 30000
 
 # MIDI -> input/raw/final MIDI + WAV + tab + report
 PYTHONPATH=src:. .venv/bin/python3 scripts/midi2tab.py song.mid \
-    --checkpoint runs/guitarset/best --vocab vocab/guitarset.json \
+    --checkpoint runs/pretrain_t5_guitarset/best --vocab vocab/guitarset.json \
     --out-dir out/song
 ```
 
@@ -76,8 +77,9 @@ vocab/
 | Strings | 1 = thickest (low E) … 6 = thinnest (high E) |
 | Tuning | standard only, `(40, 45, 50, 55, 59, 64)` |
 | Pitch | `pitch = tuning[s-1] + fret`, frets 0–24 |
-| Chords | notes sorted ascending by pitch |
+| Chords | notes at same onset sorted ascending by string (s=1..6) |
 | Capo | out of scope |
+| Pitch names | Scientific notation: MIDI 60 = C4 (middle C) |
 
 `src/core/fretboard.py` is the only place pitch ↔ (string, fret) happens;
 `src/corpus/parse/alphatex.py` is the only place notation is interpreted.
@@ -98,14 +100,17 @@ plain wheel reports `False`.
 ```bash
 .venv/bin/python tests/test_core.py     # parser / fretboard unit checks
 .venv/bin/python tests/test_metrics.py  # quantiser / post-processing / metrics checks
+.venv/bin/python tests/test_chunk.py    # chord-safe chunking / string order
+.venv/bin/python tests/test_synth.py    # FluidSynth wrapper
 .venv/bin/python scripts/verify.py      # invariants over the built dataset
+.venv/bin/python scripts/audit_guitarset.py --jams-dir /path/to/guitarSet_annotation --data-dir data/processed_guitarset --vocab vocab/guitarset.json
 ```
 
 ## Preprocess
 
 ```bash
-.venv/bin/python scripts/preprocess.py --out data/processed
-# ~8 min for 47k files, single core, ~800 MB output
+.venv/bin/python scripts/preprocess_guitarset.py --jams-dir /path/to/guitarSet_annotation --out data/processed_guitarset --chord-window 40
+# ~30 s for 360 files, single core, ~2 MB output
 ```
 
 Output is sharded and memory-mappable:
@@ -131,23 +136,20 @@ track = notes[offsets[i]:offsets[i + 1]]
 
 or, across shards, `corpus.dataset.iter_tracks(root, split="train")`.
 
-### What the corpus gives us
+### GuitarSet corpus
 
 | | |
 | --- | --- |
-| files | 47,299 |
-| tracks seen | 188,296 |
-| tracks kept | 89,175 |
-| notes | 70,445,486 |
-| songs (split unit) | 33,218 |
-| train / valid / test tracks | 71,571 / 8,842 / 8,762 |
+| files | 360 |
+| performances | 180 (each has comp + solo) |
+| tracks kept | 360 |
+| notes | 62,476 |
+| pitch range | 40 (E2) – 81 (A5) |
+| max fret used | 19 |
+| train / valid / test | 272 / 50 / 38 (split by performance, not track) |
 
-Drops: non-standard tuning 45,323 · not 6-string 35,937 · too few notes 9,539 ·
-duplicate arrangement 5,029 · invalid fret/string 3,042 · harmonic-heavy 180 ·
-fret > 24 57 · too few bars 14.
-
-Harmonic notes (~0.4 % of corpus) are dropped note-by-note rather than
-mislabelled: their sounding pitch is not implied by the fret.
+Splits key on `performance_key` (strips `_comp` / `_solo`) so comp/solo never
+leak across splits.
 
 ### Things the measurement changed
 
@@ -188,24 +190,26 @@ srun --partition=compute --gres=shard:rtx_3090:4096,tmpdisk:2048 \
 ```
 
 The defaults are paper-sized: batch 8 × grad-accum 8 (effective batch 64),
-2,000 micro-batches per epoch (~16k sequences), 512-token training chunks, and
-20-note inference chunks. Validation loss is checked every 250 optimizer steps;
-full-track tab metrics are decoded every 1,250 steps. `--resume-from
-runs/pretrain_t5_guitarset/best` reloads weights, vocabulary, optimizer/schedule and
-early-stopping state. Post-processing runs per 20-note inference chunk so one
-missing note cannot shift every later chunk.
+512-token training chunks, and 20-note inference chunks. `max_steps=30000`
+gives ~30k optimizer steps (~5 h on RTX 3070, ~2.5 h on RTX 3090). For
+paper-scale 75k steps, override with `MAX_STEPS=75000`. Validation loss is
+checked every 500 optimizer steps; full-track tab metrics are decoded every
+2,500 steps. `--resume-from runs/pretrain_t5_guitarset/best` reloads weights,
+vocabulary, optimizer/schedule and early-stopping state. Post-processing runs
+per 20-note inference chunk so one missing note cannot shift every later chunk.
 
 To evaluate a saved checkpoint without training (same metrics as the job):
 
 ```bash
 PYTHONPATH=src .venv/bin/python3 scripts/eval_checkpoint.py \
-  --checkpoint runs/pretrain_t5_guitarset/best --tracks 10 --postproc full
+  --checkpoint runs/pretrain_t5_guitarset/best --tracks 10 --postproc full \
+  --context-mode pred
 ```
 
 ```bash
 # local smoke test, no long training
 PYTHONPATH=src .venv/bin/python3 -m model.train \
-  --max-epochs 1 --max-tracks 5 --steps-per-epoch 2 \
+  --max-steps 2 \
   --batch-size 2 --grad-accum 1 --no-bf16 \
   --eval-every 1 --eval-loss-batches 1 --eval-batches 1 \
   --metrics-every 0 --output-dir /tmp/tabula-smoke

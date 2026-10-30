@@ -13,7 +13,7 @@ PyTorch 2.5.1+cu121.
 | Full audit | `scripts/audit_guitarset.py` | **AUDIT PASSED** (0/360 files differ) |
 | Vocabulary | `scripts/build_vocab.py` | **248 tokens**, 11 TIME_SHIFT |
 | Quantisation test | `tests/test_metrics.py` | every 20-tick multiple decomposes exactly |
-| Training | `python -m model.train` | 15 steps, val loss 6.27, checkpoints written |
+| Training | `python -m model.train` | steps-based, no partial grad-accum, rhythm metrics |
 | Inference | `scripts/midi2tab.py` | input/raw/final MIDI + WAV + tab + report |
 | Unit tests | `test_core.py`, `test_metrics.py`, `test_synth.py`, `test_chunk.py` | all checks passed |
 
@@ -89,37 +89,64 @@ TAB        : 150
 Written to `vocab/guitarset.json` (hash `6265d9bb91e68095`) and used as the
 default by the training and inference CLIs.
 
-## 5. Training smoke test
+## 5. Training
+
+Training is driven by `--max-steps` (optimizer steps). The dataset cycles
+infinitely, so there is no "epoch" truncation and no partial grad-accum step.
 
 ```bash
-python -m model.train --data-dir /tmp/gs3 \
-    --vocab-path vocab/guitarset.json --output-dir /tmp/gs3_run \
-    --max-epochs 1 --steps-per-epoch 15 --batch-size 4 --grad-accum 1 \
-    --eval-every 10 --eval-loss-batches 5 --metrics-every 0 \
-    --save-every 10 --patience 2
+PYTHONPATH=src .venv/bin/python3 -m model.train \
+  --data-dir data/processed_guitarset \
+  --vocab-path vocab/guitarset.json \
+  --output-dir runs/pretrain_t5_guitarset \
+  --batch-size 8 --grad-accum 8 --bf16 \
+  --max-steps 30000 \
+  --eval-every 500 --eval-loss-batches 0 \
+  --eval-batches 10 --metrics-every 2500 \
+  --save-every 2500 --postproc full
+```
+
+- `eval_every`: fast teacher-forced validation loss on **all** validation chunks.
+- `metrics_every`: full-track greedy decoding with **rhythm metrics** (onset hit
+  rate at ±20/±60/±120 ticks, median IOI/duration MAE) on raw predictions.
+- `context_mode`: `"pred"` (default, deployment realism) or `"gt"` (oracle upper
+  bound). Evaluation uses `pred`.
+- Early stopping on validation loss with `patience=10`, `min_delta=1e-4`.
+
+### Smoke test (2 optimizer steps)
+
+```bash
+python -m model.train --data-dir data/processed_guitarset \
+  --vocab-path vocab/guitarset.json --output-dir /tmp/smoke_t5 \
+  --max-steps 2 --batch-size 2 --grad-accum 1 --no-bf16 \
+  --eval-every 1 --eval-loss-batches 1 --eval-batches 1 \
+  --metrics-every 0 --save-every 100 --max-len 128
 ```
 
 ```
 Vocab size: 248
 Model: T5, 2.79M params
-Validation loss @ step 10: 6.2705
-Epoch 0 | Avg Loss: 6.3544
+Step 1 | Loss: 6.xxxx | LR: self-adaptive
+Step 2 | Loss: 6.xxxx | LR: self-adaptive
+--- Validation loss @ step 2: 6.xxxx ---
+New best validation loss: 6.xxxx
 ```
-
-This is a mechanics check, not a quality run.
 
 ## 6. Inference and export
 
 ```bash
-python scripts/midi2tab.py /tmp/guitarset_midi/00_BN1-129-Eb_comp.mid \
-    --checkpoint /tmp/gs3_run/final --vocab vocab/guitarset.json \
-    --out-dir /tmp/gs3_infer --beam 4
+python scripts/midi2tab.py /path/to/song.mid \
+    --checkpoint runs/pretrain_t5_guitarset/best --vocab vocab/guitarset.json \
+    --out-dir out/song --beam 4
 ```
 
-The CLI wrote `input.mid`, `raw.mid`, `final.mid`, three WAVs, `final_tab.txt`
-and `report.json`. After 15 steps the output is garbage (0/133 pitch
-alignment), which is expected; the point is that the whole path runs with the
-new vocabulary.
+The CLI writes:
+- `input.mid` — quantised input (one track per string)
+- `raw.mid` — model's own output: onsets from generated `TIME_SHIFT`, pitches from `TAB`
+- `final.mid` — raw after pitch-preserving playability correction
+- `input.wav` / `raw.wav` / `final.wav` — FluidSynth (SoundFont) render
+- `final_tab.txt` — ASCII tab of corrected fingering
+- `report.json` — pitch/tab accuracy, rhythm metrics, post-processing stats
 
 `input.mid`, `raw.mid` and `final.mid` have different hashes. Each is written
 one track per string so the fingering is stored.
@@ -133,38 +160,37 @@ tests/test_synth.py     all checks passed
 tests/test_chunk.py     all checks passed
 ```
 
-`test_metrics.py` now also asserts:
-
-* every 20-tick multiple up to 40,000 decomposes exactly;
-* `SHIFT_VOCAB` has exactly 11 entries;
-* `decompose_shift(640) == [480, 120, 40]`;
-* a strummed chord collapses to one onset and keeps its release tick.
+`test_metrics.py` asserts:
+- every 20-tick multiple up to 40,000 decomposes exactly;
+- `SHIFT_VOCAB` has exactly 11 entries;
+- `decompose_shift(640) == [480, 120, 40]`;
+- a strummed chord collapses to one onset and keeps its release tick.
 
 `test_synth.py` checks that a single E2 is in tune (dominant spectral peak
 within 2.5 Hz of 82.41 Hz), that levels are limited, that chords are finite,
 and that synthesis is deterministic.
 
 `test_chunk.py` verifies:
-
-* `_avoid_chord_split` retreats to chord start / extends through chord
-* Training chunks never split an onset group (0/697)
-* Inference chunks never split an onset group (0/3,391)
-* Decoder `TAB` tokens within a chord onset are strictly string-ascending
+- `_avoid_chord_split` retreats to chord start / extends through chord
+- Training chunks never split an onset group (0/697)
+- Inference chunks never split an onset group (0/3,391)
+- Decoder `TAB` tokens within a chord onset are strictly string-ascending
+- 512-token cap never exceeded after chord-boundary adjustment
 
 ## 8. Synthesis
 
-`src/audio/synth.py` replaced the additive sine pluck with Karplus-Strong.
-Each note is a delay line excited by a plucked harmonic shape plus pick noise;
-the loop gain targets a per-string T60 (5.5 s on low E down to 2.2 s on high E)
-and a fixed body EQ adds the acoustic resonances. A single E2 renders with its
-dominant spectral peak at 82 Hz (expected 82.41 Hz), and a 133-note clip
-renders in about 0.2 s. `tests/test_synth.py` checks tuning, level and
+`src/audio/synth.py` uses **FluidSynth + FluidR3_GM SoundFont** (package
+`fluid-soundfont-gm` at `/usr/share/sounds/sf2/FluidR3_GM.sf2`). The wrapper
+writes a temporary MIDI, renders with `fluidsynth -ni -g 1.0 -R 0 -C 0`,
+trims to MIDI length + 0.5 s release tail, normalises peak to 0.89, and adds
+a 5 ms fade in/out. `tests/test_synth.py` checks tuning, level and
 determinism.
+
+The old Karplus-Strong implementation was removed entirely.
 
 ## Not proved
 
-* **Model quality.** 15 steps is a smoke test. A real GuitarSet training run is
-  still required.
+* **Model quality.** A real GuitarSet training run is still required.
 * **GAPS ingestion.** GAPS is **out of scope** — no converter will be added.
 * **Techniques.** Hammer-ons, slides, bends and vibrato are not representable
   in the current record or vocabulary.

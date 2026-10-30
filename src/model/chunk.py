@@ -123,6 +123,8 @@ def _build_chunk(
             "num_notes": len(current),
             "base_t": base_t,
             "has_context": context is not None,
+            "context_s": context.s if context is not None else 0,
+            "context_f": context.f if context is not None else 0,
             "prompt_len": len(dec_tokens),
         },
     )
@@ -162,6 +164,10 @@ def make_training_chunks(
         if cfg.training_chunk_notes > 0:
             end = min(start + cfg.training_chunk_notes, total)
             end = _avoid_chord_split(notes, start, end, total)
+            # Re-check fit after chord-boundary adjustment.
+            if not _fits(notes, start, end, vocab, track_id, cfg):
+                # Fall back to the pre-adjustment boundary (which we know fit).
+                end = min(start + cfg.training_chunk_notes, total)
             chunks.append(
                 _build_chunk(notes, start, end, vocab, track_id, cfg, training=True)
             )
@@ -196,6 +202,14 @@ def make_training_chunks(
         # A token boundary can fall inside a strummed chord.  Move it to the
         # chord edge so the decoder never learns half a chord.
         best = _avoid_chord_split(notes, start, best, total)
+        # Re-check fit after chord-boundary adjustment; binary search ensures
+        # the pre-adjustment boundary fits.
+        if not _fits(notes, start, best, vocab, track_id, cfg):
+            # Find the last fitting boundary <= best.
+            for end in range(best, start, -1):
+                if _fits(notes, start, end, vocab, track_id, cfg):
+                    best = end
+                    break
         chunks.append(
             _build_chunk(notes, start, best, vocab, track_id, cfg, training=True)
         )

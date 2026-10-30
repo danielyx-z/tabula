@@ -7,14 +7,18 @@ Tablature Transcription** (Hamberger et al., arXiv:2506.14223, ICMC 2025).
 
 - Input: symbolic MIDI note events (`NOTE_ON`, `NOTE_OFF`, `TIME_SHIFT`).
 - Output: ASCII tab events (`TAB` + `TIME_SHIFT`).
-- Model: paper-config T5, 2.81M parameters (`d_model=128`, `d_ff=1024`,
+- Model: paper-config T5, 2.79M parameters (`d_model=128`, `d_ff=1024`,
   `d_kv=64`, 3 encoder/3 decoder layers, 4 heads). The project vocabulary
-  is 246 tokens for GuitarSet.
+  is 248 tokens for GuitarSet.
 - The paper does **not** define a training-time alignment loss, note-count head,
   or pitch-constrained training loss. Do not reintroduce them. Its alignment
   step is post-processing: overlap correction + ±5-note neighbor search.
 - Training chunks: 512 encoder tokens. Inference chunks: 20 notes with the
   previous note as context in encoder and decoder.
+- Time is quantised to a 20-tick grid (PPQ 960). `TIME_SHIFT` tokens are
+  compositional (11 values: 20..3840). Onsets/durations are snapped to this grid.
+- Rhythm metrics (onset hit rate, IOI/duration MAE) are computed on raw
+  model output; post-processing assigns GT timing and is not rhythm-meaningful.
 
 ## Training is user-driven
 
@@ -73,7 +77,7 @@ WATcloud notifications (instead of Slurm mail):
 
 The old `runs/pretrain_t5_v5` checkpoint (kept only on the workstation) and
 its metrics were trained on the discarded synthetic corpus. They are **not comparable** to GuitarSet and the
-vocabulary has since changed (246 tokens), so the old checkpoint cannot be
+vocabulary has since changed (248 tokens), so the old checkpoint cannot be
 loaded with the current data. Treat it as historical.
 
 A real GuitarSet training run has not been completed yet. The active defaults
@@ -84,7 +88,8 @@ Evaluate a checkpoint without training:
 
 ```bash
 PYTHONPATH=src .venv/bin/python3 scripts/eval_checkpoint.py \
-  --checkpoint runs/pretrain_t5_guitarset/best --tracks 10 --postproc full
+  --checkpoint runs/pretrain_t5_guitarset/best --tracks 10 --postproc full \
+  --context-mode pred
 ```
 
 ## Cluster setup
@@ -93,10 +98,12 @@ The cluster needs its own environment and data:
 
 ```bash
 ssh watcloud
-cd ~/tabula                     # this workspace's cluster copy
+cd ~/tabula_gs                    # new GuitarSet workspace
+git clone https://github.com/danielyx-z/tabula.git .
 python3 -m venv .venv
 .venv/bin/pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
 .venv/bin/pip install -r requirements.txt
+.venv/bin/pip install pretty_midi
 .venv/bin/python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 ```
 
@@ -105,6 +112,8 @@ works. If `torch.cuda.is_available()` is false, reinstall the CUDA wheel
 matching the compute-node driver (see
 <https://pytorch.org/get-started/locally/>) before submitting. The processed
 corpus must exist at `data/processed_guitarset` (train / valid / test shards).
+Copy `data/processed_guitarset/` and `vocab/guitarset.json` from the fractal
+workstation (2 MB total). Verify: vocab size 248, hash `6265d9bb91e68095`.
 The GuitarSet shard is small (<2 MB); checkpoints are ~11 MB each.
 
 ## Reference training command
@@ -117,30 +126,29 @@ PYTHONPATH=src .venv/bin/python3 -m model.train \
   --batch-size 8 \
   --grad-accum 8 \
   --bf16 \
-  --steps-per-epoch 2000 \
-  --eval-every 250 \
-  --eval-loss-batches 50 \
+  --max-steps 30000 \
+  --eval-every 500 \
+  --eval-loss-batches 0 \
   --eval-batches 10 \
-  --metrics-every 1250 \
+  --metrics-every 2500 \
   --save-every 2500 \
-  --max-epochs 300
+  --postproc full
 ```
 
-`steps_per_epoch` counts **micro-batches**. With batch 8 and grad-accum 8, one
-epoch is 250 optimizer steps (16k sequences, close to the paper's 16,451
-training sequences). `eval_every`, `metrics_every`, and `save_every` count
-optimizer steps.
+`max_steps` counts **optimizer steps** (micro-batches / grad_accum). With
+batch 8 and grad-accum 8, 30,000 steps ≈ 240,000 sequences. The dataset
+cycles infinitely; `eval_every`, `metrics_every`, and `save_every` count
+optimizer steps. No partial grad-accum step occurs.
 
 Evaluation is two-tier:
 
-- every `eval_every`: fast teacher-forced validation loss; used for early
-  stopping and `best/` checkpoint;
+- every `eval_every`: fast teacher-forced validation loss on all validation
+  chunks; used for early stopping and `best/` checkpoint;
 - every `metrics_every`: full-track greedy decoding for raw and post-processed
-  tab/pitch metrics. This is expensive, so it is less frequent.
+  tab/pitch/rhythm metrics. This is expensive, so it is less frequent.
 
 Use `--eval-beam 1` for the paper-style greedy default. `--grad-checkpointing`
-is off by default; enable it only if memory becomes tight. Do not use
-`--no-grad-checkpointing` (the flag was replaced by `--grad-checkpointing`).
+is off by default; enable it only if memory becomes tight.
 
 ## Files that matter
 
@@ -148,8 +156,9 @@ is off by default; enable it only if memory becomes tight. Do not use
 - `src/tablature/tokenizer.py` — v3 event/target encoding.
 - `src/model/chunk.py` — 512-token train windows / 20-note inference chunks.
 - `src/tablature/postproc.py` — overlap correction + neighbor search.
-- `src/tablature/metrics.py` — tab/pitch accuracy and difficulty.
+- `src/tablature/metrics.py` — tab/pitch accuracy, difficulty, **rhythm**.
 - `src/model/train.py` — training, validation loss, full metrics.
 - `src/model/decode.py` — T5 generation helpers.
-- `vocab/guitarset.json` — frozen 246-token vocab. Do not use the unpruned
+- `src/core/quantise.py` — 20-tick grid, shift decomposition, `quantise_notes`.
+- `vocab/guitarset.json` — frozen 248-token vocab. Do not use the unpruned
   `DEFAULT_VOCAB` (286) for training.

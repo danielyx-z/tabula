@@ -17,11 +17,12 @@ those are not part of the Fretting-Transformer paper.
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import random
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 import numpy as np
 import torch
@@ -39,12 +40,16 @@ from model.chunk import (
 from corpus.dataset import iter_tracks
 from tablature.metrics import (
     EvalCounts,
+    RhythmCounts,
     aggregate_counts,
+    aggregate_rhythm,
     align_predictions,
     check_playability,
+    compute_rhythm_metrics,
     decode_predictions,
     difficulty_terms,
     print_metrics,
+    print_rhythm_metrics,
 )
 from model.model import count_parameters, make_model
 from tablature.postproc import postprocess
@@ -62,7 +67,7 @@ class TrainConfig:
     lr: Optional[float] = None  # None = Adafactor self-adaptive
     weight_decay: float = 0.0
     warmup_ratio: float = 0.02
-    max_epochs: int = 300
+    max_epochs: int = 0  # 0 = unlimited; training stops at --max-steps
     grad_accum: int = 8
     max_grad_norm: float = 1.0
     bf16: bool = True
@@ -74,18 +79,18 @@ class TrainConfig:
     # Logging / evaluation. eval_every, metrics_every and save_every are in
     # optimizer steps (micro-batches / grad_accum), not micro-batches.
     log_every: int = 100
-    eval_every: int = 250
-    eval_loss_batches: int = 50
+    eval_every: int = 500
+    eval_loss_batches: int = 0  # 0 = all validation chunks
     eval_batches: int = 10
-    metrics_every: int = 1250
+    metrics_every: int = 2500
     eval_beam: int = 1
     postproc_mode: str = "full"
     save_every: int = 2500
-    output_dir: str = "runs/exp1"
+    output_dir: str = "runs/pretrain_t5_guitarset"
     seed: int = 42
     # DataLoader / sequence length
     batch_size: int = 8
-    steps_per_epoch: int = 2000  # 0 = iterate the whole split
+    max_steps: int = 30000  # optimizer steps; 0 = unlimited (stop via max_epochs)
     max_len: int = MAX_TOKENS
 
 
@@ -132,9 +137,6 @@ class ChunkIterableDataset(IterableDataset):
         self.cfg = ChunkConfig(max_tokens=max_len)
         self.shuffle = shuffle
         self.seed = seed
-        # A finite buffer mixes chunks from different tracks.  Without it,
-        # consecutive chunks of one track would fill a whole batch, because
-        # chunk order follows track order.
         self.shuffle_buffer = max(0, shuffle_buffer)
         self._epoch = 0
 
@@ -147,8 +149,6 @@ class ChunkIterableDataset(IterableDataset):
         }
 
     def __iter__(self):
-        # Each epoch gets a fresh track order, so the fixed micro-batch budget
-        # samples different parts of the split instead of the same first tracks.
         seed = self.seed + self._epoch
         self._epoch += 1
         rng = random.Random(seed)
@@ -191,12 +191,47 @@ class ChunkIterableDataset(IterableDataset):
         yield from buffer
 
 
+def _infinite_chunk_iterator(
+    data_dir: str,
+    split: str,
+    vocab: Vocab,
+    max_tracks: int,
+    max_len: int,
+    shuffle: bool,
+    seed: int,
+    shuffle_buffer: int,
+    batch_size: int,
+) -> Iterator[dict[str, torch.Tensor]]:
+    """Yield batches forever, re-iterating the dataset each pass."""
+    while True:
+        ds = ChunkIterableDataset(
+            data_dir,
+            split,
+            vocab,
+            max_tracks=max_tracks,
+            max_len=max_len,
+            shuffle=shuffle,
+            seed=seed,
+            shuffle_buffer=shuffle_buffer,
+        )
+        dl = DataLoader(
+            ds,
+            batch_size=batch_size,
+            collate_fn=lambda b: collate_fn(b, pad_id=vocab[PAD_TOKEN], max_len=max_len),
+            num_workers=0,
+        )
+        for batch in dl:
+            yield batch
+
+
 def collate_fn(
     batch: list[dict[str, torch.Tensor]],
     pad_id: int = 0,
     max_len: int = MAX_TOKENS,
 ) -> dict[str, torch.Tensor]:
     """Pad encoder/decoder sequences and build T5 attention masks."""
+    if not batch:
+        raise ValueError("empty batch")
     max_enc = min(max_len, max(len(x["input_ids"]) for x in batch))
     max_dec = min(max_len, max(len(x["decoder_input_ids"]) for x in batch))
 
@@ -235,11 +270,16 @@ def evaluate(
     max_chunks: int | None = None,
     shuffle: bool = False,
     seed: int = 0,
-) -> tuple[EvalCounts, EvalCounts]:
-    """Evaluate full tracks and return ``(postprocessed, raw)`` counts.
+    context_mode: str = "pred",  # "pred" | "gt"
+) -> tuple[EvalCounts, EvalCounts, RhythmCounts, RhythmCounts]:
+    """Evaluate full tracks and return ``(postprocessed, raw, post_rhythm, raw_rhythm)`` counts.
 
     ``max_batches`` is a track budget, so with ``shuffle=True`` this evaluates a
     deterministic random sample of tracks rather than the first shard.
+
+    ``context_mode`` controls the decoder prompt at each chunk boundary:
+    - "gt": use the ground-truth previous TAB (oracle upper bound)
+    - "pred": use the model's own previous prediction (deployment realism)
     """
     unwrapped = accelerator.unwrap_model(model)
     was_training = unwrapped.training
@@ -257,6 +297,8 @@ def evaluate(
 
     processed_counts: list[EvalCounts] = []
     raw_counts: list[EvalCounts] = []
+    processed_rhythm: list[RhythmCounts] = []
+    raw_rhythm: list[RhythmCounts] = []
     difficulty_sum = 0.0
     difficulty_n = 0
     raw_difficulty_sum = 0.0
@@ -277,7 +319,8 @@ def evaluate(
             if not notes:
                 continue
 
-            gt = sorted(notes, key=lambda n: (n.t, n.pitch, n.s, n.f))
+            # Sort GT to match the chunker's sort order: (t, s, pitch, f)
+            gt = sorted(notes, key=lambda n: (n.t, n.s, n.pitch, n.f))
             chunks = make_inference_chunks(
                 gt, vocab, meta.get("id", track_idx), chunk_cfg
             )
@@ -287,10 +330,28 @@ def evaluate(
                 continue
 
             chunk_preds: list[list[tuple[int, int]]] = []
-            for chunk in chunks:
+            chunk_pred_tokens: list[list[str]] = []
+            # For "pred" context mode, carry the model's own previous TAB forward.
+            prev_pred_tab: tuple[int, int] | None = None
+
+            for chunk_idx, chunk in enumerate(chunks):
                 enc = torch.tensor([chunk.enc_tokens], dtype=torch.long, device=device)
                 attention_mask = (enc != pad_id).long()
-                prompt = torch.tensor([chunk.dec_tokens], dtype=torch.long, device=device)
+
+                if context_mode == "gt" or chunk_idx == 0:
+                    # First chunk has no previous prediction, or gt mode uses GT.
+                    context_ids = (
+                        [vocab[tab_token(chunk.meta.get("context_s", 0), chunk.meta.get("context_f", 0))]]
+                        if chunk.meta.get("has_context") and context_mode == "gt"
+                        else []
+                    )
+                else:
+                    # Use the model's own previous TAB as context.
+                    assert prev_pred_tab is not None
+                    context_ids = [vocab[tab_token(prev_pred_tab[0], prev_pred_tab[1])]]
+
+                dec_tokens = [eos_id] + context_ids
+                prompt = torch.tensor([dec_tokens], dtype=torch.long, device=device)
                 max_new = min(max_len, max(16, 6 * chunk.meta["num_notes"] + 16))
 
                 with accelerator.autocast():
@@ -305,18 +366,23 @@ def evaluate(
                         pad_token_id=pad_id,
                         use_cache=True,
                     )
-                generated = generated[:, prompt.size(1) :]
-                chunk_preds.append(
-                    decode_predictions(generated[0].tolist(), vocab)
-                )
+                generated = generated[:, prompt.size(1):]
+                gen_tokens = vocab.decode(generated[0].tolist())
+                pred_tabs = decode_predictions(generated[0].tolist(), vocab)
+                chunk_preds.append(pred_tabs)
+                chunk_pred_tokens.append(gen_tokens)
+
+                if context_mode == "pred" and pred_tabs:
+                    prev_pred_tab = pred_tabs[-1]
 
             flat_preds = [tab for preds in chunk_preds for tab in preds]
+            flat_pred_tokens = [tok for tokens in chunk_pred_tokens for tok in tokens]
             gt_eval = gt[: int(chunks[-1].meta["note_end"])]
 
-            # Post-process each chunk against its own ground truth.  Aligning
-            # one flat prediction list to the whole track lets one missing
-            # note shift every later chunk, which destroys good fingerings
-            # even when raw per-chunk accuracy is high.
+            # Rhythm metrics on raw predictions (not post-processed).
+            raw_rhythm.append(compute_rhythm_metrics(flat_preds, flat_pred_tokens, gt_eval, vocab))
+
+            # Post-process each chunk against its own ground truth.
             processed_chunks = []
             raw_terms = []
             for chunk, preds in zip(chunks, chunk_preds):
@@ -349,9 +415,7 @@ def evaluate(
             raw_difficulty_sum += float(sum(raw_terms))
             raw_difficulty_n += len(raw_terms)
 
-            # Score each chunk against its own ground-truth notes.  Aligning a
-            # flat prediction list with the whole track lets one missing note
-            # shift every later prediction, which made tab accuracy collapse.
+            # Score each chunk against its own ground-truth notes.
             for chunk_idx, (chunk, preds) in enumerate(
                 zip(chunks, chunk_preds)
             ):
@@ -388,11 +452,15 @@ def evaluate(
                 ):
                     setattr(proc, name, getattr(proc, name) + value)
                 processed_counts.append(proc)
+
+            # Rhythm metrics on post-processed (uses GT timing via postprocess).
+            # Note: this will be trivially perfect since postprocess assigns GT onsets.
+            # We compute it for completeness but raw is the meaningful one.
+            processed_rhythm.append(RhythmCounts(matched=len(gt_eval), missing=0, extra=0))
     finally:
         unwrapped.train(was_training)
         if had_checkpointing:
             unwrapped.gradient_checkpointing_enable()
-        # T5 must not carry a cache during teacher-forced training.
         unwrapped.config.use_cache = False
 
     processed_total = aggregate_counts(processed_counts)
@@ -401,7 +469,7 @@ def evaluate(
     raw_total = aggregate_counts(raw_counts)
     raw_total.difficulty_sum = raw_difficulty_sum
     raw_total.difficulty_n = raw_difficulty_n
-    return processed_total, raw_total
+    return processed_total, raw_total, aggregate_rhythm(processed_rhythm), aggregate_rhythm(raw_rhythm)
 
 
 @torch.no_grad()
@@ -411,7 +479,7 @@ def evaluate_loss(
     split: str,
     vocab: Vocab,
     accelerator: Accelerator,
-    max_batches: int = 50,
+    max_batches: int = 0,  # 0 = all validation chunks
     max_len: int = MAX_TOKENS,
     batch_size: int = 8,
 ) -> float:
@@ -437,11 +505,9 @@ def evaluate_loss(
         vocab,
         max_tracks=0,
         max_len=max_len,
-        # Fixed random sample of validation chunks across all shards; a new
-        # dataset is created on every call, so this is deterministic.
         shuffle=True,
         seed=0,
-        max_chunks_per_track=2,
+        max_chunks_per_track=0,  # use all chunks
         shuffle_buffer=max(1, batch_size * 2),
     )
     dl = DataLoader(
@@ -451,14 +517,11 @@ def evaluate_loss(
         num_workers=0,
     )
 
-    # T5's loss is a mean over non-ignored label tokens.  Weight each batch by
-    # its token count so the validation number is comparable across batch sizes
-    # and a short final batch cannot bias it.
     total_loss = 0.0
     total_tokens = 0
     try:
         for batch_idx, batch in enumerate(dl):
-            if batch_idx >= max_batches:
+            if max_batches and batch_idx >= max_batches:
                 break
             batch = {k: v.to(accelerator.device) for k, v in batch.items()}
             with accelerator.autocast():
@@ -521,8 +584,8 @@ def _save_final(
 def train(cfg: TrainConfig, resume_from: str = "") -> None:
     if cfg.batch_size <= 0 or cfg.grad_accum <= 0:
         raise ValueError("--batch-size and --grad-accum must be positive")
-    if cfg.steps_per_epoch < 0:
-        raise ValueError("--steps-per-epoch must be >= 0")
+    if cfg.max_steps < 0:
+        raise ValueError("--max-steps must be >= 0")
     if cfg.log_every <= 0 or cfg.eval_every <= 0 or cfg.save_every <= 0:
         raise ValueError(
             "--log-every, --eval-every and --save-every must be positive "
@@ -589,8 +652,6 @@ def train(cfg: TrainConfig, resume_from: str = "") -> None:
 
     if cfg.gradient_checkpointing:
         model.gradient_checkpointing_enable()
-    # T5 does not use its cache during teacher-forced training, and keeping it
-    # enabled needlessly increases memory.
     model.config.use_cache = False
 
     total, trainable = count_parameters(model)
@@ -599,22 +660,6 @@ def train(cfg: TrainConfig, resume_from: str = "") -> None:
     )
     accelerator.print(f"Vocab size: {vocab.size}")
     accelerator.print(f"Device: {accelerator.device} | bf16: {use_bf16}")
-
-    train_ds = ChunkIterableDataset(
-        cfg.data_dir,
-        "train",
-        vocab,
-        max_tracks=cfg.max_tracks,
-        max_len=cfg.max_len,
-        shuffle=True,
-        seed=cfg.seed,
-    )
-    train_dl = DataLoader(
-        train_ds,
-        batch_size=cfg.batch_size,
-        collate_fn=lambda b: collate_fn(b, pad_id=pad_id, max_len=cfg.max_len),
-        num_workers=0,
-    )
 
     if cfg.lr is None:
         optimizer = Adafactor(
@@ -639,10 +684,7 @@ def train(cfg: TrainConfig, resume_from: str = "") -> None:
             warmup_init=False,
             weight_decay=cfg.weight_decay,
         )
-        micro_per_epoch = cfg.steps_per_epoch if cfg.steps_per_epoch else 2000
-        num_training_steps = max(
-            1, (micro_per_epoch * max(1, cfg.max_epochs)) // max(1, cfg.grad_accum)
-        )
+        num_training_steps = cfg.max_steps if cfg.max_steps else 30000
         num_warmup_steps = max(1, int(num_training_steps * cfg.warmup_ratio))
         scheduler = get_cosine_schedule_with_warmup(
             optimizer,
@@ -655,10 +697,10 @@ def train(cfg: TrainConfig, resume_from: str = "") -> None:
         )
 
     if scheduler is None:
-        model, optimizer, train_dl = accelerator.prepare(model, optimizer, train_dl)
+        model, optimizer = accelerator.prepare(model, optimizer)
     else:
-        model, optimizer, train_dl, scheduler = accelerator.prepare(
-            model, optimizer, train_dl, scheduler
+        model, optimizer, scheduler = accelerator.prepare(
+            model, optimizer, scheduler
         )
 
     output_dir = Path(cfg.output_dir)
@@ -703,21 +745,28 @@ def train(cfg: TrainConfig, resume_from: str = "") -> None:
                 "resuming weights/vocab only"
             )
 
-    if start_epoch:
-        # Match the resumed epoch's shuffle stream instead of replaying epoch 0.
-        train_ds._epoch = start_epoch
+    # Build the infinite training iterator.
+    batch_iter = _infinite_chunk_iterator(
+        cfg.data_dir,
+        "train",
+        vocab,
+        max_tracks=cfg.max_tracks,
+        max_len=cfg.max_len,
+        shuffle=True,
+        seed=cfg.seed + start_epoch,
+        shuffle_buffer=64,
+        batch_size=cfg.batch_size,
+    )
 
     accelerator.print("Starting training...")
     epoch = start_epoch
-    for epoch in range(start_epoch, cfg.max_epochs):
+    while True:
         model.train()
         epoch_loss = 0.0
         epoch_batches = 0
 
-        for batch_idx, batch in enumerate(train_dl):
-            if cfg.steps_per_epoch and batch_idx >= cfg.steps_per_epoch:
-                break
-
+        for _ in range(cfg.batch_size * cfg.grad_accum):  # one optimizer step
+            batch = next(batch_iter)
             with accelerator.accumulate(model):
                 outputs = model(
                     input_ids=batch["input_ids"],
@@ -813,7 +862,7 @@ def train(cfg: TrainConfig, resume_from: str = "") -> None:
                     and update_step - last_metrics_step >= cfg.metrics_every
                 ):
                     last_metrics_step = update_step
-                    val_counts, raw_counts = evaluate(
+                    val_counts, raw_counts, val_rhythm, raw_rhythm = evaluate(
                         model,
                         cfg.data_dir,
                         "valid",
@@ -825,10 +874,13 @@ def train(cfg: TrainConfig, resume_from: str = "") -> None:
                         postproc_mode=cfg.postproc_mode,
                         shuffle=True,
                         seed=cfg.seed + 1,
+                        context_mode="pred",
                     )
                     accelerator.print(f"--- Tab metrics @ step {update_step} ---")
                     print_metrics(raw_counts, "Raw ")
                     print_metrics(val_counts, "Post ")
+                    accelerator.print(f"--- Rhythm metrics (raw) @ step {update_step} ---")
+                    print_rhythm_metrics(raw_rhythm, "Raw ")
 
             if update_step % cfg.save_every == 0:
                 _save_checkpoint(
@@ -846,31 +898,56 @@ def train(cfg: TrainConfig, resume_from: str = "") -> None:
                     },
                 )
 
+            # Stop conditions
+            if cfg.max_steps and update_step >= cfg.max_steps:
+                accelerator.print(f"Reached max-steps={cfg.max_steps}, stopping.")
+                _save_final(
+                    model,
+                    vocab,
+                    accelerator,
+                    output_dir,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    state={
+                        "update_step": update_step,
+                        "best_val_loss": best_val_loss,
+                        "patience_counter": patience_counter,
+                        "epoch": epoch,
+                    },
+                )
+                return
+
         avg_loss = epoch_loss / max(1, epoch_batches)
         accelerator.print(f"Epoch {epoch} | Avg Loss: {avg_loss:.4f}")
+        epoch += 1
 
-    _save_final(
-        model,
-        vocab,
-        accelerator,
-        output_dir,
-        optimizer=optimizer,
-        scheduler=scheduler,
-        state={
-            "update_step": update_step,
-            "best_val_loss": best_val_loss,
-            "patience_counter": patience_counter,
-            "epoch": epoch,
-        },
-    )
+        if cfg.max_epochs and epoch >= cfg.max_epochs:
+            _save_final(
+                model,
+                vocab,
+                accelerator,
+                output_dir,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                state={
+                    "update_step": update_step,
+                    "best_val_loss": best_val_loss,
+                    "patience_counter": patience_counter,
+                    "epoch": epoch,
+                },
+            )
+            return
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-dir", default="data/processed_guitarset")
     ap.add_argument("--vocab-path", default="vocab/guitarset.json")
-    ap.add_argument("--output-dir", default="runs/exp1")
-    ap.add_argument("--max-epochs", type=int, default=300)
+    ap.add_argument("--output-dir", default="runs/pretrain_t5_guitarset")
+    ap.add_argument("--max-epochs", type=int, default=0,
+                    help="Max epochs; 0 = unlimited (stop via --max-steps)")
+    ap.add_argument("--max-steps", type=int, default=30000,
+                    help="Max optimizer steps; 0 = unlimited (stop via --max-epochs)")
     ap.add_argument("--lr", type=float, default=None,
                     help="Fixed learning rate; omit for Adafactor self-adaptive")
     ap.add_argument("--batch-size", type=int, default=8)
@@ -881,11 +958,12 @@ def main() -> None:
                     action="store_true", help="Trade speed for memory")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--log-every", type=int, default=100)
-    ap.add_argument("--eval-every", type=int, default=250,
+    ap.add_argument("--eval-every", type=int, default=500,
                     help="Validation-loss cadence in optimizer steps")
-    ap.add_argument("--eval-loss-batches", type=int, default=50)
+    ap.add_argument("--eval-loss-batches", type=int, default=0,
+                    help="Validation chunks; 0 = all")
     ap.add_argument("--eval-batches", type=int, default=10)
-    ap.add_argument("--metrics-every", type=int, default=1250,
+    ap.add_argument("--metrics-every", type=int, default=2500,
                     help="Whole-track tab metrics cadence in optimizer steps; 0 disables")
     ap.add_argument("--eval-beam", type=int, default=1)
     ap.add_argument("--postproc", choices=["none", "overlap", "full"], default="full")
@@ -898,8 +976,6 @@ def main() -> None:
     ap.add_argument("--patience", type=int, default=10)
     ap.add_argument("--min-delta", type=float, default=1e-4)
     ap.add_argument("--max-tracks", type=int, default=0)
-    ap.add_argument("--steps-per-epoch", type=int, default=2000,
-                    help="Micro-batches per epoch; 0 iterates the whole split")
     ap.add_argument("--max-len", type=int, default=MAX_TOKENS)
     ap.add_argument("--resume-from", type=str, default="",
                     help="Checkpoint directory: restores weights, vocabulary, "
@@ -911,6 +987,7 @@ def main() -> None:
         vocab_path=args.vocab_path,
         output_dir=args.output_dir,
         max_epochs=args.max_epochs,
+        max_steps=args.max_steps,
         lr=args.lr,
         grad_accum=args.grad_accum,
         bf16=args.bf16,
@@ -931,7 +1008,6 @@ def main() -> None:
         min_delta=args.min_delta,
         max_tracks=args.max_tracks,
         batch_size=args.batch_size,
-        steps_per_epoch=args.steps_per_epoch,
         max_len=args.max_len,
     )
     train(cfg, resume_from=args.resume_from)

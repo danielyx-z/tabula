@@ -37,9 +37,7 @@ exec "$PYTHON" -m model.train \
     --data-dir data/processed_guitarset \
     --vocab-path vocab/guitarset.json \
     --output-dir "$OUTPUT_DIR" \
-    --max-epochs 1 \
-    --max-tracks 2 \
-    --steps-per-epoch 2 \
+    --max-steps 2 \
     --batch-size 2 \
     --grad-accum 1 \
     --bf16 \

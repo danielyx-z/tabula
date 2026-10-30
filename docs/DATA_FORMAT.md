@@ -85,7 +85,7 @@ data/processed_guitarset/
   "track": 0,
   "dataset": "guitarset",
   "tuning": [40, 45, 50, 55, 59, 64],
-  "tuning_name": "E5 B4 G4 D4 A3 E3",
+  "tuning_name": "E4 B3 G3 D3 A2 E2",
   "frets": 24,
   "instrument": 25,
   "tempo": 129.0,

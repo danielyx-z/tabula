@@ -47,10 +47,12 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from basic_pitch.inference import predict  # noqa: E402
 from model.chunk import ChunkConfig, make_inference_chunks  # noqa: E402
 from model.decode import constrained_beam_search, greedy_decode  # noqa: E402
-from tablature.metrics import decode_predictions  # noqa: E402
+from tablature.metrics import decode_predictions, compute_rhythm_metrics  # noqa: E402
 from tablature.postproc import postprocess  # noqa: E402
 from tablature.render import render_tab  # noqa: E402
 from tablature.tokenizer import DEFAULT_VOCAB, Vocab, PAD_TOKEN, EOS_TOKEN  # noqa: E402
+from core.quantise import quantise_notes  # noqa: E402
+from core.schema import Note  # noqa: E402
 
 # Import audio/MIDI functions lazily to avoid circular imports
 from audio.midi import write_smf  # noqa: E402
@@ -175,8 +177,10 @@ def run_t5_inference(
     postproc_mode: str = "full",
 ):
     """Run Tabula T5 on note dicts and return post-processed tab notes."""
-    from core.schema import Note
     from tablature.tokenizer import notes_to_events
+
+    # Quantise notes to training distribution (20-tick grid, 40-tick chord window).
+    notes = quantise_notes(notes)
 
     # Convert dicts to Note objects
     note_objs = [
@@ -197,6 +201,7 @@ def run_t5_inference(
     eos_id = vocab[EOS_TOKEN]
 
     all_pred_tabs: list[tuple[int, int]] = []
+    all_gen_tokens: list[str] = []
 
     for chunk_idx, chunk in enumerate(chunks):
         enc = torch.tensor([chunk.enc_tokens], dtype=torch.long, device=device)
@@ -231,13 +236,26 @@ def run_t5_inference(
         if eos_id in gen_ids:
             gen_ids = gen_ids[:gen_ids.index(eos_id) + 1]
 
+        gen_tokens = vocab.decode(gen_ids)
         pred_tabs = decode_predictions(gen_ids, vocab)
         all_pred_tabs.extend(pred_tabs)
+        all_gen_tokens.extend(gen_tokens)
         print(f"  Chunk {chunk_idx + 1}/{len(chunks)}: {len(pred_tabs)} TAB events")
 
     # Post-process against the full note list
     proc_notes = postprocess(all_pred_tabs, note_objs, mode=postproc_mode)
-    return proc_notes
+
+    # Rhythm metrics on raw predictions
+    gt_notes = [Note(t=n.t, dur=n.dur, pitch=n.pitch, s=n.s, f=n.f) for n in note_objs]
+    rhythm = compute_rhythm_metrics(all_pred_tabs, all_gen_tokens, gt_notes, vocab)
+    print("\nRhythm metrics (raw):")
+    print(f"  Matched/Missing/Extra: {rhythm.matched}/{rhythm.missing}/{rhythm.extra}")
+    print(f"  Onset Hit @20/60/120: {rhythm.onset_hit_rate(20):.4f}/{rhythm.onset_hit_rate(60):.4f}/{rhythm.onset_hit_rate(120):.4f}")
+    print(f"  Median Onset Error:   {rhythm.median_onset_error():.1f} ticks")
+    print(f"  Median IOI Error:     {rhythm.median_ioi_error():.1f} ticks")
+    print(f"  Median Dur Error:     {rhythm.median_dur_error():.1f} ticks")
+
+    return proc_notes, rhythm
 
 
 def main() -> None:
@@ -275,7 +293,7 @@ def main() -> None:
             raise SystemExit("No notes detected in audio")
 
         # Step 2: MIDI → tab (Tabula T5)
-        proc_notes = run_t5_inference(
+        proc_notes, rhythm = run_t5_inference(
             model, vocab, notes, device,
             beam=args.beam, max_len=args.max_len, postproc_mode=args.postproc,
         )

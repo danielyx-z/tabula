@@ -1,4 +1,4 @@
-"""Metrics: pitch accuracy, tab accuracy, difficulty, error decomposition."""
+"""Metrics: pitch accuracy, tab accuracy, difficulty, error decomposition, rhythm."""
 
 from __future__ import annotations
 
@@ -21,8 +21,7 @@ class EvalCounts:
     tab_correct: int = 0
     valid_predictions: int = 0  # predicted (s,f) is on fretboard
 
-    # Error decomposition
-    timing_errors: int = 0
+    # Error decomposition (removed dead timing_errors)
     pitch_errors: int = 0
     position_errors: int = 0
 
@@ -60,6 +59,76 @@ class EvalCounts:
         return self.difficulty_sum / self.difficulty_n if self.difficulty_n else 0.0
 
 
+@dataclass
+class RhythmCounts:
+    """Rhythm metrics computed from decoded timed notes."""
+    matched: int = 0
+    missing: int = 0
+    extra: int = 0
+    onset_errors: list[int] = None  # list of |Δt| in ticks for matched notes
+    ioi_errors: list[int] = None    # list of |ΔIOI| in ticks
+    dur_errors: list[int] = None    # list of |Δdur| in ticks
+
+    def __post_init__(self):
+        if self.onset_errors is None:
+            self.onset_errors = []
+        if self.ioi_errors is None:
+            self.ioi_errors = []
+        if self.dur_errors is None:
+            self.dur_errors = []
+
+    def onset_hit_rate(self, tolerance: int) -> float:
+        if not self.onset_errors:
+            return 0.0
+        return sum(1 for e in self.onset_errors if e <= tolerance) / len(self.onset_errors)
+
+    def median_onset_error(self) -> float:
+        if not self.onset_errors:
+            return 0.0
+        return float(np.median(self.onset_errors))
+
+    def mean_onset_error(self) -> float:
+        if not self.onset_errors:
+            return 0.0
+        return float(np.mean(self.onset_errors))
+
+    def median_ioi_error(self) -> float:
+        if not self.ioi_errors:
+            return 0.0
+        return float(np.median(self.ioi_errors))
+
+    def mean_ioi_error(self) -> float:
+        if not self.ioi_errors:
+            return 0.0
+        return float(np.mean(self.ioi_errors))
+
+    def median_dur_error(self) -> float:
+        if not self.dur_errors:
+            return 0.0
+        return float(np.median(self.dur_errors))
+
+    def mean_dur_error(self) -> float:
+        if not self.dur_errors:
+            return 0.0
+        return float(np.mean(self.dur_errors))
+
+    def to_dict(self) -> dict:
+        return {
+            "matched": self.matched,
+            "missing": self.missing,
+            "extra": self.extra,
+            "onset_hit_rate_20": self.onset_hit_rate(20),
+            "onset_hit_rate_60": self.onset_hit_rate(60),
+            "onset_hit_rate_120": self.onset_hit_rate(120),
+            "median_onset_error": self.median_onset_error(),
+            "mean_onset_error": self.mean_onset_error(),
+            "median_ioi_error": self.median_ioi_error(),
+            "mean_ioi_error": self.mean_ioi_error(),
+            "median_dur_error": self.median_dur_error(),
+            "mean_dur_error": self.mean_dur_error(),
+        }
+
+
 def decode_predictions(dec_ids: list[int], vocab: Vocab) -> list[tuple[int, int]]:
     """Decode decoder token IDs to (string, fret) pairs, ignoring non-TAB tokens."""
     tokens = vocab.decode(dec_ids)
@@ -76,7 +145,7 @@ def align_predictions(pred_tabs: list[tuple[int, int]],
                       is_boundary: list[bool] | None = None) -> EvalCounts:
     """
     Align predicted tabs to ground truth notes and compute metrics.
-    Assumes pred_tabs and gt_notes are in the same order (onset, pitch).
+    Assumes pred_tabs and gt_notes are in the same order (onset, string, pitch).
     """
     counts = EvalCounts()
     n = min(len(pred_tabs), len(gt_notes))
@@ -105,8 +174,6 @@ def align_predictions(pred_tabs: list[tuple[int, int]],
                 counts.pitch_errors += 1
             elif pred_s != gt.s or pred_f != gt.f:
                 counts.position_errors += 1
-            else:
-                counts.timing_errors += 1  # shouldn't happen if aligned
 
         # Boundary vs interior
         if is_boundary is not None and i < len(is_boundary):
@@ -120,6 +187,101 @@ def align_predictions(pred_tabs: list[tuple[int, int]],
                     counts.interior_correct += 1
 
     return counts
+
+
+def compute_rhythm_metrics(
+    pred_tabs: list[tuple[int, int]],
+    pred_tokens: list[str],
+    gt_notes: list[Note],
+    vocab: Vocab,
+    tolerance_ticks: int = 120,
+) -> RhythmCounts:
+    """
+    Compute rhythm metrics by decoding the model's TIME_SHIFT tokens to onsets
+    and comparing to ground-truth onsets.
+
+    Uses greedy nearest-onset matching within tolerance_ticks (default 120 = 2 grids).
+    """
+    from tablature.stream import decode_tab_stream
+
+    # Decode the full token stream (including TIME_SHIFT) to timed notes.
+    decoded = decode_tab_stream(pred_tokens)
+
+    # Build predicted timed notes from decoded stream.
+    pred_notes = []
+    for d in decoded:
+        s, f = d["s"], d["f"]
+        pitch = pitch_of(s, f, STANDARD)
+        pred_notes.append(Note(t=d["t"], dur=d["dur"], pitch=pitch, s=s, f=f))
+
+    # Sort both by onset, then string.
+    pred_notes.sort(key=lambda n: (n.t, n.s))
+    gt_notes = sorted(gt_notes, key=lambda n: (n.t, n.s))
+
+    # Greedy nearest-onset matching.
+    used_pred = set()
+    used_gt = set()
+    onset_errors = []
+    ioi_errors = []
+    dur_errors = []
+
+    for gi, gt in enumerate(gt_notes):
+        best_pi = None
+        best_dt = tolerance_ticks + 1
+        for pi, pn in enumerate(pred_notes):
+            if pi in used_pred:
+                continue
+            dt = abs(pn.t - gt.t)
+            if dt < best_dt:
+                best_dt = dt
+                best_pi = pi
+        if best_pi is not None and best_dt <= tolerance_ticks:
+            used_pred.add(best_pi)
+            used_gt.add(gi)
+            onset_errors.append(best_dt)
+            pn = pred_notes[best_pi]
+            dur_errors.append(abs(pn.dur - gt.dur))
+
+            # IOI error: compare interval to previous matched note.
+            prev_matched_gt = None
+            for gj in range(gi - 1, -1, -1):
+                if gj in used_gt:
+                    prev_matched_gt = gj
+                    break
+            prev_matched_pred = None
+            for pj in range(best_pi - 1, -1, -1):
+                if pj in used_pred:
+                    prev_matched_pred = pj
+                    break
+            if prev_matched_gt is not None and prev_matched_pred is not None:
+                gt_ioi = gt.t - gt_notes[prev_matched_gt].t
+                pred_ioi = pred_notes[best_pi].t - pred_notes[prev_matched_pred].t
+                ioi_errors.append(abs(pred_ioi - gt_ioi))
+
+    matched = len(used_gt)
+    missing = len(gt_notes) - matched
+    extra = len(pred_notes) - matched
+
+    return RhythmCounts(
+        matched=matched,
+        missing=missing,
+        extra=extra,
+        onset_errors=onset_errors,
+        ioi_errors=ioi_errors,
+        dur_errors=dur_errors,
+    )
+
+
+def aggregate_rhythm(all_counts: list[RhythmCounts]) -> RhythmCounts:
+    total = RhythmCounts()
+    for c in all_counts:
+        total.matched += c.matched
+        total.missing += c.missing
+        total.extra += c.extra
+        total.onset_errors.extend(c.onset_errors)
+        total.ioi_errors.extend(c.ioi_errors)
+        total.dur_errors.extend(c.dur_errors)
+    return total
 
 
 def difficulty_terms(notes, alpha: float = 0.25) -> list[float]:
@@ -142,8 +304,6 @@ def difficulty_terms(notes, alpha: float = 0.25) -> list[float]:
 
         locality = alpha * (p.f + q.f)
 
-        # The paper writes Δstring = q - p.  Using the absolute value keeps the
-        # metric symmetric and agrees with the stated 0..18.5 range.
         delta_string = abs(q.s - p.s)
         vertical_stretch = 0.25 if delta_string <= 1 else 0.50
 
@@ -166,7 +326,6 @@ def check_playability(pred_tabs: list[tuple[int, int]],
     chord_span_gt_5 = 0
     simult_gt_4 = 0
 
-    # Group by onset
     for _, group in groupby(zip(pred_tabs, gt_notes), key=lambda x: x[1].t):
         chord = list(group)
         if len(chord) > 4:
@@ -178,7 +337,6 @@ def check_playability(pred_tabs: list[tuple[int, int]],
         if max(frets) - min(frets) > 5:
             chord_span_gt_5 += 1
 
-        # Check same-string overlap (simplified: same string in chord)
         if len(set(strings)) < len(strings):
             same_string_overlap += 1
 
@@ -194,7 +352,6 @@ def aggregate_counts(all_counts: list[EvalCounts]) -> EvalCounts:
             pitch_correct=total.pitch_correct + c.pitch_correct,
             tab_correct=total.tab_correct + c.tab_correct,
             valid_predictions=total.valid_predictions + c.valid_predictions,
-            timing_errors=total.timing_errors + c.timing_errors,
             pitch_errors=total.pitch_errors + c.pitch_errors,
             position_errors=total.position_errors + c.position_errors,
             boundary_total=total.boundary_total + c.boundary_total,
@@ -218,6 +375,21 @@ def print_metrics(counts: EvalCounts, prefix: str = "") -> None:
     print(f"{prefix}Difficulty:       {counts.difficulty():.4f}")
     print(f"{prefix}Boundary Acc:     {counts.boundary_accuracy():.4f} ({counts.boundary_correct}/{counts.boundary_total})")
     print(f"{prefix}Interior Acc:     {counts.interior_accuracy():.4f} ({counts.interior_correct}/{counts.interior_total})")
-    print(f"{prefix}Error Decomp:     timing={counts.timing_errors} pitch={counts.pitch_errors} position={counts.position_errors}")
+    print(f"{prefix}Error Decomp:     pitch={counts.pitch_errors} position={counts.position_errors}")
     print(f"{prefix}Playability:      overlap={counts.same_string_overlap} span>5={counts.chord_span_gt_5} simult>4={counts.simult_gt_4}")
     print(f"{prefix}Total Notes:      {counts.total_notes}")
+
+
+def print_rhythm_metrics(counts: RhythmCounts, prefix: str = "") -> None:
+    """Pretty print rhythm metrics."""
+    if counts.matched == 0:
+        print(f"{prefix}Rhythm: no matched notes")
+        return
+    print(f"{prefix}Matched/Missing/Extra: {counts.matched}/{counts.missing}/{counts.extra}")
+    print(f"{prefix}Onset Hit @20/60/120: {counts.onset_hit_rate(20):.4f}/{counts.onset_hit_rate(60):.4f}/{counts.onset_hit_rate(120):.4f}")
+    print(f"{prefix}Median Onset Error:   {counts.median_onset_error():.1f} ticks")
+    print(f"{prefix}Mean Onset Error:     {counts.mean_onset_error():.1f} ticks")
+    print(f"{prefix}Median IOI Error:     {counts.median_ioi_error():.1f} ticks")
+    print(f"{prefix}Mean IOI Error:       {counts.mean_ioi_error():.1f} ticks")
+    print(f"{prefix}Median Dur Error:     {counts.median_dur_error():.1f} ticks")
+    print(f"{prefix}Mean Dur Error:       {counts.mean_dur_error():.1f} ticks")

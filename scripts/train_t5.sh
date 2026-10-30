@@ -15,7 +15,7 @@
 #     sbatch scripts/train_t5.sh
 #
 # Override any of these at submit time, e.g.:
-#     BATCH_SIZE=16 GRAD_ACCUM=4 EVAL_EVERY=500 sbatch scripts/train_t5.sh
+#     BATCH_SIZE=16 GRAD_ACCUM=4 MAX_STEPS=75000 sbatch scripts/train_t5.sh
 #
 # Resource notes:
 #   * shard:rtx_3090:8192 requests 8 GiB of a shared RTX 3090. The model is
@@ -26,6 +26,9 @@
 #     you need a shorter slot.
 #   * Checkpoint under runs/ so a requeued job can resume manually with
 #     --resume-from runs/pretrain_t5_guitarset/best.
+#
+# Paper-scale: MAX_STEPS=75000 (approx 75k optimizer updates, ~13h on RTX 3090).
+# Default:     MAX_STEPS=30000 (approx 5h on RTX 3070, ~2.5h on RTX 3090).
 
 set -euo pipefail
 
@@ -69,12 +72,11 @@ exec "$PYTHON" -m model.train \
     --batch-size "${BATCH_SIZE:-8}" \
     --grad-accum "${GRAD_ACCUM:-8}" \
     --bf16 \
-    --steps-per-epoch "${STEPS_PER_EPOCH:-2000}" \
-    --eval-every "${EVAL_EVERY:-250}" \
-    --eval-loss-batches "${EVAL_LOSS_BATCHES:-50}" \
+    --max-steps "${MAX_STEPS:-30000}" \
+    --eval-every "${EVAL_EVERY:-500}" \
+    --eval-loss-batches "${EVAL_LOSS_BATCHES:-0}" \
     --eval-batches "${EVAL_BATCHES:-10}" \
-    --metrics-every "${METRICS_EVERY:-1250}" \
+    --metrics-every "${METRICS_EVERY:-2500}" \
     --save-every "${SAVE_EVERY:-2500}" \
-    --max-epochs "${MAX_EPOCHS:-300}" \
     --postproc full \
     --resume-from "${RESUME_FROM:-}"

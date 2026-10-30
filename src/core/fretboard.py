@@ -5,6 +5,8 @@ The single place where pitch <-> (string, fret) conversions happen.
 Convention (matches the paper / Hsu et al. and the corpus conversion in
 ``parse.alphatex``): string 1 is the THICKEST (lowest-pitched) string.
 Standard tuning is therefore (40, 45, 50, 55, 59, 64) for strings 1..6.
+
+Scientific pitch notation: MIDI 60 = C4 (middle C).
 """
 
 from __future__ import annotations
@@ -47,11 +49,39 @@ def parse_tuning(text: str) -> tuple[int, ...]:
 
 
 def format_tuning(tuning: tuple[int, ...]) -> str:
-    """Render a tuning back to alphaTex order (high string first)."""
+    """Render a tuning back to alphaTex order (high string first).
+
+    Uses scientific pitch notation: MIDI 60 = C4.
+    Standard tuning renders as: ``E4 B3 G3 D3 A2 E2``.
+    """
     return " ".join(pitch_name(p) for p in reversed(tuning))
 
 
+def format_tuning_low_to_high(tuning: tuple[int, ...]) -> str:
+    """Render a tuning low string first (string 1 to 6).
+
+    Uses scientific pitch notation: MIDI 60 = C4.
+    Standard tuning renders as: ``E2 A2 D3 G3 B3 E4``.
+    """
+    return " ".join(pitch_name(p) for p in tuning)
+
+
+def format_tuning_alphatex(tuning: tuple[int, ...]) -> str:
+    """Render a tuning back to alphaTex order (high string first).
+
+    Uses alphaTex pitch notation: MIDI 60 = C5 (original corpus convention).
+    Standard tuning renders as: ``E5 B4 G4 D4 A3 E3``.
+    """
+    return " ".join(pitch_name_alphatex(p) for p in reversed(tuning))
+
+
 def pitch_name(pitch: int) -> str:
+    """Scientific pitch notation: MIDI 60 = C4."""
+    return f"{NAME_BY_PC[pitch % 12]}{pitch // 12 - 1}"
+
+
+def pitch_name_alphatex(pitch: int) -> str:
+    """AlphaTex pitch notation: MIDI 60 = C5 (original corpus convention)."""
     return f"{NAME_BY_PC[pitch % 12]}{pitch // 12}"
 
 

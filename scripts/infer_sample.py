@@ -29,8 +29,10 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from model.chunk import ChunkConfig, make_inference_chunks  # noqa: E402
 from corpus.dataset import iter_tracks  # noqa: E402
 from core.fretboard import STANDARD, pitch_of  # noqa: E402
+from core.quantise import quantise_notes  # noqa: E402
 from tablature.metrics import (  # noqa: E402
     align_predictions,
+    compute_rhythm_metrics,
     decode_predictions,
 )
 from tablature.postproc import DecodedNote, postprocess  # noqa: E402
@@ -72,7 +74,7 @@ def load_track(data_dir: str, split: str, track_id: int | None, ordinal: int):
 
 def token_rows(ids: list[int], vocab: Vocab) -> str:
     """Compact, aligned token dump: ``id:token`` in up to four columns."""
-    cells = [f"{i:>3}:{vocab.id_to_token.get(i, '<unk>')}" for i in ids]
+    cells = [f"{i:>3}:{vocab.id_to_token.get(i, '那些')}" for i in ids]
     width = max((len(c) for c in cells), default=1) + 2
     per_row = max(1, min(4, 118 // width))
     lines = []
@@ -123,7 +125,10 @@ def main() -> None:
 
     vocab = Vocab.load(args.vocab)
     meta, notes = load_track(args.data_dir, args.split, args.track_id, args.ordinal)
-    notes = sorted(notes, key=lambda n: (n.t, n.pitch, n.s, n.f))
+    # Sort GT to match the chunker's sort order: (t, s, pitch, f)
+    notes = sorted(notes, key=lambda n: (n.t, n.s, n.pitch, n.f))
+    # Quantise to training distribution
+    notes = quantise_notes(notes)
     chunks = make_inference_chunks(
         notes, vocab, meta.get("id", args.track_id), ChunkConfig(max_tokens=args.max_len)
     )
@@ -166,12 +171,14 @@ def main() -> None:
             use_cache=True,
         )
     gen_ids = strip_eos(generated[0, prompt.size(1) :].tolist(), eos_id)
+    gen_tokens = vocab.decode(gen_ids)
     pred_tabs = decode_predictions(gen_ids, vocab)
     post_notes = postprocess(pred_tabs, gt, mode="full", tuning=tuning)
     post_tabs = [(n.s, n.f) for n in post_notes]
 
     raw_counts = align_predictions(pred_tabs, gt)
     post_counts = align_predictions(post_tabs, gt)
+    rhythm = compute_rhythm_metrics(pred_tabs, gen_tokens, gt, vocab)
 
     # Target answer tokens, without the prompt/EOS prefix used for training.
     target_strings = notes_to_target(gt, base_t=int(chunk.meta["base_t"]))
@@ -265,6 +272,13 @@ def main() -> None:
           f"post valid: {post_counts.validity():.4f}")
     print(f"Raw exact: {sum(1 for i, t in enumerate(pred_tabs) if i < len(gt) and t == (gt[i].s, gt[i].f))}/{len(gt)}   "
           f"Post exact: {sum(1 for i, t in enumerate(post_tabs) if t == (gt[i].s, gt[i].f))}/{len(gt)}")
+    print()
+    print("Rhythm metrics (raw):")
+    print(f"  Matched/Missing/Extra: {rhythm.matched}/{rhythm.missing}/{rhythm.extra}")
+    print(f"  Onset Hit @20/60/120: {rhythm.onset_hit_rate(20):.4f}/{rhythm.onset_hit_rate(60):.4f}/{rhythm.onset_hit_rate(120):.4f}")
+    print(f"  Median Onset Error:   {rhythm.median_onset_error():.1f} ticks")
+    print(f"  Median IOI Error:     {rhythm.median_ioi_error():.1f} ticks")
+    print(f"  Median Dur Error:     {rhythm.median_dur_error():.1f} ticks")
 
 
 if __name__ == "__main__":

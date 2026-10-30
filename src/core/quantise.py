@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from core.schema import Note
+
 PPQ = 960
 GRID = 20  # 1/48 note
 MIN_DUR = GRID  # minimum duration
@@ -112,3 +114,60 @@ def shifts_roundtrip_error(original_shifts: list[int]) -> tuple[int, int]:
         if sum(decompose_shift(shift)) == quantise_tick(shift):
             exact += 1
     return exact, len(original_shifts)
+
+
+def quantise_notes(
+    notes: list[Note],
+    grid: int = GRID,
+    chord_window: int = 40,
+) -> list[Note]:
+    """
+    Quantise note onsets and durations to the grid, and collapse strums within
+    ``chord_window`` ticks into a single onset group (matching training preprocessing).
+
+    Returns new Note objects; does not modify input.
+    """
+    if not notes:
+        return []
+
+    # Quantise onsets and durations.
+    quantised = []
+    for n in notes:
+        t = quantise_tick(n.t, grid)
+        dur = quantise_dur(n.dur, grid)
+        quantised.append(Note(t=t, dur=dur, pitch=n.pitch, s=n.s, f=n.f))
+
+    # Sort by onset, then string (matching preprocess_guitarset).
+    quantised.sort(key=lambda n: (n.t, n.s, n.pitch, n.f))
+
+    # Group onsets within chord_window ticks: collapse to the earliest tick.
+    if chord_window > 0:
+        i = 0
+        while i < len(quantised):
+            j = i + 1
+            while j < len(quantised) and quantised[j].t - quantised[i].t <= chord_window:
+                j += 1
+            if j > i + 1:
+                # Collapse onsets i..j-1 to the first onset.
+                new_t = quantised[i].t
+                for k in range(i, j):
+                    quantised[k] = Note(
+                        t=new_t,
+                        dur=quantised[k].dur,
+                        pitch=quantised[k].pitch,
+                        s=quantised[k].s,
+                        f=quantised[k].f,
+                    )
+            i = j
+
+    # Deduplicate same string at same tick (keep first).
+    seen: set[tuple[int, int]] = set()
+    unique = []
+    for n in quantised:
+        key = (n.s, n.t)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(n)
+
+    return unique

@@ -8,9 +8,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from core.fretboard import (  # noqa: E402
+from core.fretboard import (
+    format_tuning_low_to_high,  # noqa: E402
     STANDARD,
     format_tuning,
+    format_tuning_alphatex,
     parse_tuning,
     pitch_name,
     pitch_of,
@@ -32,8 +34,8 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 def test_tuning() -> None:
     check("tuning parses standard", parse_tuning("E5 B4 G4 D4 A3 E3") == STANDARD,
           str(parse_tuning("E5 B4 G4 D4 A3 E3")))
-    check("tuning roundtrips", parse_tuning(format_tuning(STANDARD)) == STANDARD,
-          format_tuning(STANDARD))
+    check("tuning roundtrips (alphatex)", parse_tuning(format_tuning_alphatex(STANDARD)) == STANDARD,
+          format_tuning_alphatex(STANDARD))
     check("high string is s=6", pitch_of(6, 0, STANDARD) == 64)
     check("low string is s=1", pitch_of(1, 0, STANDARD) == 40)
     check("E at 12th fret = 76", pitch_of(6, 12, STANDARD) == 76)
@@ -45,7 +47,10 @@ def test_positions() -> None:
     check("E4 has six homes", len(positions(64, STANDARD, 24)) == 6,
           str(positions(64, STANDARD, 24)))
     check("out of range is unplayable", positions(30, STANDARD, 24) == [])
-    check("pitch names match corpus", pitch_name(64) == "E5", pitch_name(40) == "E3")
+    # pitch_name now uses scientific pitch: MIDI 60 = C4
+    check("pitch names match scientific", pitch_name(64) == "E4", pitch_name(40) == "E2")
+    check("format_tuning scientific", format_tuning(STANDARD) == "E4 B3 G3 D3 A2 E2")
+    check("format_tuning_low_to_high", format_tuning_low_to_high(STANDARD) == "E2 A2 D3 G3 B3 E4")
 
 
 def test_body() -> None:

@@ -13,7 +13,7 @@ Writes, all derived independently:
     final.mid    raw after pitch-preserving playability correction
     *.wav        synthesis of each of the above
     final_tab.txt ASCII tab of the corrected fingering
-    report.json  note counts and alignment metrics
+    report.json  note counts, alignment metrics, and rhythm metrics
 
 MIDI cannot store a fingering, so each output is written as one track per
 string.  That keeps the string/fret assignment in the file and lets raw and
@@ -41,7 +41,8 @@ from audio.wav import write_wav  # noqa: E402
 from model.chunk import ChunkConfig, make_inference_chunks  # noqa: E402
 from model.decode import constrained_beam_search  # noqa: E402
 from core.fretboard import STANDARD  # noqa: E402
-from tablature.metrics import compute_difficulty  # noqa: E402
+from core.quantise import quantise_notes  # noqa: E402
+from tablature.metrics import compute_difficulty, compute_rhythm_metrics  # noqa: E402
 from corpus.parse.midi import parse_midi  # noqa: E402
 from tablature.playability import (  # noqa: E402
     cap_simultaneous,
@@ -89,9 +90,12 @@ def write_tab_midi(path: Path, notes: list[dict], bpm: float = 120.0, ppq: int =
 
 
 def generate(model, vocab, notes, beam: int, pitch_constraint: bool, max_len: int, device: str) -> list[dict]:
+    # Quantise input notes to training distribution (20-tick grid, 40-tick chord window).
+    notes = quantise_notes(notes)
     chunks = make_inference_chunks(notes, vocab, "input", ChunkConfig(max_tokens=max_len))
     pad_id = vocab[PAD_TOKEN]
     raw: list[dict] = []
+    all_tokens: list[str] = []
 
     for chunk in chunks:
         enc = torch.tensor([chunk.enc_tokens], dtype=torch.long, device=device)
@@ -116,6 +120,7 @@ def generate(model, vocab, notes, beam: int, pitch_constraint: bool, max_len: in
             )
 
         tokens = vocab.decode(gen[0, prompt.size(1) :].tolist())
+        all_tokens.extend(tokens)
         chunk_notes = decode_tab_stream(tokens, base_t=chunk.meta["base_t"])
 
         start = chunk.meta["note_start"]
@@ -131,7 +136,7 @@ def generate(model, vocab, notes, beam: int, pitch_constraint: bool, max_len: in
 
         raw.extend(chunk_notes)
 
-    return raw
+    return raw, all_tokens
 
 
 def playability_pass(raw: list[dict]) -> tuple[list[dict], dict]:
@@ -215,7 +220,10 @@ def main() -> int:
     if not notes:
         raise SystemExit("no notes in input")
 
-    raw = generate(model, vocab, notes, args.beam, args.pitch_constraint, args.max_len, device)
+    # Quantise input to training grid so the model sees familiar timings.
+    notes = quantise_notes(notes)
+
+    raw, gen_tokens = generate(model, vocab, notes, args.beam, args.pitch_constraint, args.max_len, device)
     final, proc_stats = playability_pass(raw)
 
     out = Path(args.out_dir)
@@ -229,6 +237,12 @@ def main() -> int:
     for name, ds in (("input", in_dicts), ("raw", raw), ("final", final)):
         write_wav(out / f"{name}.wav", synthesize(to_array(ds), args.bpm))
 
+    # Convert notes to Note objects for rhythm metrics.
+    from core.schema import Note
+    gt_notes = [Note(t=n.t, dur=n.dur, pitch=n.pitch, s=n.s, f=n.f) for n in notes]
+    pred_tabs = [(n["s"], n["f"]) for n in raw]
+    rhythm = compute_rhythm_metrics(pred_tabs, gen_tokens, gt_notes, vocab)
+
     nodes = [DecodedNote(t=n["t"], dur=n["dur"], pitch=n["pitch"], s=n["s"], f=n["f"]) for n in final]
     tab_text = render_tab(nodes, width=args.width)
     (out / "final_tab.txt").write_text(tab_text + "\n", encoding="utf-8")
@@ -239,6 +253,7 @@ def main() -> int:
         "beam": args.beam,
         "pitch_constraint": bool(args.pitch_constraint),
         "comparison": compare(notes, raw),
+        "rhythm": rhythm.to_dict(),
         "postprocessing": proc_stats,
         "final_notes": len(final),
         "raw_difficulty": round(compute_difficulty(nodes), 3),

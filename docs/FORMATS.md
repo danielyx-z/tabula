@@ -138,7 +138,7 @@ the input note order.
 
 | Class | Count | Notes |
 | --- | --- | --- |
-| `<pad>`, `<eos>`, `<unk>` | 3 | T5 specials |
+| `<pad>`, `<eos>`, `那些` | 3 | T5 specials |
 | `NOTE_ON<p>` | 42 | pitches seen in GuitarSet (40–81) |
 | `NOTE_OFF<p>` | 42 | same pitches |
 | `TIME_SHIFT<n>` | 11 | compositional; see above |
@@ -175,16 +175,16 @@ The checkpoint's `config.vocab_size` must equal the vocabulary size.
 | `raw.wav` | 44.1 kHz mono | synthesis of `raw.mid` |
 | `final.wav` | 44.1 kHz mono | synthesis of `final.mid` |
 | `final_tab.txt` | ASCII tab | corrected fingering |
-| `report.json` | JSON | counts, alignment metrics, post-processing stats |
+| `report.json` | JSON | counts, alignment metrics, post-processing stats, rhythm metrics |
 
 ### WAV synthesis
 
-`src/audio/synth.py` renders each note with Karplus-Strong: a filtered noise
-burst and plucked harmonic shape circulate through a delay line, with
-string-dependent decay and brightness, a pluck-position comb and a fixed
-acoustic-body EQ. It is deterministic for a given note list, so each WAV is
-derived only from its own MIDI. It is a synthesis approximation, not a sample
-library: it does not reproduce a specific guitar or microphone.
+`src/audio/synth.py` uses **FluidSynth + FluidR3_GM SoundFont** (package
+`fluid-soundfont-gm` at `/usr/share/sounds/sf2/FluidR3_GM.sf2`). The wrapper
+writes a temporary MIDI, renders with `fluidsynth -ni -g 1.0 -R 0 -C 0`,
+trims to MIDI length + 0.5 s release tail, normalises peak to 0.89, and adds
+a 5 ms fade in/out. It is deterministic for a given note list, so each WAV is
+derived only from its own MIDI.
 
 Each MIDI file uses **one track per string** (`string 1` … `string 6`,
 program 25 acoustic guitar). A plain MIDI file stores pitch and time only, so
@@ -203,6 +203,20 @@ Input MIDI without string information goes on a `pitch only` track.
     "pitch_accuracy": 0.4286,
     "tab_exact": 0,
     "tab_accuracy": 0.0
+  },
+  "rhythm": {
+    "matched": 120,
+    "missing": 13,
+    "extra": 10,
+    "onset_hit_rate_20": 0.65,
+    "onset_hit_rate_60": 0.82,
+    "onset_hit_rate_120": 0.91,
+    "median_onset_error": 40.0,
+    "mean_onset_error": 52.3,
+    "median_ioi_error": 35.0,
+    "mean_ioi_error": 48.1,
+    "median_dur_error": 120.0,
+    "mean_dur_error": 180.5
   },
   "postprocessing": {
     "dropped_impossible": 7,
