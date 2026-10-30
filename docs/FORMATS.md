@@ -32,16 +32,16 @@ about the audio itself is stored.
 
 ## 2. MIDI input
 
-Accepted by `scripts/midi2tab.py` and `src/fretwire/cli.py`: `.mid` / `.midi`.
+Accepted by `scripts/midi2tab.py` and `src/cli.py`: `.mid` / `.midi`.
 
-`fretwire.parse.midi.parse_midi` reads the file with `pretty_midi`, merges
+`corpus.parse.midi.parse_midi` reads the file with `pretty_midi`, merges
 non-drum tracks by default, filters pitches to 36–96, and rescales the file's
 own resolution to **PPQ 960** using its tempo map. String and fret are not
 present in MIDI, so they are placeholders (`s=0`, `f=0`).
 
 ## 3. Canonical note record
 
-Defined in `src/fretwire/schema.py` and `src/fretwire/dataset.py`.
+Defined in `src/core/schema.py` and `src/corpus/dataset.py`.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -68,7 +68,7 @@ dtype = [("t", "<i4"), ("dur", "<i4"), ("pitch", "<i1"),
 ## 4. Shard dataset (training input)
 
 ```
-data/processed/
+data/processed_guitarset/
   manifest.json          contract, counts, reject histogram
   rejects.jsonl          one reason per dropped track
   shard-00000/
@@ -87,15 +87,15 @@ Splits are assigned per song by a stable hash: 80 % train, 10 % valid,
 Load with:
 
 ```python
-from fretwire.dataset import iter_tracks
+from corpus.dataset import iter_tracks
 
-for meta, notes in iter_tracks("data/processed", split="train"):
+for meta, notes in iter_tracks("data/processed_guitarset", split="train"):
     ...  # notes is an 11-byte-record numpy view
 ```
 
 ## 5. Encoder tokens (model input)
 
-Built by `notes_to_events()` in `src/fretwire/tokenizer.py`.
+Built by `notes_to_events()` in `src/tablature/tokenizer.py`.
 
 ```
 NOTE_ON<55>  TIME_SHIFT<120>  NOTE_OFF<55>  TIME_SHIFT<60>  NOTE_ON<57> ...
@@ -106,7 +106,7 @@ NOTE_ON<55>  TIME_SHIFT<120>  NOTE_OFF<55>  TIME_SHIFT<60>  NOTE_ON<57> ...
   Larger shifts are written as several tokens; every multiple of the 20-tick
   grid is representable exactly.
 * A shift of 960 costs one token; an odd value such as 340 costs three
-  (`240 + 60 + 40`).
+  (`240 + 60 + 40`). A 640-tick triplet quarter is `480 + 120 + 40`.
 * Note-offs carry their own `TIME_SHIFT` when the clock advances.
 * At inference, a 20-note chunk is prefixed with the previous chunk's last
   note as context. `base_t` is the context onset, so events are relative.
@@ -124,7 +124,7 @@ Built by `notes_to_target()` and produced by the model:
 * `TAB<s,f>` only at note onsets. **There are no note-offs.**
 * `TIME_SHIFT<n>` is emitted whenever the clock advances.
 
-Because there are no note-offs, `src/fretwire/stream.py` infers a note's
+Because there are no note-offs, `src/tablature/stream.py` infers a note's
 duration from the next onset on the same string, capped at 960 ticks.
 
 ## 7. Vocabulary
@@ -166,6 +166,15 @@ The checkpoint's `config.vocab_size` must equal the vocabulary size.
 | `final.wav` | 44.1 kHz mono | synthesis of `final.mid` |
 | `final_tab.txt` | ASCII tab | corrected fingering |
 | `report.json` | JSON | counts, alignment metrics, post-processing stats |
+
+### WAV synthesis
+
+`src/audio/synth.py` renders each note with Karplus-Strong: a filtered noise
+burst and plucked harmonic shape circulate through a delay line, with
+string-dependent decay and brightness, a pluck-position comb and a fixed
+acoustic-body EQ. It is deterministic for a given note list, so each WAV is
+derived only from its own MIDI. It is a synthesis approximation, not a sample
+library: it does not reproduce a specific guitar or microphone.
 
 Each MIDI file uses **one track per string** (`string 1` … `string 6`,
 program 25 acoustic guitar). A plain MIDI file stores pitch and time only, so

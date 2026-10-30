@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .fretboard import STANDARD, positions, pitch_of
-from .schema import Note
+from core.fretboard import STANDARD, positions, pitch_of
+from core.schema import Note
 from .tokenizer import parse_tab
 
 

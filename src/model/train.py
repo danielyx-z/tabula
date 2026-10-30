@@ -2,7 +2,7 @@
 
 Paper-faithful choices:
 
-* reduced T5 (see :mod:`fretwire.model`)
+* reduced T5 (see :mod:`model.model`)
 * Adafactor with a self-adaptive learning rate (default; pass ``--lr`` for a
   fixed-rate cosine schedule)
 * standard cross-entropy supplied by ``T5ForConditionalGeneration``
@@ -30,14 +30,14 @@ from torch.utils.data import DataLoader, IterableDataset
 from transformers import T5ForConditionalGeneration, get_cosine_schedule_with_warmup
 from transformers.optimization import Adafactor
 
-from fretwire.chunk import (
+from model.chunk import (
     MAX_TOKENS,
     ChunkConfig,
     make_inference_chunks,
     make_training_chunks,
 )
-from fretwire.dataset import iter_tracks
-from fretwire.metrics import (
+from corpus.dataset import iter_tracks
+from tablature.metrics import (
     EvalCounts,
     aggregate_counts,
     align_predictions,
@@ -46,16 +46,16 @@ from fretwire.metrics import (
     difficulty_terms,
     print_metrics,
 )
-from fretwire.model import count_parameters, make_model
-from fretwire.postproc import postprocess
-from fretwire.schema import Note
-from fretwire.tokenizer import DEFAULT_VOCAB, EOS_TOKEN, PAD_TOKEN, Vocab
+from model.model import count_parameters, make_model
+from tablature.postproc import postprocess
+from core.schema import Note
+from tablature.tokenizer import DEFAULT_VOCAB, EOS_TOKEN, PAD_TOKEN, Vocab
 
 
 @dataclass
 class TrainConfig:
     # Data
-    data_dir: str = "data/processed"
+    data_dir: str = "data/processed_guitarset"
     vocab_path: str = "vocab/guitarset.json"
     max_tracks: int = 0  # 0 = all tracks
     # Optimization
@@ -867,7 +867,7 @@ def train(cfg: TrainConfig, resume_from: str = "") -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data-dir", default="data/processed")
+    ap.add_argument("--data-dir", default="data/processed_guitarset")
     ap.add_argument("--vocab-path", default="vocab/guitarset.json")
     ap.add_argument("--output-dir", default="runs/exp1")
     ap.add_argument("--max-epochs", type=int, default=300)

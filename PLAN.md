@@ -50,7 +50,7 @@ GuitarToday 98.41 / Leduc 72.19 / DadaGP 81.58. That's the reference point — b
 | Fine-tune on Leduc | Leduc-only from scratch **collapses to 0.49 %** tab accuracy (Hsu 2026); DadaGP+Leduc reaches 95.97 % | Never train from scratch on small clean data |
 | Post-processing gets pitch to 100 % | **Pitch-valid constrained decoding**: 71.78 → 83.65 % tab accuracy on DadaGP, vs 72.82 % for rule-based repair | Generate normally, then apply overlap correction + ±5-note neighbour search (the paper's post-processing) |
 
-Also: **`TabFormer` is taken** (IBM tabular transformer, 2021). Use `Fretwire` (package `fretwire`).
+Also: **`TabFormer` is taken** (IBM tabular transformer, 2021). Use `Tabula` (packages under `src/`).
 
 ---
 
@@ -369,30 +369,21 @@ Hsu decomposes DadaGP error into timing 2.6 % / pitch 7.4 % / **position 13.0 %*
 ## 5. Repo layout
 
 ```
-fretwire/
-  data/                 # gitignored: zip, .tex, jsonl, tokenised shards
-  src/fretwire/
-    parse/alphatex.py   # .tex -> canonical events
-    schema.py           # NoteEvent, Track, tuning/fretboard validation
-    fretboard.py        # Fretboard(tuning) - the ONLY place pitch<->(s,f) lives
-    filter.py           # §2.5 rules, dedupe, split
-    tokenizer.py        # vocab build, encode/decode
-    quantise.py         # the 960 PPQ / 60-tick contract (§3.2)
-    chunk.py            # §3.4 windowing + stitching
-    model.py            # T5Config factory
-    train.py            # config-driven pre-train / fine-tune
-    decode.py           # LogitsProcessor + beam search
-    postproc.py         # overlap repair, neighbour search
-    metrics.py          # §4.5
-    render.py           # ASCII tab (+ .tex later)
-    cli.py              # midi2tab
-  configs/              # one yaml per run: vocab hash + git sha recorded
-  tests/                # round-trip, fretboard math, mask correctness, chunk stitching
-  PLAN.md
+src/
+  core/        # Note schema, fretboard, quantise, chord grouping
+  corpus/      # shard dataset, filtering, MIDI/alphaTex parsers
+  tablature/   # tokenizer, stream decoder, playability, metrics, render
+  model/       # T5 config, chunking, decoding, training
+  audio/       # guitar synth, MIDI writer, WAV/playback
+  cli.py       # `python -m cli`
+scripts/       # data conversion, training/eval, preview, Slurm jobs
+tests/
+docs/
+vocab/
 ```
 
-Non-negotiables: `data/` gitignored; every run records config + vocab hash + git sha; fretboard and
-quantiser each live in exactly one module with tests.
+Historical sections below describe the original DadaGP plan; the current
+training source is GuitarSet (see `docs/DATA_FORMAT.md`).
 
 ---
 

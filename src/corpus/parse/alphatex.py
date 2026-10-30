@@ -30,8 +30,8 @@ import re
 from bisect import bisect_right
 from collections import Counter
 
-from ..fretboard import parse_tuning, pitch_of
-from ..schema import Note, Track
+from core.fretboard import parse_tuning, pitch_of
+from core.schema import Note, Track
 
 DURATIONS = {1: 3840, 2: 1920, 4: 960, 8: 480, 16: 240, 32: 120, 64: 60, 128: 30}
 

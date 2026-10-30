@@ -2,7 +2,7 @@
 
 Layout::
 
-    data/processed/
+    data/processed_guitarset/
         manifest.json
         shard-00000/
             notes.npy      structured array, 11 bytes/note, zero-copy mmap

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert GuitarSet JAMS annotations into fretwire's canonical shards.
+"""Convert GuitarSet JAMS annotations into Tabula's canonical shards.
 
 GuitarSet annotates each of the six strings separately, so this converter
 produces real ``(t, dur, pitch, s, f)`` records rather than guessing fingerings.
@@ -33,10 +33,10 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from fretwire.dataset import ShardWriter, notes_to_array, write_manifest  # noqa: E402
-from fretwire.fretboard import STANDARD, format_tuning  # noqa: E402
-from fretwire.group import group_chords  # noqa: E402
-from fretwire.schema import Note  # noqa: E402
+from corpus.dataset import ShardWriter, notes_to_array, write_manifest  # noqa: E402
+from core.fretboard import STANDARD, format_tuning  # noqa: E402
+from core.group import group_chords  # noqa: E402
+from core.schema import Note  # noqa: E402
 
 PPQ = 960
 GRID = 20  # ticks; the encoder's TIME_SHIFT grid
@@ -229,7 +229,7 @@ def main() -> int:
     rejects_fh.close()
 
     manifest = {
-        "format": "fretwire-canonical-v1",
+        "format": "tabula-canonical-v1",
         "source": "guitarset",
         "ppq": PPQ,
         "grid": GRID,

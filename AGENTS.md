@@ -1,4 +1,4 @@
-# Fretwire / Tabula — working memory
+# Tabula — working memory
 
 ## Project
 
@@ -8,7 +8,8 @@ Tablature Transcription** (Hamberger et al., arXiv:2506.14223, ICMC 2025).
 - Input: symbolic MIDI note events (`NOTE_ON`, `NOTE_OFF`, `TIME_SHIFT`).
 - Output: ASCII tab events (`TAB` + `TIME_SHIFT`).
 - Model: paper-config T5, 2.81M parameters (`d_model=128`, `d_ff=1024`,
-  `d_kv=64`, 3 encoder/3 decoder layers, 4 heads, vocab 423).
+  `d_kv=64`, 3 encoder/3 decoder layers, 4 heads). The project vocabulary
+  is 246 tokens for GuitarSet.
 - The paper does **not** define a training-time alignment loss, note-count head,
   or pitch-constrained training loss. Do not reintroduce them. Its alignment
   step is post-processing: overlap correction + ±5-note neighbor search.
@@ -17,8 +18,7 @@ Tablature Transcription** (Hamberger et al., arXiv:2506.14223, ICMC 2025).
 
 ## Training is user-driven
 
-Do **not** launch additional long training runs without asking. The user
-explicitly requested the current WATcloud run; the local 8 GB GPU is still
+Do **not** launch long training runs without asking. The local 8 GB GPU is
 not used for long training.
 
 OOM is not a design concern. The cluster job requests a GPU shard; use a batch
@@ -29,9 +29,9 @@ size that is efficient (defaults are batch 8 × grad-accum 8 = effective 64).
 - SSH login: `ssh watcloud`
 - Slurm docs: <https://cloud.watonomous.ca/docs/compute-cluster/slurm>
 - The Slurm CLI is not on the default login `PATH`; use
-  `export PATH=/opt/slurm/bin:$PATH` or `/opt/slurm/bin/sbatch`.
-- Submit from the repository root: `mkdir -p logs && sbatch slurm/train_t5.sh`
-- Job script: `slurm/train_t5.sh` (edit paths/resources if needed).
+  `export PATH=/opt/scripts/bin:$PATH` or `/opt/scripts/bin/sbatch`.
+- Submit from the repository root: `mkdir -p logs && sbatch scripts/train_t5.sh`
+- Job script: `scripts/train_t5.sh` (edit paths/resources if needed).
 
 Resource choices in the script:
 
@@ -58,7 +58,7 @@ Monitor:
 
 ```bash
 squeue -u "$USER" -o "%.18i %.9P %.30j %.10T %.10M %.9l %R"
-tail -f logs/<jobid>-fretwire-t5.out
+tail -f logs/<jobid>-tabula-t5.out
 scancel <jobid>
 ```
 
@@ -69,39 +69,23 @@ WATcloud notifications (instead of Slurm mail):
 ./watcloud subscription <jobid> --discord
 ```
 
-## Current WATcloud run
+## Training status
 
-- Job `724155` finished with early stopping at step 27,750 (epoch 109) on
-  `thor-slurm1` (RTX 3090, 24 GiB).
-- Best checkpoint: `runs/pretrain_t5_v5/best`, step 25,250 (epoch 99),
-  validation loss `0.03631`.
-- Final checkpoint: `runs/pretrain_t5_v5/final`, step 27,750.  Log:
-  `logs/724155-fretwire-t5.out`.
-- Full 10-track validation metrics from the run:
-  - step 24,750: raw tab `94.72%`, post tab `94.72%`, post pitch `100%`,
-    post difficulty `3.5183`.
-  - step 26,000: raw tab `94.50%`, post tab `94.50%`, post difficulty `3.4722`.
-  - step 27,250: raw tab `94.39%`, post tab `94.46%`, post difficulty `3.4851`.
-- These numbers use the run's fixed shuffled 10-track validation sample
-  (`eval_batches=10`, seed 43), not the full validation split.  Offline
-  evaluation of `best` on the first 10 validation tracks (seed 42, no
-  shuffle) gives post tab `88.07%`, post pitch `100%`, difficulty `3.0978`;
-  on the shuffled seed-43 sample it gives post tab `93.13%`.  Treat the
-  differences as track-sampling variance (and bf16-vs-fp32 decoding), not as
-  a single benchmark.
-- Early stopping fired after 10 evaluation intervals without improvement
-  (`patience=10`, `min_delta=0.0001`).  The previous job (`722895`) had reached
-  step 14,750 / epoch 58 before being stopped to fix post-processing.
-- Post-processing fix: neighbor search matches by sequence position first, and
-  full post-processing runs per 20-note chunk.  Offline evaluation of
-  `checkpoint-12500` (10 valid tracks) gives raw tab `89.70%`, post tab
-  `89.71%`, post pitch `100%`, post difficulty `3.07`; before the fix the
-  global pitch-first pass reduced post tab accuracy to about `62%`.
-- Re-evaluate without training:
-  `PYTHONPATH=src .venv/bin/python3 scripts/eval_checkpoint.py --checkpoint runs/pretrain_t5_v5/best --tracks 10 --postproc full --shuffle --seed 43`
-- If training is extended, resume with:
-  `RESUME_FROM=runs/pretrain_t5_v5/best sbatch slurm/train_t5.sh`
-  This restores optimizer/schedule and early-stopping counters.
+The old `runs/pretrain_t5_v5` checkpoint (kept only on the workstation) and
+its metrics were trained on the discarded synthetic corpus. They are **not comparable** to GuitarSet and the
+vocabulary has since changed (246 tokens), so the old checkpoint cannot be
+loaded with the current data. Treat it as historical.
+
+A real GuitarSet training run has not been completed yet. The active defaults
+are `data/processed_guitarset`, `vocab/guitarset.json` and
+`runs/pretrain_t5_guitarset`.
+
+Evaluate a checkpoint without training:
+
+```bash
+PYTHONPATH=src .venv/bin/python3 scripts/eval_checkpoint.py \
+  --checkpoint runs/pretrain_t5_guitarset/best --tracks 10 --postproc full
+```
 
 ## Cluster setup
 
@@ -120,17 +104,16 @@ The tested cluster driver is 580.178.04 (CUDA 13.0); the cu121 wheel above
 works. If `torch.cuda.is_available()` is false, reinstall the CUDA wheel
 matching the compute-node driver (see
 <https://pytorch.org/get-started/locally/>) before submitting. The processed
-corpus must exist at `data/processed` (train / valid / test shards). Check
-available quota before copying checkpoints; the dataset is ~800 MB and
-checkpoints are small (~11 MB each).
+corpus must exist at `data/processed_guitarset` (train / valid / test shards).
+The GuitarSet shard is small (<2 MB); checkpoints are ~11 MB each.
 
 ## Reference training command
 
 ```bash
-PYTHONPATH=src .venv/bin/python3 -m fretwire.train \
-  --data-dir data/processed \
+PYTHONPATH=src .venv/bin/python3 -m model.train \
+  --data-dir data/processed_guitarset \
   --vocab-path vocab/guitarset.json \
-  --output-dir runs/pretrain_t5_v5 \
+  --output-dir runs/pretrain_t5_guitarset \
   --batch-size 8 \
   --grad-accum 8 \
   --bf16 \
@@ -161,12 +144,12 @@ is off by default; enable it only if memory becomes tight. Do not use
 
 ## Files that matter
 
-- `src/fretwire/model.py` — paper-config T5 factory.
-- `src/fretwire/tokenizer.py` — v3 event/target encoding.
-- `src/fretwire/chunk.py` — 512-token train windows / 20-note inference chunks.
-- `src/fretwire/postproc.py` — overlap correction + neighbor search.
-- `src/fretwire/metrics.py` — tab/pitch accuracy and difficulty.
-- `src/fretwire/train.py` — training, validation loss, full metrics.
-- `src/fretwire/decode.py` — T5 generation helpers.
-- `vocab/guitarset.json` — frozen 423-token vocab. Do not use the unpruned
-  `DEFAULT_VOCAB` (531) for training.
+- `src/model/model.py` — paper-config T5 factory.
+- `src/tablature/tokenizer.py` — v3 event/target encoding.
+- `src/model/chunk.py` — 512-token train windows / 20-note inference chunks.
+- `src/tablature/postproc.py` — overlap correction + neighbor search.
+- `src/tablature/metrics.py` — tab/pitch accuracy and difficulty.
+- `src/model/train.py` — training, validation loss, full metrics.
+- `src/model/decode.py` — T5 generation helpers.
+- `vocab/guitarset.json` — frozen 246-token vocab. Do not use the unpruned
+  `DEFAULT_VOCAB` (286) for training.

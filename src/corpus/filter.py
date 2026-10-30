@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .fretboard import STANDARD
+from core.fretboard import STANDARD
 from .parse.alphatex import GUITAR_PROGRAMS
-from .schema import Track
+from core.schema import Track
 
 
 @dataclass(frozen=True)

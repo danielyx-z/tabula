@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Invariant checks over a built dataset.
 
-    python scripts/verify.py --dataset data/processed
+    python scripts/verify.py --dataset data/processed_guitarset
 
 Checks, in order of how much they would hurt if they broke:
 
@@ -24,15 +24,15 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from fretwire.dataset import NOTE_DTYPE, load_shard, shard_dirs  # noqa: E402
-from fretwire.fretboard import STANDARD  # noqa: E402
+from corpus.dataset import NOTE_DTYPE, load_shard, shard_dirs  # noqa: E402
+from core.fretboard import STANDARD  # noqa: E402
 
 TUNING = np.asarray(STANDARD, dtype=np.int32)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", default=str(ROOT / "data/processed"))
+    ap.add_argument("--dataset", default=str(ROOT / "data/processed_guitarset"))
     ap.add_argument("--max-fret", type=int, default=24)
     args = ap.parse_args()
 

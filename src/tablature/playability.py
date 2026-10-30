@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from .fretboard import STANDARD, positions
+from core.fretboard import STANDARD, positions
 from .postproc import DecodedNote
 
 

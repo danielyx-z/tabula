@@ -4,7 +4,7 @@
 Example (run on a GPU allocation):
 
     PYTHONPATH=src .venv/bin/python3 scripts/eval_checkpoint.py \
-        --checkpoint runs/pretrain_t5_v5/best --tracks 1 --postproc full
+        --checkpoint runs/pretrain_t5_guitarset/best --tracks 1 --postproc full
 
 Useful for comparing post-processing changes without starting a training run.
 """
@@ -21,16 +21,16 @@ from transformers import T5ForConditionalGeneration
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from fretwire.chunk import MAX_TOKENS  # noqa: E402
-from fretwire.metrics import print_metrics  # noqa: E402
-from fretwire.tokenizer import Vocab  # noqa: E402
-from fretwire.train import evaluate  # noqa: E402
+from model.chunk import MAX_TOKENS  # noqa: E402
+from tablature.metrics import print_metrics  # noqa: E402
+from tablature.tokenizer import Vocab  # noqa: E402
+from model.train import evaluate  # noqa: E402
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", required=True)
-    ap.add_argument("--data-dir", default=str(ROOT / "data/processed"))
+    ap.add_argument("--data-dir", default=str(ROOT / "data/processed_guitarset"))
     ap.add_argument("--vocab", default=str(ROOT / "vocab/guitarset.json"))
     ap.add_argument("--split", default="valid")
     ap.add_argument("--tracks", type=int, default=1)

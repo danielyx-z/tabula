@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .fretboard import STANDARD, pitch_name
-from .schema import Note
+from core.fretboard import STANDARD, pitch_name
+from core.schema import Note
 
 
 @dataclass

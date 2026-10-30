@@ -18,7 +18,7 @@ from typing import Optional
 
 import pretty_midi
 
-from ..schema import Note
+from core.schema import Note
 
 
 PPQ = 960
@@ -171,7 +171,7 @@ def midi_to_encoder_tokens(
 
     This mirrors `notes_to_events` but accepts Notes with placeholder s/f.
     """
-    from ..tokenizer import notes_to_events
+    from tablature.tokenizer import notes_to_events
     # notes_to_events expects Note objects with .t, .dur, .pitch, .s, .f
     # It ignores s/f for encoder.  We just need to ensure the Note objects
     # have the right fields.

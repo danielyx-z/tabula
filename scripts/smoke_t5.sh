@@ -3,7 +3,7 @@
 #
 # Run interactively from the repository root:
 #   srun --partition=compute --gres=shard:rtx_3090:4096,tmpdisk:2048 \
-#        --cpus-per-task=4 --mem=8G --time=00:20:00 bash slurm/smoke_t5.sh
+#        --cpus-per-task=4 --mem=8G --time=00:20:00 bash scripts/smoke_t5.sh
 #
 # It writes a throwaway run to runs/smoke_t5 and checks CUDA + bf16 before
 # starting.  It does not decode full tracks (--metrics-every 0).
@@ -33,9 +33,9 @@ echo "Host: $(hostname)"
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader || true
 "$PYTHON" -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), 'bf16', torch.cuda.is_bf16_supported(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')"
 
-exec "$PYTHON" -m fretwire.train \
-    --data-dir data/processed \
-    --vocab-path vocab_v1_full.json \
+exec "$PYTHON" -m model.train \
+    --data-dir data/processed_guitarset \
+    --vocab-path vocab/guitarset.json \
     --output-dir "$OUTPUT_DIR" \
     --max-epochs 1 \
     --max-tracks 2 \

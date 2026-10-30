@@ -1,4 +1,4 @@
-# Fretwire — data layer
+# Tabula — data layer
 
 MVP target: symbolic MIDI in, 6-string standard-tuning ASCII tab out. See
 [PLAN.md](PLAN.md) for the model plan; this README covers the data layer that
@@ -8,8 +8,8 @@ exists today.
 
 The pipeline is wired end to end: **audio/MIDI → canonical notes → shards →
 T5 → decoder stream → MIDI/WAV/ASCII tab**. The current model was trained on a
-now-discarded synthetic corpus and is not musically useful; the next step is
-training on real guitar data (GuitarSet / GAPS).
+now-discarded synthetic corpus and is not musically useful. The data layer now
+targets GuitarSet; a real GuitarSet training run is the next step.
 
 New to the project? Read:
 
@@ -36,7 +36,7 @@ PYTHONPATH=src .venv/bin/python3 scripts/build_vocab.py \
     --data-dir data/processed_guitarset --out vocab/guitarset.json
 
 # Train
-PYTHONPATH=src .venv/bin/python3 -m fretwire.train \
+PYTHONPATH=src .venv/bin/python3 -m model.train \
     --data-dir data/processed_guitarset --vocab-path vocab/guitarset.json \
     --output-dir runs/guitarset
 
@@ -49,6 +49,22 @@ PYTHONPATH=src:. .venv/bin/python3 scripts/midi2tab.py song.mid \
 The exported MIDI files carry **one track per string**, because a normal MIDI
 file only stores pitch and time and cannot represent a fingering.
 
+
+## Layout
+
+```
+src/
+  core/        # Note schema, fretboard, quantise, chord grouping
+  corpus/      # shard dataset, filtering, MIDI/alphaTex parsers
+  tablature/   # tokenizer, stream decoder, playability, metrics, render
+  model/       # T5 config, chunking, decoding, training
+  audio/       # guitar synth, MIDI writer, WAV/playback
+  cli.py       # `python -m cli`
+scripts/       # converters, training/eval, preview, Slurm jobs
+tests/
+docs/
+vocab/
+```
 
 ## Contract
 
@@ -63,8 +79,8 @@ file only stores pitch and time and cannot represent a fingering.
 | Chords | notes sorted ascending by pitch |
 | Capo | out of scope |
 
-`src/fretwire/fretboard.py` is the only place pitch ↔ (string, fret) happens;
-`parse/alphatex.py` is the only place notation is interpreted.
+`src/core/fretboard.py` is the only place pitch ↔ (string, fret) happens;
+`src/corpus/parse/alphatex.py` is the only place notation is interpreted.
 
 ## Setup
 
@@ -95,7 +111,7 @@ plain wheel reports `False`.
 Output is sharded and memory-mappable:
 
 ```
-data/processed/
+data/processed_guitarset/
   manifest.json          contract + counts + reject histogram + grid stats
   rejects.jsonl          every dropped track and why
   shard-00000/
@@ -108,12 +124,12 @@ Load without copying:
 
 ```python
 import numpy as np
-notes = np.load("data/processed/shard-00000/notes.npy", mmap_mode="r")
-offsets = np.load("data/processed/shard-00000/offsets.npy")
+notes = np.load("data/processed_guitarset/shard-00000/notes.npy", mmap_mode="r")
+offsets = np.load("data/processed_guitarset/shard-00000/offsets.npy")
 track = notes[offsets[i]:offsets[i + 1]]
 ```
 
-or, across shards, `fretwire.dataset.iter_tracks(root, split="train")`.
+or, across shards, `corpus.dataset.iter_tracks(root, split="train")`.
 
 ### What the corpus gives us
 
@@ -146,9 +162,8 @@ mislabelled: their sounding pitch is not implied by the fret.
 - **Tuplets are 4.3 % of onsets.** A 60-tick (1/16) grid silently rewrites
   every triplet; a 20-tick (1/48) grid represents triplets, dotted values and
   32nds exactly, and leaves only 0.2 % of notes off-grid (quintuplets,
-  septuplets). Storage keeps exact ticks. The paper's frozen 423-token
-  vocabulary uses 60-tick `TIME_SHIFT` steps, so the model still sees that
-  quantisation even though the source timing is finer.
+  septuplets). Storage keeps exact ticks. The model uses 11 compositional `TIME_SHIFT` values, so every multiple of
+  20 ticks is encoded exactly instead of being snapped to a 60-tick step.
 - **No capo, no repeats, no ties, no dead notes, no time-signature directives**
   in this export — those parser branches are defensive only.
 
@@ -158,9 +173,9 @@ Training is intended for the WATcloud Slurm cluster; see [`AGENTS.md`](AGENTS.md
 for resource choices and monitoring. From the repository root:
 
 ```bash
-export PATH=/opt/slurm/bin:$PATH   # the cluster login PATH omits Slurm
+export PATH=/opt/scripts/bin:$PATH   # the cluster login PATH omits Slurm
 mkdir -p logs
-sbatch slurm/train_t5.sh
+sbatch scripts/train_t5.sh
 ```
 
 Before a long run, the GPU smoke test checks CUDA, bf16 and two optimizer
@@ -169,14 +184,14 @@ steps without decoding full tracks:
 ```bash
 srun --partition=compute --gres=shard:rtx_3090:4096,tmpdisk:2048 \
      --cpus-per-task=4 --mem=8G --time=00:20:00 \
-     bash slurm/smoke_t5.sh
+     bash scripts/smoke_t5.sh
 ```
 
 The defaults are paper-sized: batch 8 × grad-accum 8 (effective batch 64),
 2,000 micro-batches per epoch (~16k sequences), 512-token training chunks, and
 20-note inference chunks. Validation loss is checked every 250 optimizer steps;
 full-track tab metrics are decoded every 1,250 steps. `--resume-from
-runs/pretrain_t5_v5/best` reloads weights, vocabulary, optimizer/schedule and
+runs/pretrain_t5_guitarset/best` reloads weights, vocabulary, optimizer/schedule and
 early-stopping state. Post-processing runs per 20-note inference chunk so one
 missing note cannot shift every later chunk.
 
@@ -184,16 +199,16 @@ To evaluate a saved checkpoint without training (same metrics as the job):
 
 ```bash
 PYTHONPATH=src .venv/bin/python3 scripts/eval_checkpoint.py \
-  --checkpoint runs/pretrain_t5_v5/best --tracks 10 --postproc full
+  --checkpoint runs/pretrain_t5_guitarset/best --tracks 10 --postproc full
 ```
 
 ```bash
 # local smoke test, no long training
-PYTHONPATH=src .venv/bin/python3 -m fretwire.train \
+PYTHONPATH=src .venv/bin/python3 -m model.train \
   --max-epochs 1 --max-tracks 5 --steps-per-epoch 2 \
   --batch-size 2 --grad-accum 1 --no-bf16 \
   --eval-every 1 --eval-loss-batches 1 --eval-batches 1 \
-  --metrics-every 0 --output-dir /tmp/fretwire-smoke
+  --metrics-every 0 --output-dir /tmp/tabula-smoke
 ```
 
 To inspect one real inference chunk, including the exact encoder/decoder
@@ -201,7 +216,7 @@ tokens, teacher-forcing answer, generated tokens and target/raw/post tabs:
 
 ```bash
 PYTHONPATH=src .venv/bin/python3 scripts/infer_sample.py \
-  --checkpoint runs/pretrain_t5_v5/best --track-id 93 --chunk 1
+  --checkpoint runs/pretrain_t5_guitarset/best --track-id 93 --chunk 1
 ```
 
 ## Preview (see it, hear it)
@@ -213,7 +228,8 @@ PYTHONPATH=src .venv/bin/python3 scripts/infer_sample.py \
 .venv/bin/python scripts/preview.py --index 8 --no-play --mid out.mid
 ```
 
-It prints the tab, synthesises a plucked-string rendition, plays it through
+This is a development audition tool, not part of the training pipeline. It
+prints the tab, synthesises a plucked-string rendition, plays it through
 `aplay`, and walks a playhead through the tab in time with the audio. The tab is
 wrapped into systems that fit the terminal width (override with `--width`);
 while it plays it pages system by system, highlighting the sounding frets.

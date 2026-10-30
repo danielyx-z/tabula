@@ -8,8 +8,8 @@ from typing import Iterator
 
 import numpy as np
 
-from .fretboard import STANDARD, positions, pitch_of
-from .schema import Note
+from core.fretboard import STANDARD, positions, pitch_of
+from core.schema import Note
 from .tokenizer import Vocab, parse_tab
 
 

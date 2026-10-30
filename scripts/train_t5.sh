@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=fretwire-t5
+#SBATCH --job-name=tabula-t5
 #SBATCH --partition=compute_dense
 #SBATCH --time=2-00:00:00
 #SBATCH --cpus-per-task=8
@@ -12,10 +12,10 @@
 #
 # Submit from the repository root (the logs/ directory must already exist):
 #     mkdir -p logs
-#     sbatch slurm/train_t5.sh
+#     sbatch scripts/train_t5.sh
 #
 # Override any of these at submit time, e.g.:
-#     BATCH_SIZE=16 GRAD_ACCUM=4 EVAL_EVERY=500 sbatch slurm/train_t5.sh
+#     BATCH_SIZE=16 GRAD_ACCUM=4 EVAL_EVERY=500 sbatch scripts/train_t5.sh
 #
 # Resource notes:
 #   * shard:rtx_3090:8192 requests 8 GiB of a shared RTX 3090. The model is
@@ -25,7 +25,7 @@
 #   * compute_dense allows long jobs (7-day max). Use compute + time<=1 day if
 #     you need a shorter slot.
 #   * Checkpoint under runs/ so a requeued job can resume manually with
-#     --resume-from runs/pretrain_t5_v5/best.
+#     --resume-from runs/pretrain_t5_guitarset/best.
 
 set -euo pipefail
 
@@ -47,24 +47,24 @@ if [[ ! -x "$PYTHON" ]]; then
     exit 1
 fi
 
-if [[ ! -d data/processed ]]; then
-    echo "error: data/processed is missing in $REPO_DIR" >&2
+if [[ ! -d data/processed_guitarset ]]; then
+    echo "error: data/processed_guitarset is missing in $REPO_DIR" >&2
     exit 1
 fi
-if [[ ! -f vocab_v1_full.json ]]; then
-    echo "error: vocab_v1_full.json is missing in $REPO_DIR" >&2
+if [[ ! -f vocab/guitarset.json ]]; then
+    echo "error: vocab/guitarset.json is missing in $REPO_DIR" >&2
     exit 1
 fi
 
-OUTPUT_DIR="${OUTPUT_DIR:-runs/pretrain_t5_v5}"
+OUTPUT_DIR="${OUTPUT_DIR:-runs/pretrain_t5_guitarset}"
 
 echo "Host: $(hostname)"
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader || true
 "$PYTHON" --version
 
-exec "$PYTHON" -m fretwire.train \
-    --data-dir data/processed \
-    --vocab-path vocab_v1_full.json \
+exec "$PYTHON" -m model.train \
+    --data-dir data/processed_guitarset \
+    --vocab-path vocab/guitarset.json \
     --output-dir "$OUTPUT_DIR" \
     --batch-size "${BATCH_SIZE:-8}" \
     --grad-accum "${GRAD_ACCUM:-8}" \

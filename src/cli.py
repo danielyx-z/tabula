@@ -2,8 +2,8 @@
 
 Usage:
 
-    PYTHONPATH=src .venv/bin/python3 -m fretwire.cli song.mid \
-        --checkpoint runs/pretrain_t5_v5/best --beam 1 --width 100
+    PYTHONPATH=src .venv/bin/python3 -m cli song.mid \
+        --checkpoint runs/pretrain_t5_guitarset/best --beam 1 --width 100
 
 Parses a MIDI file, runs the trained T5 model over 20-note inference chunks,
 post-processes the output (overlap correction + ±5-note neighbor search),
@@ -22,13 +22,13 @@ import numpy as np
 import torch
 from transformers import T5ForConditionalGeneration
 
-from .chunk import ChunkConfig, make_inference_chunks
-from .decode import constrained_beam_search, greedy_decode
-from .metrics import decode_predictions
-from .parse.midi import parse_midi, midi_to_encoder_tokens
-from .postproc import postprocess
-from .render import render_tab
-from .tokenizer import DEFAULT_VOCAB, Vocab, PAD_TOKEN, EOS_TOKEN
+from model.chunk import ChunkConfig, make_inference_chunks
+from model.decode import constrained_beam_search, greedy_decode
+from tablature.metrics import decode_predictions
+from corpus.parse.midi import parse_midi, midi_to_encoder_tokens
+from tablature.postproc import postprocess
+from tablature.render import render_tab
+from tablature.tokenizer import DEFAULT_VOCAB, Vocab, PAD_TOKEN, EOS_TOKEN
 
 
 def load_model(checkpoint_dir: str, vocab_path: str, device: str = "cuda"):
@@ -58,9 +58,8 @@ def _make_pred_notes(midi_notes, proc_notes):
 
 
 def _synthesize_wav(pred_notes, bpm: float) -> tuple[np.ndarray, int]:
-    """Synthesize WAV audio from predicted notes using fretwire.preview."""
-    # Import here to avoid circular import with fretwire.__init__
-    from preview import synthesize
+    """Synthesize WAV audio from predicted notes."""
+    from audio.synth import synthesize
 
     arr = np.empty(len(pred_notes), dtype=[("t", "<i4"), ("dur", "<i4"),
                                            ("pitch", "<i1"), ("s", "<i1"), ("f", "<i1")])
@@ -72,23 +71,23 @@ def _synthesize_wav(pred_notes, bpm: float) -> tuple[np.ndarray, int]:
 
 def _write_midi(path: Path, pred_notes):
     """Write a Standard MIDI File from predicted notes."""
-    from preview import write_smf
+    from audio.midi import write_smf
     write_smf(path, pred_notes)
 
 
 def _write_wav(path: Path, samples: np.ndarray, sr: int = 44100):
     """Write WAV file."""
-    from preview import write_wav
+    from audio.wav import write_wav
     write_wav(path, samples)
 
 
 def _play_wav(samples: np.ndarray, sr: int = 44100):
     """Play WAV audio through the system player."""
-    from preview import play
+    from audio.wav import play
     import tempfile
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
         tmp_path = Path(tf.name)
-    from preview import write_wav
+    from audio.wav import write_wav
     write_wav(tmp_path, samples)
     proc = play(tmp_path)
     if proc:
@@ -99,7 +98,7 @@ def _play_wav(samples: np.ndarray, sr: int = 44100):
 def main() -> None:
     ap = argparse.ArgumentParser(prog="midi2tab")
     ap.add_argument("input", help="Input MIDI file (.mid/.midi)")
-    ap.add_argument("--checkpoint", default="runs/pretrain_t5_v5/best", help="Model checkpoint dir")
+    ap.add_argument("--checkpoint", default="runs/pretrain_t5_guitarset/best", help="Model checkpoint dir")
     ap.add_argument("--vocab", default="vocab/guitarset.json", help="Vocab file")
     ap.add_argument("--beam", type=int, default=4, help="Beam size (1=greedy)")
     ap.add_argument("--max-len", type=int, default=512, help="Max decode length")

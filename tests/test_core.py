@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from fretwire.fretboard import (  # noqa: E402
+from core.fretboard import (  # noqa: E402
     STANDARD,
     format_tuning,
     parse_tuning,
@@ -16,7 +16,7 @@ from fretwire.fretboard import (  # noqa: E402
     pitch_of,
     positions,
 )
-from fretwire.parse.alphatex import parse_body, parse_file  # noqa: E402
+from corpus.parse.alphatex import parse_body, parse_file  # noqa: E402
 
 FAILS: list[str] = []
 

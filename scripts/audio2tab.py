@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Audio → tablature pipeline using Spotify basic-pitch + fretwire T5.
+"""Audio → tablature pipeline using Spotify basic-pitch + Tabula T5.
 
 Full chain:
 
@@ -7,22 +7,22 @@ Full chain:
         → yt-dlp download (audio only)
         → basic-pitch (audio-to-MIDI, ONNX)
         → pretty_midi note events
-        → fretwire T5 (MIDI-to-tab, 20-note chunks + post-processing)
+        → Tabula T5 (MIDI-to-tab, 20-note chunks + post-processing)
         → ASCII tablature
 
 Usage:
 
     # From a YouTube link
     PYTHONPATH=src .venv/bin/python3 scripts/audio2tab.py "https://youtu.be/..." \
-        --checkpoint runs/pretrain_t5_v5/best --beam 1 --width 100 --no-play
+        --checkpoint runs/pretrain_t5_guitarset/best --beam 1 --width 100 --no-play
 
     # From a local audio file
     PYTHONPATH=src .venv/bin/python3 scripts/audio2tab.py song.wav \
-        --checkpoint runs/pretrain_t5_v5/best --beam 1 --width 100 --no-play
+        --checkpoint runs/pretrain_t5_guitarset/best --beam 1 --width 100 --no-play
 
     # Also write MIDI + WAV of the predicted tab
     PYTHONPATH=src .venv/bin/python3 scripts/audio2tab.py song.wav \
-        --checkpoint runs/pretrain_t5_v5/best --mid out.mid --wav out.wav --no-play
+        --checkpoint runs/pretrain_t5_guitarset/best --mid out.mid --wav out.wav --no-play
 """
 
 from __future__ import annotations
@@ -45,15 +45,17 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from basic_pitch.inference import predict  # noqa: E402
-from fretwire.chunk import ChunkConfig, make_inference_chunks  # noqa: E402
-from fretwire.decode import constrained_beam_search, greedy_decode  # noqa: E402
-from fretwire.metrics import decode_predictions  # noqa: E402
-from fretwire.postproc import postprocess  # noqa: E402
-from fretwire.render import render_tab  # noqa: E402
-from fretwire.tokenizer import DEFAULT_VOCAB, Vocab, PAD_TOKEN, EOS_TOKEN  # noqa: E402
+from model.chunk import ChunkConfig, make_inference_chunks  # noqa: E402
+from model.decode import constrained_beam_search, greedy_decode  # noqa: E402
+from tablature.metrics import decode_predictions  # noqa: E402
+from tablature.postproc import postprocess  # noqa: E402
+from tablature.render import render_tab  # noqa: E402
+from tablature.tokenizer import DEFAULT_VOCAB, Vocab, PAD_TOKEN, EOS_TOKEN  # noqa: E402
 
 # Import audio/MIDI functions lazily to avoid circular imports
-from preview import play, synthesize, write_smf, write_wav  # noqa: E402
+from audio.midi import write_smf  # noqa: E402
+from audio.synth import synthesize  # noqa: E402
+from audio.wav import play, write_wav  # noqa: E402
 
 PPQ = 960
 
@@ -125,7 +127,7 @@ def audio_to_midi_notes(audio_path: str | Path):
     """
     Run basic-pitch on an audio file and return (pretty_midi, note_dicts).
 
-    note_dicts are in fretwire's internal format:
+    note_dicts are in Tabula's internal format:
         {"t": onset_tick, "dur": dur_tick, "pitch": midi_pitch, "s": 0, "f": 0}
     """
     print(f"Running basic-pitch on {audio_path} ...")
@@ -172,9 +174,9 @@ def run_t5_inference(
     max_len: int = 512,
     postproc_mode: str = "full",
 ):
-    """Run fretwire T5 on note dicts and return post-processed tab notes."""
-    from fretwire.schema import Note
-    from fretwire.tokenizer import notes_to_events
+    """Run Tabula T5 on note dicts and return post-processed tab notes."""
+    from core.schema import Note
+    from tablature.tokenizer import notes_to_events
 
     # Convert dicts to Note objects
     note_objs = [
@@ -241,7 +243,7 @@ def run_t5_inference(
 def main() -> None:
     ap = argparse.ArgumentParser(prog="audio2tab")
     ap.add_argument("input", help="YouTube URL or local audio file (.wav/.mp3/.flac/...)")
-    ap.add_argument("--checkpoint", default="runs/pretrain_t5_v5/best", help="Model checkpoint dir")
+    ap.add_argument("--checkpoint", default="runs/pretrain_t5_guitarset/best", help="Model checkpoint dir")
     ap.add_argument("--vocab", default="vocab/guitarset.json", help="Vocab file")
     ap.add_argument("--beam", type=int, default=4, help="Beam size (1=greedy)")
     ap.add_argument("--max-len", type=int, default=512, help="Max decode length")
@@ -272,7 +274,7 @@ def main() -> None:
         if not notes:
             raise SystemExit("No notes detected in audio")
 
-        # Step 2: MIDI → tab (fretwire T5)
+        # Step 2: MIDI → tab (Tabula T5)
         proc_notes = run_t5_inference(
             model, vocab, notes, device,
             beam=args.beam, max_len=args.max_len, postproc_mode=args.postproc,

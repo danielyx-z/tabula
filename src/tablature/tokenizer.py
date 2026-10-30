@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-from .fretboard import STANDARD
-from .quantise import (
+from core.fretboard import STANDARD
+from core.quantise import (
     GRID,
     SHIFT_VOCAB,
     decode_shifts,
@@ -19,7 +19,7 @@ from .quantise import (
     shift_to_token,
     token_to_shift,
 )
-from .schema import Note
+from core.schema import Note
 
 # Special tokens (T5 conventions)
 PAD_TOKEN = "<pad>"
@@ -126,7 +126,7 @@ def build_base_vocab() -> list[str]:
 def count_token_frequencies(tracks_iter: Iterator[tuple[dict, any]],
                             max_tracks: int = 0) -> Counter[str]:
     """Count token frequencies across tracks for pruning."""
-    from .schema import Note
+    from core.schema import Note
     freq = Counter()
     for i, (meta, notes_arr) in enumerate(tracks_iter):
         if max_tracks and i >= max_tracks:

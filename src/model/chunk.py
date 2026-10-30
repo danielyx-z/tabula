@@ -15,8 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .schema import Note
-from .tokenizer import EOS_TOKEN, Vocab, notes_to_events, notes_to_target, tab_token
+from core.schema import Note
+from tablature.tokenizer import EOS_TOKEN, Vocab, notes_to_events, notes_to_target, tab_token
 
 # Paper values.
 K = 20                 # inference window size, in notes

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build a frozen vocabulary from a shard dataset.
 
-    python scripts/build_vocab.py --data-dir data/processed_guitarset \
+    python scripts/build_vocab.py --data-dir data/processed_guitarset_guitarset \
         --out vocab_guitarset.json
 
 NOTE_ON / NOTE_OFF / TIME_SHIFT tokens are kept only if they occur at least
@@ -19,13 +19,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from fretwire.dataset import iter_tracks  # noqa: E402
-from fretwire.tokenizer import build_vocab_from_tracks  # noqa: E402
+from corpus.dataset import iter_tracks  # noqa: E402
+from tablature.tokenizer import build_vocab_from_tracks  # noqa: E402
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data-dir", default=str(ROOT / "data/processed"))
+    ap.add_argument("--data-dir", default=str(ROOT / "data/processed_guitarset"))
     ap.add_argument("--out", default=str(ROOT / "vocab.json"))
     ap.add_argument("--min-freq", type=int, default=2)
     ap.add_argument("--max-tracks", type=int, default=0)

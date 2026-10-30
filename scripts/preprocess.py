@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Parse the GuitarPro corpus into the sharded canonical dataset.
 
-    python scripts/preprocess.py --out data/processed
+    python scripts/preprocess.py --out data/processed_alphatex
     python scripts/preprocess.py --limit 2000 --out /tmp/probe   # quick check
 
 Every dropped track is written to ``rejects.jsonl`` with a reason, and the
@@ -24,10 +24,10 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from fretwire.dataset import NOTE_DTYPE, ShardWriter, notes_to_array, write_manifest  # noqa: E402
-from fretwire.filter import FilterConfig, evaluate  # noqa: E402
-from fretwire.fretboard import STANDARD, format_tuning  # noqa: E402
-from fretwire.parse.alphatex import ParseError, parse_file  # noqa: E402
+from corpus.dataset import NOTE_DTYPE, ShardWriter, notes_to_array, write_manifest  # noqa: E402
+from corpus.filter import FilterConfig, evaluate  # noqa: E402
+from core.fretboard import STANDARD, format_tuning  # noqa: E402
+from corpus.parse.alphatex import ParseError, parse_file  # noqa: E402
 
 PPQ = 960
 GRID = 60  # 1/16 note
@@ -64,7 +64,7 @@ def iter_sources(path: Path):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", default=str(ROOT / "data/raw/guitar_tab.zip"))
-    ap.add_argument("--out", default=str(ROOT / "data/processed"))
+    ap.add_argument("--out", default=str(ROOT / "data/processed_alphatex"))
     ap.add_argument("--limit", type=int, default=0, help="max .tex files to process")
     ap.add_argument("--min-notes", type=int, default=50)
     ap.add_argument("--shard-notes", type=int, default=1_000_000)
@@ -172,7 +172,7 @@ def main() -> int:
     total_bars = sum(bar_hist.values())
     four_four = bar_hist.get(64, 0) + bar_hist.get(63, 0) + bar_hist.get(65, 0)
     manifest = {
-        "format": "fretwire-canonical-v1",
+        "format": "tabula-canonical-v1",
         "source": str(source.name),
         "ppq": PPQ,
         "grid": GRID,

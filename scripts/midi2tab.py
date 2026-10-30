@@ -2,7 +2,7 @@
 """MIDI -> tablature, with honest artefacts.
 
     python scripts/midi2tab.py song.mid \
-        --checkpoint runs/pretrain_t5_v5/best \
+        --checkpoint runs/pretrain_t5_guitarset/best \
         --out-dir out/song
 
 Writes, all derived independently:
@@ -36,21 +36,22 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from preview import synthesize, write_wav  # noqa: E402
-from fretwire.chunk import ChunkConfig, make_inference_chunks  # noqa: E402
-from fretwire.decode import constrained_beam_search  # noqa: E402
-from fretwire.fretboard import STANDARD  # noqa: E402
-from fretwire.metrics import compute_difficulty  # noqa: E402
-from fretwire.parse.midi import parse_midi  # noqa: E402
-from fretwire.playability import (  # noqa: E402
+from audio.synth import synthesize  # noqa: E402
+from audio.wav import write_wav  # noqa: E402
+from model.chunk import ChunkConfig, make_inference_chunks  # noqa: E402
+from model.decode import constrained_beam_search  # noqa: E402
+from core.fretboard import STANDARD  # noqa: E402
+from tablature.metrics import compute_difficulty  # noqa: E402
+from corpus.parse.midi import parse_midi  # noqa: E402
+from tablature.playability import (  # noqa: E402
     cap_simultaneous,
     fix_chord_spans,
     limit_jumps,
 )
-from fretwire.postproc import DecodedNote, repair_overlaps  # noqa: E402
-from fretwire.render import render_tab  # noqa: E402
-from fretwire.stream import decode_tab_stream  # noqa: E402
-from fretwire.tokenizer import PAD_TOKEN, Vocab  # noqa: E402
+from tablature.postproc import DecodedNote, repair_overlaps  # noqa: E402
+from tablature.render import render_tab  # noqa: E402
+from tablature.stream import decode_tab_stream  # noqa: E402
+from tablature.tokenizer import PAD_TOKEN, Vocab  # noqa: E402
 
 NOTE_DTYPE = [("t", "<i4"), ("dur", "<i4"), ("pitch", "<i1"), ("s", "<i1"), ("f", "<i1")]
 
@@ -188,8 +189,8 @@ def compare(input_notes, raw) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("input", help="input MIDI file")
-    ap.add_argument("--checkpoint", default="runs/pretrain_t5_v5/best")
-    ap.add_argument("--vocab", default="vocab_v1_full.json")
+    ap.add_argument("--checkpoint", default="runs/pretrain_t5_guitarset/best")
+    ap.add_argument("--vocab", default="vocab/guitarset.json")
     ap.add_argument("--out-dir", default="out/midi2tab")
     ap.add_argument("--beam", type=int, default=4)
     ap.add_argument("--max-len", type=int, default=512)

@@ -10,8 +10,8 @@ from __future__ import annotations
 import torch
 from transformers import LogitsProcessor
 
-from .fretboard import STANDARD, positions
-from .tokenizer import EOS_TOKEN, PAD_TOKEN, Vocab, parse_note_on, tab_token
+from core.fretboard import STANDARD, positions
+from tablature.tokenizer import EOS_TOKEN, PAD_TOKEN, Vocab, parse_note_on, tab_token
 
 
 class PitchValidLogitsProcessorV2(LogitsProcessor):

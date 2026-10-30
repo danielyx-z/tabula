@@ -8,7 +8,7 @@ post-processed tablature.  It is a debugging/demo companion to
 
 Example:
     .venv/bin/python3 scripts/infer_sample.py \
-        --checkpoint runs/pretrain_t5_v5/best \
+        --checkpoint runs/pretrain_t5_guitarset/best \
         --track-id 93 --chunk 1
 """
 
@@ -26,16 +26,16 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from fretwire.chunk import ChunkConfig, make_inference_chunks  # noqa: E402
-from fretwire.dataset import iter_tracks  # noqa: E402
-from fretwire.fretboard import STANDARD, pitch_of  # noqa: E402
-from fretwire.metrics import (  # noqa: E402
+from model.chunk import ChunkConfig, make_inference_chunks  # noqa: E402
+from corpus.dataset import iter_tracks  # noqa: E402
+from core.fretboard import STANDARD, pitch_of  # noqa: E402
+from tablature.metrics import (  # noqa: E402
     align_predictions,
     decode_predictions,
 )
-from fretwire.postproc import DecodedNote, postprocess  # noqa: E402
-from fretwire.schema import Note  # noqa: E402
-from fretwire.tokenizer import (  # noqa: E402
+from tablature.postproc import DecodedNote, postprocess  # noqa: E402
+from core.schema import Note  # noqa: E402
+from tablature.tokenizer import (  # noqa: E402
     EOS_TOKEN,
     PAD_TOKEN,
     Vocab,
@@ -108,9 +108,9 @@ def render(notes: list[Note] | list[DecodedNote], tuning, width: int) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--checkpoint", default=str(ROOT / "runs/pretrain_t5_v5/best"))
+    ap.add_argument("--checkpoint", default=str(ROOT / "runs/pretrain_t5_guitarset/best"))
     ap.add_argument("--vocab", default=str(ROOT / "vocab/guitarset.json"))
-    ap.add_argument("--data-dir", default=str(ROOT / "data/processed"))
+    ap.add_argument("--data-dir", default=str(ROOT / "data/processed_guitarset"))
     ap.add_argument("--split", default="valid")
     ap.add_argument("--track-id", type=int, default=93)
     ap.add_argument("--ordinal", type=int, default=0)

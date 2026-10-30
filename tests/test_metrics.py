@@ -8,15 +8,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from fretwire.fretboard import STANDARD, pitch_of  # noqa: E402
-from fretwire.metrics import (  # noqa: E402
+from core.fretboard import STANDARD, pitch_of  # noqa: E402
+from tablature.metrics import (  # noqa: E402
     align_predictions,
     check_playability,
     difficulty_terms,
 )
-from fretwire.postproc import _first_valid, postprocess  # noqa: E402
-from fretwire.quantise import SHIFT_VOCAB, decompose_shift  # noqa: E402
-from fretwire.schema import Note  # noqa: E402
+from tablature.postproc import _first_valid, postprocess  # noqa: E402
+from core.quantise import SHIFT_VOCAB, decompose_shift  # noqa: E402
+from core.schema import Note  # noqa: E402
 
 FAILS: list[str] = []
 
@@ -45,6 +45,11 @@ def test_quantise() -> None:
     check("zero shift is empty", decompose_shift(0) == [])
     check("two-bar shift", sum(decompose_shift(23040)) == 23040)
     check("shift token count is small", len(SHIFT_VOCAB) == 11, str(SHIFT_VOCAB))
+    check(
+        "640 ticks is a quarter-note triplet",
+        decompose_shift(640) == [480, 120, 40],
+        str(decompose_shift(640)),
+    )
 
 
 def test_first_valid() -> None:
@@ -104,7 +109,7 @@ def test_difficulty() -> None:
 
 
 def test_group_chords() -> None:
-    from fretwire.group import group_chords
+    from core.group import group_chords
 
     notes = [
         Note(560, 340, 56, 3, 6),

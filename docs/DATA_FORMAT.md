@@ -34,7 +34,7 @@ triplets (320), dotted values (720) and 32nd notes (120) exactly, unlike a
 
 ## Chord grouping
 
-Performed sources stagger a strum across 20–40 ticks. `fretwire.group.group_chords`
+Performed sources stagger a strum across 20–40 ticks. `core.group.group_chords`
 collapses onsets inside a window onto the first attack and extends durations so
 each note keeps its release tick. The GuitarSet converter enables this by
 default with a 40-tick window.
@@ -133,7 +133,7 @@ A converter only has to emit `(t, dur, pitch, s, f)` records and call
 2. Convert time to ticks at PPQ 960. If the source is in seconds, use its beat
    or tempo annotation rather than assuming 120 BPM.
 3. Snap to the 20-tick grid.
-4. Group strummed onsets with `fretwire.group.group_chords`.
+4. Group strummed onsets with `core.group.group_chords`.
 5. Drop or merge same-string same-tick duplicates.
 6. Assign `split` per song.
 7. Run `scripts/verify.py --dataset <out>`; it must print

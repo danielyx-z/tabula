@@ -11,8 +11,8 @@ timing or pitch is consulted.
 
 from __future__ import annotations
 
-from .fretboard import STANDARD, pitch_of
-from .quantise import token_to_shift
+from core.fretboard import STANDARD, pitch_of
+from core.quantise import token_to_shift
 from .tokenizer import EOS_TOKEN, PAD_TOKEN, UNK_TOKEN, parse_tab
 
 
