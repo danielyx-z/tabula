@@ -1,5 +1,11 @@
 # Audio → Tablature Pipeline
 
+> **Format reference:** [`docs/FORMATS.md`](docs/FORMATS.md) is authoritative.
+> The `neighbor_search` step below is the paper evaluation path; for standalone
+> MIDI -> tab export use `scripts/midi2tab.py`, which never substitutes
+> ground-truth pitches and writes one MIDI track per string.
+>
+
 Full chain: **any audio file (or YouTube URL) → MIDI notes → guitar tablature**
 
 ```
@@ -25,6 +31,10 @@ ASCII tablature  (optionally MIDI + WAV output)
 | `src/fretwire/parse/midi.py` | MIDI parser: pretty_midi → canonical `Note` events |
 | `src/fretwire/render.py` | ASCII tab visualizer |
 | `preview.py` | Audio synthesis + WAV/MIDI writers |
+| `scripts/midi2tab.py` | Honest MIDI → input/raw/final MIDI + WAV + tab + report |
+| `scripts/preprocess_guitarset.py` | GuitarSet JAMS → training shards |
+| `scripts/build_vocab.py` | Build a vocabulary from a shard dataset |
+| `scripts/verify.py` | Check dataset invariants |
 
 ## Usage
 

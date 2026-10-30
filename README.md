@@ -4,6 +4,50 @@ MVP target: symbolic MIDI in, 6-string standard-tuning ASCII tab out. See
 [PLAN.md](PLAN.md) for the model plan; this README covers the data layer that
 exists today.
 
+## Status
+
+The pipeline is wired end to end: **audio/MIDI → canonical notes → shards →
+T5 → decoder stream → MIDI/WAV/ASCII tab**. The current model was trained on a
+now-discarded synthetic corpus and is not musically useful; the next step is
+training on real guitar data (GuitarSet / GAPS).
+
+New to the project? Read:
+
+* [`docs/FORMATS.md`](docs/FORMATS.md) — every input/output format.
+* [`docs/DATA_FORMAT.md`](docs/DATA_FORMAT.md) — the training data contract.
+* [`docs/VERIFICATION.md`](docs/VERIFICATION.md) — what was tested and what
+  still fails.
+
+## Quick start
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+
+# Convert GuitarSet annotations into training shards
+PYTHONPATH=src .venv/bin/python3 scripts/preprocess_guitarset.py \
+    --jams-dir /path/to/guitarSet_annotation --out data/processed_guitarset
+PYTHONPATH=src .venv/bin/python3 scripts/verify.py --dataset data/processed_guitarset
+
+# Build a vocabulary for that corpus (optional if the old one covers it)
+PYTHONPATH=src .venv/bin/python3 scripts/build_vocab.py \
+    --data-dir data/processed_guitarset --out vocab_guitarset.json
+
+# Train
+PYTHONPATH=src .venv/bin/python3 -m fretwire.train \
+    --data-dir data/processed_guitarset --vocab-path vocab_guitarset.json \
+    --output-dir runs/guitarset
+
+# MIDI -> input/raw/final MIDI + WAV + tab + report
+PYTHONPATH=src:. .venv/bin/python3 scripts/midi2tab.py song.mid \
+    --checkpoint runs/guitarset/best --vocab vocab_guitarset.json \
+    --out-dir out/song
+```
+
+The exported MIDI files carry **one track per string**, because a normal MIDI
+file only stores pitch and time and cannot represent a fingering.
+
+
 ## Contract
 
 | Thing | Value |
