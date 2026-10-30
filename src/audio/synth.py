@@ -18,6 +18,28 @@ from core.quantise import PPQ
 DEFAULT_SF2 = "/usr/share/sounds/sf2/FluidR3_GM.sf2"
 
 
+def _to_dict(note) -> dict:
+    """Convert note-like object to dict with t, dur, pitch, s, f keys."""
+    # numpy structured array record
+    if hasattr(note, "dtype") and hasattr(note, "tolist"):
+        return {name: note[name] for name in note.dtype.names}
+    # dict-like
+    if hasattr(note, "get"):
+        return {k: note.get(k) for k in ("t", "dur", "pitch", "s", "f")}
+    # Note object
+    if hasattr(note, "t"):
+        return {"t": note.t, "dur": note.dur, "pitch": note.pitch, "s": note.s, "f": note.f}
+    # Fallback: assume sequence
+    return {"t": note[0], "dur": note[1], "pitch": note[2], "s": note[3], "f": note[4]}
+
+
+def _to_py(val):
+    """Convert numpy scalars to native Python types."""
+    if isinstance(val, (np.integer, np.floating)):
+        return val.item()
+    return val
+
+
 def _midi_duration_seconds(mid_path: Path) -> float:
     """Return the end time of the last note in seconds."""
     pm = pretty_midi.PrettyMIDI(str(mid_path))
@@ -31,11 +53,14 @@ def _write_temp_midi(notes, bpm: float, ppq: int = PPQ) -> Path:
     for s in range(1, 7):
         track = pretty_midi.Instrument(program=25, name=f"string {s} ({string_names[s-1]})")
         for n in notes:
-            if n.get("s") == s:
+            d = n  # already dict from synthesize
+            if d.get("s") == s:
+                pitch = _to_py(d.get("pitch"))
+                start = _to_py(d.get("t")) / ppq * 60.0 / bpm
+                end = (_to_py(d.get("t")) + _to_py(d.get("dur"))) / ppq * 60.0 / bpm
                 track.notes.append(pretty_midi.Note(
-                    velocity=100, pitch=n.get("pitch"),
-                    start=n.get("t") / ppq * 60.0 / bpm,
-                    end=(n.get("t") + n.get("dur")) / ppq * 60.0 / bpm
+                    velocity=100, pitch=pitch,
+                    start=start, end=end
                 ))
         pm.instruments.append(track)
 
@@ -55,7 +80,8 @@ def synthesize(
     """Render canonical notes to mono float32 audio via FluidSynth.
 
     Args:
-        notes: Sequence of dicts with keys t, dur, pitch, s, f
+        notes: Sequence of note-like objects (dict, Note, numpy record, etc.)
+               with fields t, dur, pitch, s, f
         bpm: Tempo in beats per minute
         sr: Sample rate
         ppq: Ticks per quarter note
@@ -67,6 +93,10 @@ def synthesize(
     """
     if not len(notes):
         return np.zeros(sr, dtype=np.float32)
+
+    # Normalize to dicts with native Python values
+    notes = [_to_dict(n) for n in notes]
+    notes = [{k: _to_py(v) for k, v in d.items()} for d in notes]
 
     # Write notes to temporary MIDI
     mid_path = _write_temp_midi(notes, bpm, ppq)

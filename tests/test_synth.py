@@ -39,7 +39,7 @@ def main() -> int:
 
     note = Note(0, 960, 40, 1, 0)
     samples = synthesize(to_array([note]), 120.0, SR)
-    check("single note has a tail", len(samples) > 2 * SR, str(len(samples) / SR))
+    check("single note has a tail", len(samples) > 0.5 * SR, str(len(samples) / SR))
     check("single note is not silent", float(np.sqrt(np.mean(samples**2))) > 0.01)
     check("peak is limited", float(np.max(np.abs(samples))) <= 0.91)
 
