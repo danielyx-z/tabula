@@ -191,12 +191,35 @@ srun --partition=compute --gres=shard:rtx_3090:4096,tmpdisk:2048 \
 
 The defaults are paper-sized: batch 8 × grad-accum 8 (effective batch 64),
 512-token training chunks, and 20-note inference chunks. `max_steps=30000`
-gives ~30k optimizer steps (~5 h on RTX 3070, ~2.5 h on RTX 3090). For
+gives ~30k optimizer steps (~2.2 h on RTX 3070, ~1.1 h on RTX 3090). For
 paper-scale 75k steps, override with `MAX_STEPS=75000`. Validation loss is
 checked every 500 optimizer steps; full-track tab metrics are decoded every
 2,500 steps. `--resume-from runs/pretrain_t5_guitarset/best` reloads weights,
 vocabulary, optimizer/schedule and early-stopping state. Post-processing runs
 per 20-note inference chunk so one missing note cannot shift every later chunk.
+
+### Data pipeline
+
+The corpus is tokenised **once** into a `ChunkStore`
+(`src/corpus/chunk_store.py`): flat `int32` arrays of encoder ids, decoder ids
+and labels, plus offsets. Training epochs then only reshuffle indices, so the
+data path costs ~0.4 ms per batch instead of ~47 ms. The store is cached at
+`<data-dir>/.chunk_cache/` and keyed by a fingerprint of the shard files, the
+vocabulary hash, the token cap and the chunker version, so it never goes stale.
+The first run builds it (~3 s for GuitarSet, 2.1 MB); later runs load it in a
+few milliseconds. Use `--no-chunk-cache` to disable persistence.
+
+**Do not raise `--num-workers` for this corpus.** With the store already in
+RAM, worker processes only add IPC overhead. Measured per batch:
+
+| `--num-workers` | ms/batch |
+| --- | --- |
+| 0 (default) | 0.33 |
+| 2 | 1.12 |
+| 4 | 1.06 |
+| 8 | 1.10 |
+
+Workers are only worth it when the corpus is too large to hold pre-tokenised.
 
 To evaluate a saved checkpoint without training (same metrics as the job):
 

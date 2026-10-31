@@ -27,8 +27,13 @@
 #   * Checkpoint under runs/ so a requeued job can resume manually with
 #     --resume-from runs/pretrain_t5_guitarset/best.
 #
-# Paper-scale: MAX_STEPS=75000 (approx 75k optimizer updates, ~13h on RTX 3090).
-# Default:     MAX_STEPS=30000 (approx 5h on RTX 3070, ~2.5h on RTX 3090).
+# Paper-scale: MAX_STEPS=75000 (approx 75k optimizer updates, ~5.5h on RTX 3090).
+# Default:     MAX_STEPS=30000 (approx 2.2h on RTX 3070, ~1.1h on RTX 3090).
+#
+# The corpus is tokenised once into a chunk store cached under
+# data/processed_guitarset/.chunk_cache (a few MB). Training epochs then only
+# reshuffle indices, so the data path is ~1% of step time. Do not set
+# NUM_WORKERS>0 for the GuitarSet corpus: worker IPC costs more than it saves.
 
 set -euo pipefail
 

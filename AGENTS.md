@@ -66,6 +66,13 @@ tail -f logs/<jobid>-tabula-t5.out
 scancel <jobid>
 ```
 
+See `docs/WATCLOUD.md` for the full cluster reference (node/GPU table, GRES
+semantics, notifications, troubleshooting).
+
+Verified throughput on `trpro-slurm1` (RTX 3090 shard, batch 8 × grad-accum 8,
+warm chunk cache): ~4.2 optimizer steps/s, so 30,000 steps ≈ 2 h including
+validation loss and periodic full-track metrics.
+
 WATcloud notifications (instead of Slurm mail):
 
 ```bash
@@ -155,6 +162,10 @@ is off by default; enable it only if memory becomes tight.
 - `src/model/model.py` — paper-config T5 factory.
 - `src/tablature/tokenizer.py` — v3 event/target encoding.
 - `src/model/chunk.py` — 512-token train windows / 20-note inference chunks.
+- `src/corpus/chunk_store.py` — tokenises training chunks **once** into flat
+  arrays and caches them under `<data-dir>/.chunk_cache/`. Training epochs then
+  only reshuffle indices (~0.4 ms/batch vs ~47 ms of re-chunking per batch).
+  Do not reintroduce per-epoch chunking in the training loop.
 - `src/tablature/postproc.py` — overlap correction + neighbor search.
 - `src/tablature/metrics.py` — tab/pitch accuracy, difficulty, **rhythm**.
 - `src/model/train.py` — training, validation loss, full metrics.

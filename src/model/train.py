@@ -17,17 +17,17 @@ those are not part of the Fretting-Transformer paper.
 from __future__ import annotations
 
 import argparse
-import itertools
 import json
 import random
 from dataclasses import asdict, dataclass
+from functools import partial
 from pathlib import Path
 from typing import Iterator, Optional
 
 import numpy as np
 import torch
 from accelerate import Accelerator
-from torch.utils.data import DataLoader, IterableDataset
+from torch.utils.data import DataLoader, Dataset
 from transformers import T5ForConditionalGeneration, get_cosine_schedule_with_warmup
 from transformers.optimization import Adafactor
 
@@ -35,9 +35,9 @@ from model.chunk import (
     MAX_TOKENS,
     ChunkConfig,
     make_inference_chunks,
-    make_training_chunks,
 )
-from corpus.dataset import iter_tracks
+from corpus.chunk_store import ChunkStore, get_chunk_store
+from corpus.dataset import iter_tracks, records_to_notes
 from tablature.metrics import (
     EvalCounts,
     RhythmCounts,
@@ -53,7 +53,6 @@ from tablature.metrics import (
 )
 from model.model import count_parameters, make_model
 from tablature.postproc import postprocess
-from core.schema import Note
 from tablature.tokenizer import DEFAULT_VOCAB, EOS_TOKEN, PAD_TOKEN, Vocab, tab_token
 
 
@@ -92,6 +91,12 @@ class TrainConfig:
     batch_size: int = 8
     max_steps: int = 30000  # optimizer steps; 0 = unlimited (stop via max_epochs)
     max_len: int = MAX_TOKENS
+    # The corpus is tokenised once into RAM, so worker processes only add IPC
+    # overhead; raise this only for corpora too large to pre-tokenise.
+    num_workers: int = 0
+    # Persist the tokenised chunk store next to the dataset (safe: the cache
+    # key includes the shard fingerprint, vocab hash and token cap).
+    chunk_cache: bool = True
 
 
 def set_seed(seed: int) -> None:
@@ -101,127 +106,67 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def records_to_notes(notes_arr) -> list[Note]:
-    return [
-        Note(
-            t=int(row["t"]),
-            dur=int(row["dur"]),
-            pitch=int(row["pitch"]),
-            s=int(row["s"]),
-            f=int(row["f"]),
-        )
-        for row in notes_arr
-    ]
+class ChunkDataset(Dataset):
+    """Map-style view over a pre-tokenised :class:`ChunkStore`.
 
+    Serving a chunk is two array slices, so an epoch costs almost nothing and
+    the DataLoader can shuffle the whole corpus instead of a small buffer.
+    """
 
-class ChunkIterableDataset(IterableDataset):
-    """Yield token-capped training chunks from the sharded dataset."""
+    def __init__(self, store: ChunkStore, pad_id: int = 0, max_len: int = MAX_TOKENS):
+        self.store = store
+        self.pad_id = pad_id
+        self.max_len = max_len
 
-    def __init__(
-        self,
-        data_dir: str,
-        split: str,
-        vocab: Vocab,
-        max_tracks: int = 0,
-        max_len: int = MAX_TOKENS,
-        shuffle: bool = True,
-        seed: int = 42,
-        max_chunks_per_track: int = 0,
-        shuffle_buffer: int = 512,
-    ):
-        self.data_dir = data_dir
-        self.split = split
-        self.vocab = vocab
-        self.max_tracks = max_tracks
-        self.max_chunks_per_track = max_chunks_per_track
-        self.cfg = ChunkConfig(max_tokens=max_len)
-        self.shuffle = shuffle
-        self.seed = seed
-        self.shuffle_buffer = max(0, shuffle_buffer)
-        self._epoch = 0
+    def __len__(self) -> int:
+        return len(self.store)
 
-    @staticmethod
-    def _item(chunk) -> dict[str, torch.Tensor]:
+    def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
+        s = self.store
+        enc = s.enc[s.enc_off[index] : s.enc_off[index + 1]]
+        dec = s.dec[s.dec_off[index] : s.dec_off[index + 1]]
+        lab = s.lab[s.lab_off[index] : s.lab_off[index + 1]]
         return {
-            "input_ids": torch.tensor(chunk.enc_tokens, dtype=torch.long),
-            "decoder_input_ids": torch.tensor(chunk.dec_tokens, dtype=torch.long),
-            "labels": torch.tensor(chunk.labels, dtype=torch.long),
+            "input_ids": torch.from_numpy(enc.astype(np.int64)),
+            "decoder_input_ids": torch.from_numpy(dec.astype(np.int64)),
+            "labels": torch.from_numpy(lab.astype(np.int64)),
         }
-
-    def __iter__(self):
-        seed = self.seed + self._epoch
-        self._epoch += 1
-        rng = random.Random(seed)
-        buffer: list[dict[str, torch.Tensor]] = []
-        buffered = self.shuffle and self.shuffle_buffer > 0
-
-        for track_count, (meta, notes_arr) in enumerate(
-            iter_tracks(
-                self.data_dir,
-                split=self.split,
-                shuffle=self.shuffle,
-                seed=seed,
-            )
-        ):
-            if self.max_tracks and track_count >= self.max_tracks:
-                break
-            notes = records_to_notes(notes_arr)
-            chunks = make_training_chunks(
-                notes,
-                self.vocab,
-                meta.get("id", meta.get("song", track_count)),
-                self.cfg,
-            )
-            if self.max_chunks_per_track:
-                chunks = chunks[: self.max_chunks_per_track]
-            for chunk in chunks:
-                if not chunk.enc_tokens or not chunk.labels:
-                    continue
-                if not buffered:
-                    yield self._item(chunk)
-                    continue
-                buffer.append(self._item(chunk))
-                if len(buffer) >= self.shuffle_buffer:
-                    j = rng.randrange(len(buffer))
-                    buffer[j], buffer[-1] = buffer[-1], buffer[j]
-                    yield buffer.pop()
-
-        if buffered:
-            rng.shuffle(buffer)
-        yield from buffer
 
 
 def _infinite_chunk_iterator(
-    data_dir: str,
-    split: str,
-    vocab: Vocab,
-    max_tracks: int,
-    max_len: int,
-    shuffle: bool,
-    seed: int,
-    shuffle_buffer: int,
+    store: ChunkStore,
     batch_size: int,
+    pad_id: int,
+    max_len: int,
+    seed: int,
+    num_workers: int = 0,
+    prefetch_factor: int = 4,
 ) -> Iterator[dict[str, torch.Tensor]]:
-    """Yield batches forever, re-iterating the dataset each pass."""
+    """Yield batches forever, reshuffling the store each pass.
+
+    ``num_workers=0`` is the default and the right choice here: the store is
+    already tokenised in RAM, so worker processes would only add IPC overhead.
+    Raise it for corpora too large to hold pre-tokenised.
+    """
+    epoch = 0
+    ds = ChunkDataset(store, pad_id=pad_id, max_len=max_len)
+    collate = partial(collate_fn, pad_id=pad_id, max_len=max_len)
     while True:
-        ds = ChunkIterableDataset(
-            data_dir,
-            split,
-            vocab,
-            max_tracks=max_tracks,
-            max_len=max_len,
-            shuffle=shuffle,
-            seed=seed,
-            shuffle_buffer=shuffle_buffer,
-        )
+        gen = torch.Generator()
+        gen.manual_seed(seed + epoch)
         dl = DataLoader(
             ds,
             batch_size=batch_size,
-            collate_fn=lambda b: collate_fn(b, pad_id=vocab[PAD_TOKEN], max_len=max_len),
-            num_workers=0,
+            shuffle=True,
+            generator=gen,
+            collate_fn=collate,
+            num_workers=num_workers,
+            prefetch_factor=prefetch_factor if num_workers > 0 else None,
+            persistent_workers=num_workers > 0,
+            drop_last=False,
         )
-        for batch in dl:
-            yield batch
+        yield from dl
+        epoch += 1
 
 
 def collate_fn(
@@ -487,12 +432,17 @@ def evaluate_loss(
     max_batches: int = 0,  # 0 = all validation chunks
     max_len: int = MAX_TOKENS,
     batch_size: int = 8,
+    store: ChunkStore | None = None,
+    num_workers: int = 0,
 ) -> float:
     """Fast teacher-forced validation loss on token-capped chunks.
 
     This mirrors the paper's validation objective and is much cheaper than
     decoding whole tracks. It is used for early stopping; full tab metrics are
     reported separately on a smaller cadence.
+
+    ``store`` lets the caller reuse an already-built validation chunk store;
+    otherwise it is loaded from (or written to) the on-disk chunk cache.
     """
     unwrapped = accelerator.unwrap_model(model)
     was_training = unwrapped.training
@@ -504,22 +454,21 @@ def evaluate_loss(
     unwrapped.eval()
 
     pad_id = vocab[PAD_TOKEN]
-    ds = ChunkIterableDataset(
-        data_dir,
-        split,
-        vocab,
-        max_tracks=0,
-        max_len=max_len,
-        shuffle=True,
-        seed=0,
-        max_chunks_per_track=0,  # use all chunks
-        shuffle_buffer=max(1, batch_size * 2),
-    )
+    if store is None:
+        store = get_chunk_store(
+            data_dir, split, vocab, max_len, use_disk_cache=True
+        )
+    ds = ChunkDataset(store, pad_id=pad_id, max_len=max_len)
+    # Fixed generator: validation must be comparable across evaluations.
+    gen = torch.Generator()
+    gen.manual_seed(0)
     dl = DataLoader(
         ds,
         batch_size=batch_size,
-        collate_fn=lambda b: collate_fn(b, pad_id=pad_id, max_len=max_len),
-        num_workers=0,
+        shuffle=True,
+        generator=gen,
+        collate_fn=partial(collate_fn, pad_id=pad_id, max_len=max_len),
+        num_workers=num_workers,
     )
 
     total_loss = 0.0
@@ -750,17 +699,41 @@ def train(cfg: TrainConfig, resume_from: str = "") -> None:
                 "resuming weights/vocab only"
             )
 
-    # Build the infinite training iterator.
-    batch_iter = _infinite_chunk_iterator(
+    # Tokenise the corpus once; every epoch then just reshuffles indices.
+    train_store = get_chunk_store(
         cfg.data_dir,
         "train",
         vocab,
+        cfg.max_len,
         max_tracks=cfg.max_tracks,
-        max_len=cfg.max_len,
-        shuffle=True,
-        seed=cfg.seed + start_epoch,
-        shuffle_buffer=64,
+        use_disk_cache=cfg.chunk_cache,
+    )
+    if len(train_store) == 0:
+        raise RuntimeError(
+            f"no training chunks found for split 'train' in {cfg.data_dir}"
+        )
+    accelerator.print(
+        f"Train chunks: {len(train_store)} "
+        f"({train_store.nbytes / 1e6:.1f} MB of tokens, "
+        f"{len(train_store) / max(1, cfg.batch_size):.0f} batches/epoch)"
+    )
+
+    batch_iter = _infinite_chunk_iterator(
+        train_store,
         batch_size=cfg.batch_size,
+        pad_id=pad_id,
+        max_len=cfg.max_len,
+        seed=cfg.seed + start_epoch,
+        num_workers=cfg.num_workers,
+    )
+
+    # Validation chunks are built once and reused by every evaluation.
+    valid_store = get_chunk_store(
+        cfg.data_dir,
+        "valid",
+        vocab,
+        cfg.max_len,
+        use_disk_cache=cfg.chunk_cache,
     )
 
     accelerator.print("Starting training...")
@@ -792,7 +765,9 @@ def train(cfg: TrainConfig, resume_from: str = "") -> None:
                     scheduler.step()
                 optimizer.zero_grad()
 
-            epoch_loss += loss.item()
+            # Keep the loss on the GPU and sync once per log window instead of
+            # forcing a device sync on every micro-batch.
+            epoch_loss += loss.detach()
             epoch_batches += 1
 
             if not accelerator.sync_gradients:
@@ -820,6 +795,8 @@ def train(cfg: TrainConfig, resume_from: str = "") -> None:
                     max_batches=cfg.eval_loss_batches,
                     max_len=cfg.max_len,
                     batch_size=cfg.batch_size,
+                    store=valid_store,
+                    num_workers=cfg.num_workers,
                 )
                 accelerator.print(
                     f"\n--- Validation loss @ step {update_step}: {val_loss:.4f} ---"
@@ -983,6 +960,11 @@ def main() -> None:
     ap.add_argument("--min-delta", type=float, default=1e-4)
     ap.add_argument("--max-tracks", type=int, default=0)
     ap.add_argument("--max-len", type=int, default=MAX_TOKENS)
+    ap.add_argument("--num-workers", type=int, default=0,
+                    help="DataLoader workers; 0 is fastest for the pre-tokenised "
+                         "chunk store (default)")
+    ap.add_argument("--no-chunk-cache", dest="chunk_cache", action="store_false",
+                    help="Do not persist the tokenised chunk store on disk")
     ap.add_argument("--resume-from", type=str, default="",
                     help="Checkpoint directory: restores weights, vocabulary, "
                          "optimizer/scheduler and early-stopping state")
@@ -1015,6 +997,8 @@ def main() -> None:
         max_tracks=args.max_tracks,
         batch_size=args.batch_size,
         max_len=args.max_len,
+        num_workers=args.num_workers,
+        chunk_cache=args.chunk_cache,
     )
     train(cfg, resume_from=args.resume_from)
 

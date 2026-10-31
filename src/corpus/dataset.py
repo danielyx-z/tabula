@@ -27,9 +27,25 @@ from typing import Iterator
 
 import numpy as np
 
+from core.schema import Note
+
 NOTE_DTYPE = np.dtype(
     [("t", "<i4"), ("dur", "<i4"), ("pitch", "<i1"), ("s", "<i1"), ("f", "<i1")]
 )
+
+
+def records_to_notes(notes_arr) -> list[Note]:
+    """Convert a structured ``notes.npy`` slice into ``Note`` objects."""
+    return [
+        Note(
+            t=int(row["t"]),
+            dur=int(row["dur"]),
+            pitch=int(row["pitch"]),
+            s=int(row["s"]),
+            f=int(row["f"]),
+        )
+        for row in notes_arr
+    ]
 
 
 def notes_to_array(notes) -> np.ndarray:
@@ -107,9 +123,10 @@ def iter_tracks(
     """Yield ``(metadata, notes_view)`` across all shards, optionally by split.
 
     ``shuffle`` randomises shard order and track order within each shard. This
-    matters for training: ``ChunkIterableDataset`` only consumes a fixed number
-    of micro-batches per epoch, so a fixed order would keep revisiting the same
-    first tracks. Validation/evaluation should leave it off.
+    matters when a consumer only reads a fixed prefix of the corpus: a fixed
+    order would keep revisiting the same first tracks. Validation/evaluation
+    should leave it off. Training does not need it any more -- the chunk store
+    is built in a fixed order and shuffled per epoch at batch time.
     """
     shards = shard_dirs(root)
     rng = np.random.default_rng(seed) if shuffle else None
