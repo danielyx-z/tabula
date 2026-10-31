@@ -127,7 +127,11 @@ Two coverage fields keep the honest picture visible:
   token. Fallback-invented notes count as uncovered.
 - **Tab@Pred** — exact `(string, fret)` accuracy over covered notes only.
 
-Use raw accuracy and `Tab@Pred` as model quality; the all-notes post number is
+Use **raw accuracy** as the end-to-end number. Post `Tab@Pred` is still
+GT-assisted in a second way: `neighbor_search` rewrites the fret from the
+input pitch while keeping the predicted string, so it mostly measures
+**string choice**, not fret prediction. That is a useful fingering diagnostic,
+but it is not a substitute for raw tab accuracy. The all-notes post number is
 for paper comparability only.
 
 ### Smoke test (2 optimizer steps)

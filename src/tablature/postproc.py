@@ -9,7 +9,9 @@ Section 3.5 defines two corrections:
    note within ±5 notes.  If the pitch differs, the fingering is corrected; if
    no candidate exists, the first viable string/fret for the input pitch is
    used.  This makes pitch accuracy 100% after post-processing, as reported in
-   Table 2 of the paper.
+   Table 2 of the paper.  Because the fret is rewritten from the input pitch,
+post-processed tab accuracy mostly measures the predicted *string*, not the
+fret.
 
 Every output note records whether its position came from a model TAB token
 (``from_prediction``) or had to be invented by the ``_first_valid`` fallback,
