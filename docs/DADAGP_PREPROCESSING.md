@@ -267,7 +267,8 @@ On WATcloud the same job script handles both stages:
 
 ```bash
 DATA_DIR=data/processed_dadagp VOCAB_PATH=vocab/canonical.json \
-OUTPUT_DIR=runs/pretrain_t5_dadagp BATCH_SIZE=128 GRAD_ACCUM=1 \
+OUTPUT_DIR=runs/pretrain_t5_dadagp BATCH_SIZE=512 GRAD_ACCUM=1 \
+MAX_STEPS=15000 LR=5e-4 WARMUP_RATIO=0.05 DROPOUT=0.1 WEIGHT_DECAY=0.01 \
 sbatch scripts/train_t5.sh
 ```
 

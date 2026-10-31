@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=tabula-t5
 #SBATCH --partition=compute_dense
-#SBATCH --time=2-00:00:00
+#SBATCH --time=1-00:00:00
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --gres=shard:rtx_3090:8192,tmpdisk:20480
+#SBATCH --gres=gpu:rtx_4090:1
 #SBATCH --output=logs/%j-%x.out
 #SBATCH --error=logs/%j-%x.err
 
@@ -18,17 +18,14 @@
 #     BATCH_SIZE=16 GRAD_ACCUM=4 MAX_STEPS=75000 sbatch scripts/train_t5.sh
 #
 # Resource notes:
-#   * shard:rtx_3090:8192 requests 8 GiB of a shared RTX 3090. The model is
-#     tiny; this is ample for batch 8. The explicit GPU type avoids the
-#     Pascal GTX 1080 node, which does not support bf16. Use
-#     --gres=gpu:rtx_3090:1 for a dedicated card.
-#   * compute_dense allows long jobs (7-day max). Use compute + time<=1 day if
-#     you need a shorter slot.
+#   * gpu:rtx_4090:1 requests the whole 24 GiB RTX 4090 on trpro-slurm2, which
+#     is what lets batch 512 fit. The 3090 nodes are shared 8 GiB shards.
+#   * compute_dense allows long jobs (7-day max); this job asks for 1 day.
 #   * Checkpoint under runs/ so a requeued job can resume manually with
 #     --resume-from runs/pretrain_t5_guitarset/best.
 #
-# Paper-scale: MAX_STEPS=75000 (approx 75k optimizer updates, ~5.5h on RTX 3090).
-# Default:     MAX_STEPS=30000 (approx 2.2h on RTX 3070, ~1.1h on RTX 3090).
+# Paper-scale: MAX_STEPS=75000 (approx 75k optimizer updates).
+# Default:     MAX_STEPS=30000.
 #
 # The corpus is tokenised once into a chunk store cached under
 # data/processed_guitarset/.chunk_cache (a few MB). Training epochs then only
@@ -87,6 +84,8 @@ exec "$PYTHON" -m model.train \
     --metrics-every "${METRICS_EVERY:-2500}" \
     --save-every "${SAVE_EVERY:-2500}" \
     --postproc full \
+    --warmup-ratio "${WARMUP_RATIO:-0.02}" \
+    --max-grad-norm "${MAX_GRAD_NORM:-1.0}" \
     --patience "${PATIENCE:-10}" \
     --dropout "${DROPOUT:-0.1}" \
     --weight-decay "${WEIGHT_DECAY:-0.0}" \
