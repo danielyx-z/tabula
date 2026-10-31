@@ -71,6 +71,7 @@ class TrainConfig:
     max_grad_norm: float = 1.0
     bf16: bool = True
     gradient_checkpointing: bool = False
+    dropout: float = 0.1  # T5 default; the paper uses 0.1
     # Early stopping on validation loss (paper-style); full tab metrics are
     # expensive because they decode whole tracks.
     patience: int = 10
@@ -593,7 +594,12 @@ def train(cfg: TrainConfig, resume_from: str = "") -> None:
                     f"{resume_from}"
                 )
     else:
-        model = make_model(vocab.size, vocab[PAD_TOKEN], vocab[EOS_TOKEN])
+        model = make_model(
+            vocab.size,
+            vocab[PAD_TOKEN],
+            vocab[EOS_TOKEN],
+            dropout_rate=cfg.dropout,
+        )
 
     pad_id = vocab[PAD_TOKEN]
     eos_id = vocab[EOS_TOKEN]
@@ -957,6 +963,8 @@ def main() -> None:
                     help="Adafactor weight decay (default 0, as in T5)")
     ap.add_argument("--max-grad-norm", type=float, default=1.0)
     ap.add_argument("--patience", type=int, default=10)
+    ap.add_argument("--dropout", type=float, default=0.1,
+                    help="T5 dropout rate (paper: 0.1)")
     ap.add_argument("--min-delta", type=float, default=1e-4)
     ap.add_argument("--max-tracks", type=int, default=0)
     ap.add_argument("--max-len", type=int, default=MAX_TOKENS)
@@ -993,6 +1001,7 @@ def main() -> None:
         weight_decay=args.weight_decay,
         max_grad_norm=args.max_grad_norm,
         patience=args.patience,
+        dropout=args.dropout,
         min_delta=args.min_delta,
         max_tracks=args.max_tracks,
         batch_size=args.batch_size,

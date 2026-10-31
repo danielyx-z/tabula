@@ -55,12 +55,15 @@ if [[ ! -x "$PYTHON" ]]; then
     exit 1
 fi
 
-if [[ ! -d data/processed_guitarset ]]; then
-    echo "error: data/processed_guitarset is missing in $REPO_DIR" >&2
+DATA_DIR="${DATA_DIR:-data/processed_guitarset}"
+VOCAB_PATH="${VOCAB_PATH:-vocab/guitarset.json}"
+
+if [[ ! -d "$DATA_DIR" ]]; then
+    echo "error: $DATA_DIR is missing in $REPO_DIR" >&2
     exit 1
 fi
-if [[ ! -f vocab/guitarset.json ]]; then
-    echo "error: vocab/guitarset.json is missing in $REPO_DIR" >&2
+if [[ ! -f "$VOCAB_PATH" ]]; then
+    echo "error: $VOCAB_PATH is missing in $REPO_DIR" >&2
     exit 1
 fi
 
@@ -71,8 +74,8 @@ nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader ||
 "$PYTHON" --version
 
 exec "$PYTHON" -m model.train \
-    --data-dir data/processed_guitarset \
-    --vocab-path vocab/guitarset.json \
+    --data-dir "$DATA_DIR" \
+    --vocab-path "$VOCAB_PATH" \
     --output-dir "$OUTPUT_DIR" \
     --batch-size "${BATCH_SIZE:-8}" \
     --grad-accum "${GRAD_ACCUM:-8}" \
@@ -84,4 +87,8 @@ exec "$PYTHON" -m model.train \
     --metrics-every "${METRICS_EVERY:-2500}" \
     --save-every "${SAVE_EVERY:-2500}" \
     --postproc full \
+    --patience "${PATIENCE:-10}" \
+    --dropout "${DROPOUT:-0.1}" \
+    --weight-decay "${WEIGHT_DECAY:-0.0}" \
+    ${LR:+--lr "$LR"} \
     --resume-from "${RESUME_FROM:-}"
