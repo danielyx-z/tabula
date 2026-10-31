@@ -98,8 +98,8 @@ def _play_wav(samples: np.ndarray, sr: int = 44100):
 def main() -> None:
     ap = argparse.ArgumentParser(prog="midi2tab")
     ap.add_argument("input", help="Input MIDI file (.mid/.midi)")
-    ap.add_argument("--checkpoint", default="runs/pretrain_t5_guitarset/best", help="Model checkpoint dir")
-    ap.add_argument("--vocab", default="vocab/guitarset.json", help="Vocab file")
+    ap.add_argument("--checkpoint", default="runs/finetune_t5_guitarset/best", help="Model checkpoint dir")
+    ap.add_argument("--vocab", default="vocab/canonical.json", help="Vocab file")
     ap.add_argument("--beam", type=int, default=4, help="Beam size (1=greedy)")
     ap.add_argument("--max-len", type=int, default=512, help="Max decode length")
     ap.add_argument("--no-play", action="store_true", help="Don't play audio")
@@ -109,6 +109,17 @@ def main() -> None:
     ap.add_argument("--program", type=int, default=None, help="GM program to extract (0-127), default=first non-drum")
     ap.add_argument("--no-merge", action="store_true", help="Don't merge multi-track MIDI")
     ap.add_argument("--postproc", choices=["none", "overlap", "full"], default="full", help="Post-processing mode")
+    ap.add_argument("--pitch-constraint", dest="pitch_constraint",
+                    action="store_true", default=True,
+                    help="Mask TAB tokens to positions that match the input pitch")
+    ap.add_argument("--no-pitch-constraint", dest="pitch_constraint",
+                    action="store_false",
+                    help="Disable pitch/low-position masking")
+    ap.add_argument("--max-fret", type=int, default=12,
+                    help="Prefer positions at or below this fret when possible; "
+                         "-1 disables the low-position rule")
+    ap.add_argument("--fret-penalty", type=float, default=0.0,
+                    help="Soft penalty (-lambda*fret) among allowed positions")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -157,16 +168,20 @@ def main() -> None:
             if args.beam > 1:
                 gen = constrained_beam_search(
                     model, enc, vocab, num_beams=args.beam, max_length=args.max_len,
-                    use_pitch_constraint=True, decoder_input_ids=prompt,
+                    use_pitch_constraint=args.pitch_constraint, decoder_input_ids=prompt,
                     attention_mask=attn, max_new_tokens=max_new,
                     prompt_tabs=prompt_tabs,
+                    max_fret=None if args.max_fret < 0 else args.max_fret,
+                    fret_penalty=args.fret_penalty,
                 )
             else:
                 gen = greedy_decode(
                     model, enc, vocab, max_length=args.max_len,
-                    use_pitch_constraint=True, decoder_input_ids=prompt,
+                    use_pitch_constraint=args.pitch_constraint, decoder_input_ids=prompt,
                     attention_mask=attn, max_new_tokens=max_new,
                     prompt_tabs=prompt_tabs,
+                    max_fret=None if args.max_fret < 0 else args.max_fret,
+                    fret_penalty=args.fret_penalty,
                 )
 
         gen_ids = gen[0, prompt.size(1):].tolist()

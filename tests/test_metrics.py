@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from core.fretboard import STANDARD, pitch_of  # noqa: E402
 from tablature.metrics import (  # noqa: E402
+    aggregate_counts,
     align_predictions,
     check_playability,
     difficulty_terms,
@@ -163,6 +164,59 @@ def test_group_chords() -> None:
     check("release tick preserved", grouped[2].t + grouped[2].dur == 960)
 
 
+def test_fret_diagnostics() -> None:
+    gt = [
+        Note(0, 480, 64, 6, 0),
+        Note(480, 480, 66, 5, 2),
+        Note(960, 480, 67, 5, 3),
+    ]
+    counts = align_predictions([(6, 0), (6, 2), (5, 4)], gt)
+    check(
+        "string accuracy counts string-only matches",
+        abs(counts.string_accuracy() - 2 / 3) < 1e-9,
+        str(counts.string_accuracy()),
+    )
+    check(
+        "fret accuracy counts fret-only matches",
+        abs(counts.fret_accuracy() - 2 / 3) < 1e-9,
+        str(counts.fret_accuracy()),
+    )
+    check(
+        "mean fret over predictions",
+        abs(counts.mean_fret() - 2.0) < 1e-9,
+        str(counts.mean_fret()),
+    )
+    check("no high frets", counts.high_fret_rate() == 0.0, str(counts.fret_hist))
+
+    high = align_predictions([(3, 17), (4, 22), (6, 0)], gt)
+    check(
+        "high fret count at threshold 15",
+        high.high_fret_count() == 2,
+        str(high.fret_hist),
+    )
+    check(
+        "high fret rate",
+        abs(high.high_fret_rate() - 2 / 3) < 1e-9,
+        str(high.high_fret_rate()),
+    )
+    check(
+        "fret histogram bins",
+        high.fret_hist[0] == 1
+        and high.fret_hist[17] == 1
+        and high.fret_hist[22] == 1,
+        str(high.fret_hist),
+    )
+
+    merged = aggregate_counts([counts, high])
+    check(
+        "aggregated fret histogram and count",
+        merged.fret_hist[17] == 1
+        and merged.fret_hist[22] == 1
+        and merged.pred_fret_count == 6,
+        str((merged.pred_fret_count, merged.fret_hist)),
+    )
+
+
 def main() -> int:
     test_quantise()
     test_first_valid()
@@ -172,6 +226,7 @@ def main() -> int:
     test_playability()
     test_difficulty()
     test_group_chords()
+    test_fret_diagnostics()
     print()
     if FAILS:
         print(f"{len(FAILS)} failure(s)")

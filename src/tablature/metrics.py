@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterator
 
 import numpy as np
@@ -11,6 +11,11 @@ import numpy as np
 from core.fretboard import STANDARD, positions, pitch_of
 from core.schema import Note
 from .tokenizer import Vocab, parse_tab
+
+# Fret above which a position is considered a high-position outlier.  GuitarSet
+# has 0.23% of notes at fret >= 15; DadaGP has 2.12%, so this threshold makes
+# the domain shift visible in the raw diagnostics.
+HIGH_FRET = 15
 
 
 @dataclass
@@ -45,6 +50,15 @@ class EvalCounts:
     difficulty_sum: float = 0.0
     difficulty_n: int = 0
 
+    # Fret/string diagnostics.  ``fret_hist`` counts every predicted TAB with a
+    # fret in 0..24, including predictions whose pitch is wrong, so the
+    # high-fret rate is an honest description of the decoder's output.
+    pred_fret_sum: int = 0
+    pred_fret_count: int = 0
+    pred_string_correct: int = 0
+    pred_fret_correct: int = 0
+    fret_hist: list[int] = field(default_factory=lambda: [0] * 25)
+
     def pitch_accuracy(self) -> float:
         return self.pitch_correct / self.total_notes if self.total_notes else 0.0
 
@@ -72,6 +86,41 @@ class EvalCounts:
         return (
             self.covered_tab_correct / self.covered_notes
             if self.covered_notes
+            else 0.0
+        )
+
+    def mean_fret(self) -> float:
+        """Mean predicted fret over all predicted TAB positions."""
+        return (
+            self.pred_fret_sum / self.pred_fret_count
+            if self.pred_fret_count
+            else 0.0
+        )
+
+    def high_fret_count(self, threshold: int = HIGH_FRET) -> int:
+        return sum(self.fret_hist[threshold:])
+
+    def high_fret_rate(self, threshold: int = HIGH_FRET) -> float:
+        """Fraction of predicted TAB positions at or above ``threshold``."""
+        return (
+            self.high_fret_count(threshold) / self.pred_fret_count
+            if self.pred_fret_count
+            else 0.0
+        )
+
+    def string_accuracy(self) -> float:
+        """Fraction of GT slots whose predicted string is correct."""
+        return (
+            self.pred_string_correct / self.total_notes
+            if self.total_notes
+            else 0.0
+        )
+
+    def fret_accuracy(self) -> float:
+        """Fraction of GT slots whose predicted fret is correct."""
+        return (
+            self.pred_fret_correct / self.total_notes
+            if self.total_notes
             else 0.0
         )
 
@@ -191,6 +240,16 @@ def align_predictions(pred_tabs: list[tuple[int, int]],
                 counts.pitch_errors += 1
             elif pred_s != gt.s or pred_f != gt.f:
                 counts.position_errors += 1
+
+        # Fret/string diagnostics, independent of pitch correctness.
+        if 0 <= pred_f <= 24:
+            counts.pred_fret_sum += pred_f
+            counts.pred_fret_count += 1
+            counts.fret_hist[pred_f] += 1
+        if pred_s == gt.s:
+            counts.pred_string_correct += 1
+        if pred_f == gt.f:
+            counts.pred_fret_correct += 1
 
         # Boundary vs interior
         if is_boundary is not None and i < len(is_boundary):
@@ -382,6 +441,13 @@ def aggregate_counts(all_counts: list[EvalCounts]) -> EvalCounts:
             simult_gt_4=total.simult_gt_4 + c.simult_gt_4,
             difficulty_sum=total.difficulty_sum + c.difficulty_sum,
             difficulty_n=total.difficulty_n + c.difficulty_n,
+            pred_fret_sum=total.pred_fret_sum + c.pred_fret_sum,
+            pred_fret_count=total.pred_fret_count + c.pred_fret_count,
+            pred_string_correct=total.pred_string_correct + c.pred_string_correct,
+            pred_fret_correct=total.pred_fret_correct + c.pred_fret_correct,
+            fret_hist=[
+                a + b for a, b in zip(total.fret_hist, c.fret_hist)
+            ],
         )
     return total
 
@@ -392,6 +458,10 @@ def print_metrics(counts: EvalCounts, prefix: str = "") -> None:
     print(f"{prefix}Tab Accuracy:     {counts.tab_accuracy():.4f}")
     print(f"{prefix}Coverage:         {counts.coverage():.4f} ({counts.covered_notes}/{counts.total_notes})")
     print(f"{prefix}Tab@Pred:         {counts.tab_accuracy_at_pred():.4f} ({counts.covered_tab_correct}/{counts.covered_notes})")
+    print(f"{prefix}String Acc:       {counts.string_accuracy():.4f}")
+    print(f"{prefix}Fret Acc:         {counts.fret_accuracy():.4f}")
+    print(f"{prefix}Mean Fret:        {counts.mean_fret():.2f}")
+    print(f"{prefix}High Fret >={HIGH_FRET}:   {counts.high_fret_rate():.4f} ({counts.high_fret_count()}/{counts.pred_fret_count})")
     print(f"{prefix}Validity:         {counts.validity():.4f}")
     print(f"{prefix}Difficulty:       {counts.difficulty():.4f}")
     print(f"{prefix}Boundary Acc:     {counts.boundary_accuracy():.4f} ({counts.boundary_correct}/{counts.boundary_total})")

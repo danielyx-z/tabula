@@ -89,7 +89,8 @@ def write_tab_midi(path: Path, notes: list[dict], bpm: float = 120.0, ppq: int =
     pm.write(str(path))
 
 
-def generate(model, vocab, notes, beam: int, pitch_constraint: bool, max_len: int, device: str) -> list[dict]:
+def generate(model, vocab, notes, beam: int, pitch_constraint: bool, max_len: int, device: str,
+             max_fret: int | None = 15, fret_penalty: float = 0.0) -> list[dict]:
     # Quantise input notes to training distribution (20-tick grid, 40-tick chord window).
     notes = quantise_notes(notes)
     chunks = make_inference_chunks(notes, vocab, "input", ChunkConfig(max_tokens=max_len))
@@ -117,6 +118,8 @@ def generate(model, vocab, notes, beam: int, pitch_constraint: bool, max_len: in
                 attention_mask=attn,
                 max_new_tokens=max_new,
                 prompt_tabs=0,
+                max_fret=max_fret,
+                fret_penalty=fret_penalty,
             )
 
         tokens = vocab.decode(gen[0, prompt.size(1) :].tolist())
@@ -194,8 +197,8 @@ def compare(input_notes, raw) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("input", help="input MIDI file")
-    ap.add_argument("--checkpoint", default="runs/pretrain_t5_guitarset/best")
-    ap.add_argument("--vocab", default="vocab/guitarset.json")
+    ap.add_argument("--checkpoint", default="runs/finetune_t5_guitarset/best")
+    ap.add_argument("--vocab", default="vocab/canonical.json")
     ap.add_argument("--out-dir", default="out/midi2tab")
     ap.add_argument("--beam", type=int, default=4)
     ap.add_argument("--max-len", type=int, default=512)
@@ -203,8 +206,29 @@ def main() -> int:
     ap.add_argument("--width", type=int, default=100)
     ap.add_argument(
         "--pitch-constraint",
+        dest="pitch_constraint",
         action="store_true",
+        default=True,
         help="force every TAB pitch to match an encoder NOTE_ON",
+    )
+    ap.add_argument(
+        "--no-pitch-constraint",
+        dest="pitch_constraint",
+        action="store_false",
+        help="disable pitch/low-position masking",
+    )
+    ap.add_argument(
+        "--max-fret",
+        type=int,
+        default=12,
+        help="prefer positions at or below this fret when possible; "
+             "-1 disables the low-position rule",
+    )
+    ap.add_argument(
+        "--fret-penalty",
+        type=float,
+        default=0.0,
+        help="soft penalty (-lambda*fret) among allowed positions",
     )
     args = ap.parse_args()
 
@@ -223,7 +247,17 @@ def main() -> int:
     # Quantise input to training grid so the model sees familiar timings.
     notes = quantise_notes(notes)
 
-    raw, gen_tokens = generate(model, vocab, notes, args.beam, args.pitch_constraint, args.max_len, device)
+    raw, gen_tokens = generate(
+        model,
+        vocab,
+        notes,
+        args.beam,
+        args.pitch_constraint,
+        args.max_len,
+        device,
+        max_fret=None if args.max_fret < 0 else args.max_fret,
+        fret_penalty=args.fret_penalty,
+    )
     final, proc_stats = playability_pass(raw)
 
     out = Path(args.out_dir)
@@ -252,6 +286,8 @@ def main() -> int:
         "checkpoint": str(args.checkpoint),
         "beam": args.beam,
         "pitch_constraint": bool(args.pitch_constraint),
+        "max_fret": args.max_fret,
+        "fret_penalty": args.fret_penalty,
         "comparison": compare(notes, raw),
         "rhythm": rhythm.to_dict(),
         "postprocessing": proc_stats,

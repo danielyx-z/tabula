@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from model.chunk import ChunkConfig, make_inference_chunks  # noqa: E402
+from model.decode import constrained_beam_search, greedy_decode  # noqa: E402
 from corpus.dataset import iter_tracks  # noqa: E402
 from core.fretboard import STANDARD, pitch_of  # noqa: E402
 from core.quantise import quantise_notes  # noqa: E402
@@ -110,8 +111,8 @@ def render(notes: list[Note] | list[DecodedNote], tuning, width: int) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--checkpoint", default=str(ROOT / "runs/pretrain_t5_guitarset/best"))
-    ap.add_argument("--vocab", default=str(ROOT / "vocab/guitarset.json"))
+    ap.add_argument("--checkpoint", default=str(ROOT / "runs/finetune_t5_guitarset/best"))
+    ap.add_argument("--vocab", default=str(ROOT / "vocab/canonical.json"))
     ap.add_argument("--data-dir", default=str(ROOT / "data/processed_guitarset"))
     ap.add_argument("--split", default="valid")
     ap.add_argument("--track-id", type=int, default=93)
@@ -120,6 +121,14 @@ def main() -> None:
     ap.add_argument("--width", type=int, default=100)
     ap.add_argument("--max-len", type=int, default=512)
     ap.add_argument("--beam", type=int, default=1)
+    ap.add_argument("--pitch-constraint", dest="pitch_constraint",
+                    action="store_true", default=True)
+    ap.add_argument("--no-pitch-constraint", dest="pitch_constraint",
+                    action="store_false")
+    ap.add_argument("--max-fret", type=int, default=12,
+                    help="prefer positions at or below this fret when possible; "
+                         "-1 disables the low-position rule")
+    ap.add_argument("--fret-penalty", type=float, default=0.0)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
 
@@ -159,17 +168,35 @@ def main() -> None:
     with torch.no_grad(), torch.autocast(
         device_type="cuda", dtype=torch.bfloat16, enabled=use_bf16
     ):
-        generated = model.generate(
-            input_ids=enc,
-            attention_mask=attention,
-            decoder_input_ids=prompt,
-            max_new_tokens=max_new,
-            num_beams=args.beam,
-            do_sample=False,
-            eos_token_id=eos_id,
-            pad_token_id=pad_id,
-            use_cache=True,
-        )
+        if args.beam > 1:
+            generated = constrained_beam_search(
+                model,
+                enc,
+                vocab,
+                num_beams=args.beam,
+                max_length=args.max_len,
+                use_pitch_constraint=args.pitch_constraint,
+                decoder_input_ids=prompt,
+                attention_mask=attention,
+                max_new_tokens=max_new,
+                prompt_tabs=0,
+                max_fret=None if args.max_fret < 0 else args.max_fret,
+                fret_penalty=args.fret_penalty,
+            )
+        else:
+            generated = greedy_decode(
+                model,
+                enc,
+                vocab,
+                max_length=args.max_len,
+                use_pitch_constraint=args.pitch_constraint,
+                decoder_input_ids=prompt,
+                attention_mask=attention,
+                max_new_tokens=max_new,
+                prompt_tabs=0,
+                max_fret=None if args.max_fret < 0 else args.max_fret,
+                fret_penalty=args.fret_penalty,
+            )
     gen_ids = strip_eos(generated[0, prompt.size(1) :].tolist(), eos_id)
     gen_tokens = vocab.decode(gen_ids)
     pred_tabs = decode_predictions(gen_ids, vocab)

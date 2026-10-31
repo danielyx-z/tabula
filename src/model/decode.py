@@ -3,6 +3,13 @@
 The paper decodes normally and repairs pitch in post-processing, so the
 pitch-valid processor is optional and disabled by default.  T5 supports beam
 search natively, so ``constrained_beam_search`` no longer falls back to greedy.
+
+The processor can also apply a low-position prior: when a source pitch has at
+least one playable position at or below ``max_fret``, TAB tokens above that
+fret are masked.  This removes gratuitous high-position fingerings while still
+allowing genuinely high notes (e.g. E6 has no position below fret 24).
+``fret_penalty`` adds a soft ``-lambda * fret`` bias among the allowed
+positions, which breaks ties in favour of lower positions.
 """
 
 from __future__ import annotations
@@ -20,6 +27,11 @@ class PitchValidLogitsProcessorV2(LogitsProcessor):
     ``prompt_tabs`` is the number of TAB tokens already present in a decoder
     prompt (for example the previous chunk's context note).  Those tokens must
     not consume the next source pitch.
+
+    ``max_fret`` restricts each note to the lowest position region when a
+    playable position exists at or below that fret.  ``fret_penalty`` biases
+    the remaining valid positions towards lower frets; both are inference-only
+    and do not change the training loss.
     """
 
     def __init__(
@@ -29,7 +41,16 @@ class PitchValidLogitsProcessorV2(LogitsProcessor):
         tuning: tuple[int, ...] = STANDARD,
         frets: int = 24,
         prompt_tabs: int = 0,
+        max_fret: int | None = None,
+        fret_penalty: float = 0.0,
     ):
+        if max_fret is not None and not (0 <= max_fret <= frets):
+            raise ValueError(
+                f"max_fret must be between 0 and {frets}, got {max_fret}"
+            )
+        if fret_penalty < 0:
+            raise ValueError(f"fret_penalty must be >= 0, got {fret_penalty}")
+
         if encoder_input_ids.dim() == 1:
             encoder_input_ids = encoder_input_ids.unsqueeze(0)
         self.vocab = vocab
@@ -37,14 +58,25 @@ class PitchValidLogitsProcessorV2(LogitsProcessor):
         self.tuning = tuning
         self.frets = frets
         self.prompt_tabs = prompt_tabs
+        self.max_fret = max_fret
+        self.fret_penalty = float(fret_penalty)
 
         self.tab_token_ids: set[int] = {
             i for i, tok in enumerate(vocab.tokens) if tok.startswith("TAB<")
         }
+        self.tab_fret: dict[int, int] = {}
+        for s in range(1, 7):
+            for f in range(0, frets + 1):
+                tok = tab_token(s, f)
+                if tok in vocab.token_to_id:
+                    self.tab_fret[vocab.token_to_id[tok]] = f
         device = encoder_input_ids.device
 
         self.valid_tabs_for_pitch: dict[int, set[int]] = {}
-        self.invalid_tab_ids_for_pitch: dict[int, torch.Tensor] = {}
+        self.masked_tab_ids_for_pitch: dict[int, torch.Tensor] = {}
+        self.penalty_bias_for_pitch: dict[int, torch.Tensor] | None = (
+            {} if self.fret_penalty > 0 else None
+        )
         for pitch in range(128):
             valid: set[int] = set()
             for s, f in positions(pitch, tuning, frets):
@@ -52,9 +84,24 @@ class PitchValidLogitsProcessorV2(LogitsProcessor):
                 if tok in vocab.token_to_id:
                     valid.add(vocab.token_to_id[tok])
             self.valid_tabs_for_pitch[pitch] = valid
-            self.invalid_tab_ids_for_pitch[pitch] = torch.tensor(
-                sorted(self.tab_token_ids - valid), dtype=torch.long, device=device
+
+            if max_fret is not None:
+                low = {tid for tid in valid if self.tab_fret[tid] <= max_fret}
+                allowed = low if low else valid
+            else:
+                allowed = valid
+            self.masked_tab_ids_for_pitch[pitch] = torch.tensor(
+                sorted(self.tab_token_ids - allowed),
+                dtype=torch.long,
+                device=device,
             )
+
+            if self.penalty_bias_for_pitch is not None:
+                bias = torch.zeros(vocab.size, dtype=torch.float32, device=device)
+                for tid in allowed:
+                    bias[tid] = -self.fret_penalty * self.tab_fret[tid]
+                self.penalty_bias_for_pitch[pitch] = bias
+
         self.all_tab_ids = torch.tensor(
             sorted(self.tab_token_ids), dtype=torch.long, device=device
         )
@@ -85,12 +132,12 @@ class PitchValidLogitsProcessorV2(LogitsProcessor):
     ) -> torch.FloatTensor:
         for b in range(input_ids.size(0)):
             pitch = self._current_pitch(b, input_ids[b].tolist())
-            invalid = (
-                self.all_tab_ids
-                if pitch is None
-                else self.invalid_tab_ids_for_pitch[pitch]
-            )
-            scores[b, invalid] = -1e4
+            if pitch is None:
+                scores[b, self.all_tab_ids] = -1e4
+                continue
+            scores[b, self.masked_tab_ids_for_pitch[pitch]] = -1e4
+            if self.penalty_bias_for_pitch is not None:
+                scores[b] = scores[b] + self.penalty_bias_for_pitch[pitch]
         return scores
 
 
@@ -103,9 +150,16 @@ def make_logits_processor(
     encoder_input_ids: torch.LongTensor,
     tuning: tuple[int, ...] = STANDARD,
     prompt_tabs: int = 0,
+    max_fret: int | None = None,
+    fret_penalty: float = 0.0,
 ) -> PitchValidLogitsProcessorV2:
     return PitchValidLogitsProcessorV2(
-        vocab, encoder_input_ids, tuning, prompt_tabs=prompt_tabs
+        vocab,
+        encoder_input_ids,
+        tuning,
+        prompt_tabs=prompt_tabs,
+        max_fret=max_fret,
+        fret_penalty=fret_penalty,
     )
 
 
@@ -129,6 +183,8 @@ def greedy_decode(
     attention_mask: torch.LongTensor | None = None,
     prompt_tabs: int = 0,
     max_new_tokens: int | None = None,
+    max_fret: int | None = None,
+    fret_penalty: float = 0.0,
 ) -> torch.LongTensor:
     """Greedy decoding; the paper's default is unconstrained."""
     kwargs = _generate_kwargs(vocab)
@@ -150,6 +206,8 @@ def greedy_decode(
                 encoder_input_ids,
                 tuning,
                 prompt_tabs=prompt_tabs,
+                max_fret=max_fret,
+                fret_penalty=fret_penalty,
             )
         ]
     return model.generate(encoder_input_ids, **kwargs)
@@ -167,12 +225,15 @@ def constrained_beam_search(
     attention_mask: torch.LongTensor | None = None,
     prompt_tabs: int = 0,
     max_new_tokens: int | None = None,
+    max_fret: int | None = None,
+    fret_penalty: float = 0.0,
 ) -> torch.LongTensor:
-    """Beam search with an optional pitch-valid mask.
+    """Beam search with an optional pitch-valid and low-position mask.
 
     ``use_pitch_constraint`` defaults to True for backwards compatibility, but
     the paper-faithful evaluation path uses plain T5 generation plus
-    post-processing.
+    post-processing.  ``max_fret`` and ``fret_penalty`` are applied only when
+    the pitch constraint is enabled.
     """
     kwargs = _generate_kwargs(vocab)
     kwargs["num_beams"] = num_beams
@@ -191,6 +252,8 @@ def constrained_beam_search(
                 encoder_input_ids,
                 tuning,
                 prompt_tabs=prompt_tabs,
+                max_fret=max_fret,
+                fret_penalty=fret_penalty,
             )
         ]
     return model.generate(encoder_input_ids, **kwargs)

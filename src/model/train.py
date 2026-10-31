@@ -52,6 +52,7 @@ from tablature.metrics import (
     print_rhythm_metrics,
 )
 from model.model import count_parameters, make_model
+from model.decode import constrained_beam_search, greedy_decode
 from tablature.postproc import postprocess
 from tablature.tokenizer import DEFAULT_VOCAB, EOS_TOKEN, PAD_TOKEN, Vocab, tab_token
 
@@ -85,6 +86,13 @@ class TrainConfig:
     metrics_every: int = 2500
     eval_beam: int = 1
     postproc_mode: str = "full"
+    # Inference-time decoding constraints.  These never touch the training
+    # loss; they only make free-running generation guitar-like.
+    pitch_constraint: bool = True
+    max_fret: int | None = 12
+    fret_penalty: float = 0.0
+    # Weights-only fine-tuning initialisation (fresh optimizer/schedule).
+    init_from: str = ""
     save_every: int = 2500
     output_dir: str = "runs/pretrain_t5_guitarset"
     seed: int = 42
@@ -213,6 +221,9 @@ def evaluate(
     max_len: int = MAX_TOKENS,
     beam: int = 1,
     postproc_mode: str = "full",
+    pitch_constraint: bool = True,
+    max_fret: int | None = 12,
+    fret_penalty: float = 0.0,
     max_chunks: int | None = None,
     shuffle: bool = False,
     seed: int = 0,
@@ -306,17 +317,37 @@ def evaluate(
                 max_new = min(max_len, max(16, 6 * chunk.meta["num_notes"] + 16))
 
                 with accelerator.autocast():
-                    generated = unwrapped.generate(
-                        input_ids=enc,
-                        attention_mask=attention_mask,
-                        decoder_input_ids=prompt,
-                        max_new_tokens=max_new,
-                        num_beams=beam,
-                        do_sample=False,
-                        eos_token_id=eos_id,
-                        pad_token_id=pad_id,
-                        use_cache=True,
-                    )
+                    if beam > 1:
+                        generated = constrained_beam_search(
+                            unwrapped,
+                            enc,
+                            vocab,
+                            num_beams=beam,
+                            max_length=max_len,
+                            use_pitch_constraint=pitch_constraint,
+                            decoder_input_ids=prompt,
+                            attention_mask=attention_mask,
+                            max_new_tokens=max_new,
+                            # The encoder contains the context NOTE_ON and the
+                            # prompt contains its TAB, so they cancel out.
+                            prompt_tabs=0,
+                            max_fret=max_fret,
+                            fret_penalty=fret_penalty,
+                        )
+                    else:
+                        generated = greedy_decode(
+                            unwrapped,
+                            enc,
+                            vocab,
+                            max_length=max_len,
+                            use_pitch_constraint=pitch_constraint,
+                            decoder_input_ids=prompt,
+                            attention_mask=attention_mask,
+                            max_new_tokens=max_new,
+                            prompt_tabs=0,
+                            max_fret=max_fret,
+                            fret_penalty=fret_penalty,
+                        )
                 generated = generated[:, prompt.size(1):]
                 gen_tokens = vocab.decode(generated[0].tolist())
                 pred_tabs = decode_predictions(generated[0].tolist(), vocab)
@@ -568,6 +599,10 @@ def train(cfg: TrainConfig, resume_from: str = "") -> None:
         raise ValueError("--metrics-every must be >= 0")
     if cfg.eval_beam < 1:
         raise ValueError("--eval-beam must be >= 1")
+    if cfg.max_fret is not None and not (0 <= cfg.max_fret <= 24):
+        raise ValueError("--max-fret must be between 0 and 24 (or -1 to disable)")
+    if cfg.fret_penalty < 0:
+        raise ValueError("--fret-penalty must be >= 0")
     if cfg.max_len <= 0:
         raise ValueError("--max-len must be positive")
 
@@ -598,10 +633,14 @@ def train(cfg: TrainConfig, resume_from: str = "") -> None:
             f"Vocab not found at {cfg.vocab_path}; using unpruned default vocab"
         )
 
-    if resume_from:
-        model = T5ForConditionalGeneration.from_pretrained(resume_from)
+    if resume_from and cfg.init_from:
+        raise ValueError("--resume-from and --init-from are mutually exclusive")
+
+    if resume_from or cfg.init_from:
+        checkpoint = resume_from or cfg.init_from
+        model = T5ForConditionalGeneration.from_pretrained(checkpoint)
         if model.config.vocab_size != vocab.size:
-            ckpt_vocab = Path(resume_from) / "vocab.json"
+            ckpt_vocab = Path(checkpoint) / "vocab.json"
             if ckpt_vocab.exists():
                 vocab = Vocab.load(ckpt_vocab)
                 accelerator.print(f"Loaded vocab from checkpoint: {ckpt_vocab}")
@@ -609,8 +648,13 @@ def train(cfg: TrainConfig, resume_from: str = "") -> None:
                 raise ValueError(
                     f"Checkpoint vocab size ({model.config.vocab_size}) does not "
                     f"match vocab file ({vocab.size}) and no vocab.json exists in "
-                    f"{resume_from}"
+                    f"{checkpoint}"
                 )
+        if cfg.init_from:
+            accelerator.print(
+                f"Initialised weights from {cfg.init_from} "
+                "(fresh optimizer and LR schedule)"
+            )
     else:
         model = make_model(
             vocab.size,
@@ -879,6 +923,9 @@ def train(cfg: TrainConfig, resume_from: str = "") -> None:
                         max_len=cfg.max_len,
                         beam=cfg.eval_beam,
                         postproc_mode=cfg.postproc_mode,
+                        pitch_constraint=cfg.pitch_constraint,
+                        max_fret=cfg.max_fret,
+                        fret_penalty=cfg.fret_penalty,
                         shuffle=True,
                         seed=cfg.seed + 1,
                         context_mode="pred",
@@ -974,6 +1021,20 @@ def main() -> None:
                     help="Whole-track tab metrics cadence in optimizer steps; 0 disables")
     ap.add_argument("--eval-beam", type=int, default=1)
     ap.add_argument("--postproc", choices=["none", "overlap", "full"], default="full")
+    ap.add_argument("--pitch-constraint", dest="pitch_constraint",
+                    action="store_true", default=True,
+                    help="Mask TAB tokens to positions that match the input pitch")
+    ap.add_argument("--no-pitch-constraint", dest="pitch_constraint",
+                    action="store_false",
+                    help="Disable pitch/low-position masking (paper baseline)")
+    ap.add_argument("--max-fret", type=int, default=12,
+                    help="Prefer positions at or below this fret when possible; "
+                         "-1 disables the low-position rule")
+    ap.add_argument("--fret-penalty", type=float, default=0.0,
+                    help="Soft penalty (-lambda*fret) among allowed positions")
+    ap.add_argument("--init-from", type=str, default="",
+                    help="Checkpoint directory: initialise weights only with a "
+                         "fresh optimizer/schedule (fine-tuning)")
     ap.add_argument("--save-every", type=int, default=2500,
                     help="Checkpoint cadence in optimizer steps")
     ap.add_argument("--warmup-ratio", type=float, default=0.02)
@@ -1014,6 +1075,10 @@ def main() -> None:
         metrics_every=args.metrics_every,
         eval_beam=args.eval_beam,
         postproc_mode=args.postproc,
+        pitch_constraint=args.pitch_constraint,
+        max_fret=None if args.max_fret < 0 else args.max_fret,
+        fret_penalty=args.fret_penalty,
+        init_from=args.init_from,
         save_every=args.save_every,
         warmup_ratio=args.warmup_ratio,
         weight_decay=args.weight_decay,

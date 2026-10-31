@@ -27,6 +27,17 @@
 # Paper-scale: MAX_STEPS=75000 (approx 75k optimizer updates).
 # Default:     MAX_STEPS=30000.
 #
+# Fine-tuning uses weights-only initialisation (fresh optimizer and schedule):
+#   INIT_FROM=runs/pretrain_t5_dadagp/best \
+#   DATA_DIR=data/processed_guitarset OUTPUT_DIR=runs/finetune_t5_guitarset \
+#   BATCH_SIZE=32 MAX_STEPS=3000 LR=1e-4 WARMUP_RATIO=0.1 \
+#   EVAL_EVERY=100 METRICS_EVERY=500 EVAL_BEAM=4 \
+#   sbatch scripts/train_t5.sh
+#
+# Inference-time decoding defaults to a pitch-valid mask plus a low-position
+# prior (MAX_FRET=12).  Set PITCH_CONSTRAINT=0 for the paper's unconstrained
+# baseline, or MAX_FRET=-1 to disable only the low-position rule.
+#
 # The corpus is tokenised once into a chunk store cached under
 # data/processed_guitarset/.chunk_cache (a few MB). Training epochs then only
 # reshuffle indices, so the data path is ~1% of step time. Do not set
@@ -70,6 +81,11 @@ echo "Host: $(hostname)"
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader || true
 "$PYTHON" --version
 
+PC_FLAG="--pitch-constraint"
+if [[ "${PITCH_CONSTRAINT:-1}" == "0" ]]; then
+    PC_FLAG="--no-pitch-constraint"
+fi
+
 exec "$PYTHON" -m model.train \
     --data-dir "$DATA_DIR" \
     --vocab-path "$VOCAB_PATH" \
@@ -82,12 +98,17 @@ exec "$PYTHON" -m model.train \
     --eval-loss-batches "${EVAL_LOSS_BATCHES:-0}" \
     --eval-batches "${EVAL_BATCHES:-10}" \
     --metrics-every "${METRICS_EVERY:-2500}" \
+    --eval-beam "${EVAL_BEAM:-1}" \
     --save-every "${SAVE_EVERY:-2500}" \
-    --postproc full \
+    --postproc "${POSTPROC:-full}" \
+    "$PC_FLAG" \
+    --max-fret "${MAX_FRET:-12}" \
+    --fret-penalty "${FRET_PENALTY:-0.0}" \
     --warmup-ratio "${WARMUP_RATIO:-0.02}" \
     --max-grad-norm "${MAX_GRAD_NORM:-1.0}" \
     --patience "${PATIENCE:-10}" \
     --dropout "${DROPOUT:-0.1}" \
     --weight-decay "${WEIGHT_DECAY:-0.0}" \
     ${LR:+--lr "$LR"} \
+    --init-from "${INIT_FROM:-}" \
     --resume-from "${RESUME_FROM:-}"

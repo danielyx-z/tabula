@@ -209,6 +209,43 @@ determinism.
 
 The old Karplus-Strong implementation was removed entirely.
 
+## Raw fret diagnostics and the low-position prior
+
+`postprocess()` rewrites the fret from the input pitch and the predicted
+string, so the post-processed `Tab@Pred` is **string-dominated** and cannot
+show whether the model chose implausible high positions.  The evaluator now
+reports raw diagnostics separately:
+
+* `String Acc` / `Fret Acc` — string and fret match independently;
+* `Mean Fret` — mean predicted fret over all predicted TAB tokens;
+* `High Fret >=15` — share of predicted TAB tokens at fret 15 or above
+  (the corpus rates are 0.23% for GuitarSet and 2.12% for DadaGP).
+
+Inference and evaluation share the same pitch-valid decoder.  Two optional
+priors address gratuitous high positions without changing the training loss:
+
+* `--max-fret N` (default 12) masks TAB tokens above fret `N` **when the
+  source pitch has at least one playable position at or below `N`**.  Genuinely
+  high notes (e.g. E6, which only exists at fret 24 on the high E) remain
+  playable.
+* `--fret-penalty L` subtracts `L * fret` from the allowed positions, a soft
+  preference for lower frets.  It defaults to 0 because a large value can
+  destabilise free-running generation; tune it on the validation split.
+
+`--no-pitch-constraint` restores the paper's unconstrained baseline.  Use it
+when comparing against the published numbers; the default path is the
+guitar-realistic one.
+
+## Fine-tuning versus resuming
+
+* `--resume-from DIR` restores weights, vocabulary, optimizer, scheduler and
+  early-stopping state.  Use it to continue an interrupted run.
+* `--init-from DIR` restores **weights and vocabulary only**, with a fresh
+  optimizer, cosine schedule and step counter.  Use it to fine-tune a
+  pretrained model on GuitarSet.
+
+The fine-tune recipe is documented in `scripts/train_t5.sh`.
+
 ## Not proved
 
 * **Model quality.** A real GuitarSet training run is still required.
