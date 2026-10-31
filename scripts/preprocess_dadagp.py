@@ -44,6 +44,7 @@ from core.fretboard import STANDARD, format_tuning  # noqa: E402
 from core.group import group_chords  # noqa: E402
 from core.quantise import GRID, PPQ, quantise_dur, quantise_tick  # noqa: E402
 from core.schema import Note, Track  # noqa: E402
+from tablature.tokenizer import MAX_FRET as VOCAB_MAX_FRET  # noqa: E402
 
 GRID_CHECKS = (20, 60, 120, 240, 480)
 
@@ -84,7 +85,22 @@ def convert_track(track: Track, chord_window: int = 40) -> tuple[list[Note], int
         )
         for n in track.notes
     ]
-    return group_chords(snapped, chord_window, grid=GRID)
+    notes, dropped = group_chords(snapped, chord_window, grid=GRID)
+    if chord_window > 0:
+        return notes, dropped
+
+    # group_chords() returns early when grouping is disabled, so enforce the
+    # one-note-per-string-per-tick invariant here as well.
+    seen: set[tuple[int, int]] = set()
+    unique: list[Note] = []
+    for n in notes:
+        key = (n.s, n.t)
+        if key in seen:
+            dropped += 1
+            continue
+        seen.add(key)
+        unique.append(n)
+    return unique, dropped
 
 
 def iter_sources(path: Path):
@@ -123,7 +139,8 @@ def main() -> int:
     ap.add_argument("--min-bars", type=int, default=4)
     ap.add_argument("--chord-window", type=int, default=40,
                     help="collapse onsets within this many ticks (0 disables)")
-    ap.add_argument("--max-fret", type=int, default=24)
+    ap.add_argument("--max-fret", type=int, default=VOCAB_MAX_FRET,
+                    help=f"highest fret to admit (vocabulary limit: {VOCAB_MAX_FRET})")
     ap.add_argument("--allow-non-guitar", action="store_true",
                     help="keep non-GM-guitar programs (default: guitar only)")
     ap.add_argument("--no-dedupe", action="store_true",
@@ -150,6 +167,12 @@ def main() -> int:
             shutil.rmtree(path)
         for name in ("manifest.json", "rejects.jsonl"):
             (out / name).unlink(missing_ok=True)
+
+    if args.max_fret > VOCAB_MAX_FRET:
+        raise SystemExit(
+            f"--max-fret {args.max_fret} exceeds the TAB vocabulary limit "
+            f"({VOCAB_MAX_FRET}); such notes would train as <unk>"
+        )
 
     cfg = FilterConfig(
         tuning=STANDARD,
