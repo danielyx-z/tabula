@@ -21,6 +21,11 @@ class EvalCounts:
     tab_correct: int = 0
     valid_predictions: int = 0  # predicted (s,f) is on fretboard
 
+    # Coverage auditing: notes that received a genuine model TAB token, not a
+    # post-processing fallback.  For raw counts this is min(len(pred), len(gt)).
+    covered_notes: int = 0
+    covered_tab_correct: int = 0
+
     # Error decomposition (removed dead timing_errors)
     pitch_errors: int = 0
     position_errors: int = 0
@@ -57,6 +62,18 @@ class EvalCounts:
 
     def difficulty(self) -> float:
         return self.difficulty_sum / self.difficulty_n if self.difficulty_n else 0.0
+
+    def coverage(self) -> float:
+        """Fraction of ground-truth notes backed by a real model prediction."""
+        return self.covered_notes / self.total_notes if self.total_notes else 0.0
+
+    def tab_accuracy_at_pred(self) -> float:
+        """Exact tab match over covered notes only (ignores fallbacks)."""
+        return (
+            self.covered_tab_correct / self.covered_notes
+            if self.covered_notes
+            else 0.0
+        )
 
 
 @dataclass
@@ -352,6 +369,8 @@ def aggregate_counts(all_counts: list[EvalCounts]) -> EvalCounts:
             pitch_correct=total.pitch_correct + c.pitch_correct,
             tab_correct=total.tab_correct + c.tab_correct,
             valid_predictions=total.valid_predictions + c.valid_predictions,
+            covered_notes=total.covered_notes + c.covered_notes,
+            covered_tab_correct=total.covered_tab_correct + c.covered_tab_correct,
             pitch_errors=total.pitch_errors + c.pitch_errors,
             position_errors=total.position_errors + c.position_errors,
             boundary_total=total.boundary_total + c.boundary_total,
@@ -371,6 +390,8 @@ def print_metrics(counts: EvalCounts, prefix: str = "") -> None:
     """Pretty print metrics."""
     print(f"{prefix}Pitch Accuracy:   {counts.pitch_accuracy():.4f}")
     print(f"{prefix}Tab Accuracy:     {counts.tab_accuracy():.4f}")
+    print(f"{prefix}Coverage:         {counts.coverage():.4f} ({counts.covered_notes}/{counts.total_notes})")
+    print(f"{prefix}Tab@Pred:         {counts.tab_accuracy_at_pred():.4f} ({counts.covered_tab_correct}/{counts.covered_notes})")
     print(f"{prefix}Validity:         {counts.validity():.4f}")
     print(f"{prefix}Difficulty:       {counts.difficulty():.4f}")
     print(f"{prefix}Boundary Acc:     {counts.boundary_accuracy():.4f} ({counts.boundary_correct}/{counts.boundary_total})")

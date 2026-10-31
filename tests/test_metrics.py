@@ -92,6 +92,45 @@ def test_postprocess() -> None:
     check("fallback uses an open string", (out[1].s, out[1].f) == (6, 2), str((out[1].s, out[1].f)))
 
 
+def test_coverage_provenance() -> None:
+    gt = [
+        Note(0, 480, 64, 6, 0),
+        Note(480, 480, 66, 5, 2),
+        Note(960, 480, 67, 5, 3),
+        Note(1440, 480, 69, 5, 5),
+    ]
+    out = postprocess([(6, 0), (5, 2)], gt, mode="full")
+    flags = [n.from_prediction for n in out]
+    check(
+        "padding is marked as fallback",
+        flags == [True, True, False, False],
+        str(flags),
+    )
+
+    # A predicted string that cannot sound the input pitch must fall back.
+    far = [Note(0, 480, 88, 6, 24)]
+    out_far = postprocess([(1, 0)], far, mode="full")
+    check(
+        "unplayable predicted string is a fallback",
+        out_far[0].from_prediction is False,
+        str(out_far[0]),
+    )
+
+    counts = align_predictions([(6, 0), (5, 2)], gt, [True, False, False, True])
+    counts.covered_notes = 2
+    counts.covered_tab_correct = counts.tab_correct
+    check(
+        "coverage uses the GT denominator",
+        abs(counts.coverage() - 0.5) < 1e-9,
+        str(counts.coverage()),
+    )
+    check(
+        "tab@pred uses the covered denominator",
+        abs(counts.tab_accuracy_at_pred() - 1.0) < 1e-9,
+        str(counts.tab_accuracy_at_pred()),
+    )
+
+
 def test_playability() -> None:
     gt = [Note(0, 480, 64, 6, 0), Note(0, 480, 65, 6, 1)]
     overlap, span, simult = check_playability([(6, 0), (6, 1)], gt)
@@ -129,6 +168,7 @@ def main() -> int:
     test_first_valid()
     test_align_boundary()
     test_postprocess()
+    test_coverage_provenance()
     test_playability()
     test_difficulty()
     test_group_chords()

@@ -10,6 +10,10 @@ Section 3.5 defines two corrections:
    no candidate exists, the first viable string/fret for the input pitch is
    used.  This makes pitch accuracy 100% after post-processing, as reported in
    Table 2 of the paper.
+
+Every output note records whether its position came from a model TAB token
+(``from_prediction``) or had to be invented by the ``_first_valid`` fallback,
+so evaluation can report coverage and score only genuinely predicted notes.
 """
 
 from __future__ import annotations
@@ -31,6 +35,9 @@ class DecodedNote:
     s: int
     f: int
     is_boundary: bool = False
+    # False when no model TAB token backs this position (padding or the
+    # _first_valid fallback inside neighbor_search).
+    from_prediction: bool = True
 
 
 def _first_valid(
@@ -146,6 +153,7 @@ def repair_overlaps(
             s=s2,
             f=f2,
             is_boundary=note.is_boundary,
+            from_prediction=note.from_prediction,
         )
         out[i] = fixed
         assigned[s2].append(fixed)
@@ -177,6 +185,10 @@ def neighbor_search(
             if j in used:
                 continue
             candidate = pred_notes[j]
+            if not candidate.from_prediction:
+                # Padded notes are not model estimates; matching them would
+                # make the fallback look like a prediction.
+                continue
             # Match by sequence position first.  Pitch-first matching lets a
             # single wrong prediction steal its neighbour's correct candidate,
             # which can cascade through a whole chunk and destroys otherwise
@@ -186,11 +198,13 @@ def neighbor_search(
                 best_key = key
                 best_j = j
 
+        from_prediction = best_j is not None
         if best_j is None:
             s, f = _first_valid(gt.pitch, tuning, frets)
         else:
             used.add(best_j)
             candidate = pred_notes[best_j]
+            from_prediction = candidate.from_prediction
             if candidate.pitch == gt.pitch:
                 s, f = candidate.s, candidate.f
             else:
@@ -200,9 +214,17 @@ def neighbor_search(
                     s, f = candidate.s, fret_on_string
                 else:
                     s, f = _first_valid(gt.pitch, tuning, frets)
+                    from_prediction = False
 
         out.append(
-            DecodedNote(t=gt.t, dur=gt.dur, pitch=gt.pitch, s=s, f=f)
+            DecodedNote(
+                t=gt.t,
+                dur=gt.dur,
+                pitch=gt.pitch,
+                s=s,
+                f=f,
+                from_prediction=from_prediction,
+            )
         )
 
     return out
@@ -252,7 +274,16 @@ def postprocess(
             s, f = _first_valid(target_pitch, tuning, frets)
             pitch = target_pitch
 
-        initial.append(DecodedNote(t=t, dur=dur, pitch=pitch, s=s, f=f))
+        initial.append(
+            DecodedNote(
+                t=t,
+                dur=dur,
+                pitch=pitch,
+                s=s,
+                f=f,
+                from_prediction=i < len(tabs),
+            )
+        )
 
     if mode == "none":
         # True raw output: do not invent notes that the model did not predict.

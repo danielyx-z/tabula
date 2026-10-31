@@ -381,6 +381,9 @@ def evaluate(
                     boundary = [True] + [False] * (len(gt_chunk) - 2) + [True]
 
                 raw = align_predictions(preds, gt_chunk, boundary)
+                # Raw coverage: how many GT slots actually got a prediction.
+                raw.covered_notes = min(len(preds), len(gt_chunk))
+                raw.covered_tab_correct = raw.tab_correct
                 for name, value in zip(
                     ("same_string_overlap", "chord_span_gt_5", "simult_gt_4"),
                     check_playability(preds, gt_chunk),
@@ -388,15 +391,30 @@ def evaluate(
                     setattr(raw, name, getattr(raw, name) + value)
                 raw_counts.append(raw)
 
+                proc_notes = (
+                    [] if postproc_mode == "none" else processed_chunks[chunk_idx]
+                )
                 proc_chunk = (
                     preds
                     if postproc_mode == "none"
-                    else [
-                        (note.s, note.f)
-                        for note in processed_chunks[chunk_idx]
-                    ]
+                    else [(note.s, note.f) for note in proc_notes]
                 )
                 proc = align_predictions(proc_chunk, gt_chunk, boundary)
+                if postproc_mode == "none":
+                    proc.covered_notes = min(len(preds), len(gt_chunk))
+                    proc.covered_tab_correct = proc.tab_correct
+                else:
+                    # Only count positions that a model token actually backs.
+                    proc.covered_notes = sum(
+                        1 for note in proc_notes if note.from_prediction
+                    )
+                    proc.covered_tab_correct = sum(
+                        1
+                        for i, note in enumerate(proc_notes)
+                        if note.from_prediction
+                        and i < len(gt_chunk)
+                        and (note.s, note.f) == (gt_chunk[i].s, gt_chunk[i].f)
+                    )
                 for name, value in zip(
                     ("same_string_overlap", "chord_span_gt_5", "simult_gt_4"),
                     check_playability(proc_chunk, gt_chunk),

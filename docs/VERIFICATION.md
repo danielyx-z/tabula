@@ -113,6 +113,23 @@ PYTHONPATH=src .venv/bin/python3 -m model.train \
   bound). Evaluation uses `pred`.
 - Early stopping on validation loss with `patience=10`, `min_delta=1e-4`.
 
+### Raw vs post-processed metrics
+
+`evaluate()` reports both. Post-processing is GT-assisted by construction: it
+takes ground-truth onsets/durations and repairs fingerings against the input
+pitch, so **post pitch accuracy is 100 %** even for an untrained model. Notes
+the model never predicted are filled in with `_first_valid`, and that fallback
+often matches the corpus's canonical fingering.
+
+Two coverage fields keep the honest picture visible:
+
+- **Coverage** — fraction of ground-truth notes actually backed by a model TAB
+  token. Fallback-invented notes count as uncovered.
+- **Tab@Pred** — exact `(string, fret)` accuracy over covered notes only.
+
+Use raw accuracy and `Tab@Pred` as model quality; the all-notes post number is
+for paper comparability only.
+
 ### Smoke test (2 optimizer steps)
 
 ```bash
