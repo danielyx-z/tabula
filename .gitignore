@@ -18,3 +18,6 @@ __pycache__/
 *.npy
 *.pt
 *.safetensors
+
+# external reference checkouts
+baselines/
