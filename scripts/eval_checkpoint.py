@@ -4,9 +4,10 @@
 Example (run on a GPU allocation):
 
     PYTHONPATH=src .venv/bin/python3 scripts/eval_checkpoint.py \
-        --checkpoint runs/pretrain_t5_guitarset/best --tracks 1 --postproc full
+        --checkpoint runs/finetune_t5_guitarset/best --tracks 4 --postproc full
 
-Useful for comparing post-processing changes without starting a training run.
+Use ``--no-pitch-constraint`` for the paper's unconstrained baseline, and
+``--max-fret``/``--fret-penalty`` to tune the low-position prior.
 """
 
 from __future__ import annotations
@@ -31,12 +32,23 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", required=True)
     ap.add_argument("--data-dir", default=str(ROOT / "data/processed_guitarset"))
-    ap.add_argument("--vocab", default=str(ROOT / "vocab/guitarset.json"))
+    ap.add_argument("--vocab", default=str(ROOT / "vocab/canonical.json"))
     ap.add_argument("--split", default="valid")
     ap.add_argument("--tracks", type=int, default=1)
     ap.add_argument("--max-len", type=int, default=MAX_TOKENS)
     ap.add_argument("--beam", type=int, default=1)
     ap.add_argument("--postproc", choices=["none", "overlap", "full"], default="full")
+    ap.add_argument("--pitch-constraint", dest="pitch_constraint",
+                    action="store_true", default=True,
+                    help="Mask TAB tokens to positions that match the input pitch")
+    ap.add_argument("--no-pitch-constraint", dest="pitch_constraint",
+                    action="store_false",
+                    help="Paper baseline: no pitch or low-position mask")
+    ap.add_argument("--max-fret", type=int, default=12,
+                    help="Prefer positions at or below this fret when possible; "
+                         "-1 disables the low-position rule")
+    ap.add_argument("--fret-penalty", type=float, default=0.0,
+                    help="Soft penalty (-lambda*fret) among allowed positions")
     ap.add_argument("--shuffle", action="store_true")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--context-mode", choices=["pred", "gt"], default="pred",
@@ -62,6 +74,9 @@ def main() -> None:
         max_len=args.max_len,
         beam=args.beam,
         postproc_mode=args.postproc,
+        pitch_constraint=args.pitch_constraint,
+        max_fret=None if args.max_fret < 0 else args.max_fret,
+        fret_penalty=args.fret_penalty,
         shuffle=args.shuffle,
         seed=args.seed,
         context_mode=args.context_mode,
