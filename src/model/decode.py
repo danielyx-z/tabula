@@ -106,6 +106,17 @@ class PitchValidLogitsProcessorV2(LogitsProcessor):
             sorted(self.tab_token_ids), dtype=torch.long, device=device
         )
 
+        self.shift_token_ids: set[int] = {
+            i for i, tok in enumerate(vocab.tokens) if tok.startswith("TIME_SHIFT<")
+        }
+        # tab token id -> string number (1..6)
+        self.tab_string: dict[int, int] = {}
+        for s in range(1, 7):
+            for f in range(0, frets + 1):
+                tok = tab_token(s, f)
+                if tok in vocab.token_to_id:
+                    self.tab_string[vocab.token_to_id[tok]] = s
+
         note_on_ids = {
             i for i, tok in enumerate(vocab.tokens) if tok.startswith("NOTE_ON<")
         }
@@ -127,6 +138,24 @@ class PitchValidLogitsProcessorV2(LogitsProcessor):
             return pitches[tab_count]
         return None
 
+    def _current_onset_strings(self, generated: list[int]) -> set[int]:
+        """Strings already used at the current onset.
+
+        The decoder stream emits TAB tokens back-to-back for a chord, then a
+        TIME_SHIFT to advance to the next event time, so the strings used at
+        the current onset are the TAB tokens since the most recent TIME_SHIFT.
+        Masking these prevents two simultaneous notes being assigned to one
+        string (which post-processing would otherwise have to drop).
+        """
+        strings: set[int] = set()
+        for tok in reversed(generated):
+            if tok in self.shift_token_ids:
+                break
+            s = self.tab_string.get(tok)
+            if s is not None:
+                strings.add(s)
+        return strings
+
     def __call__(
         self, input_ids: torch.LongTensor, scores: torch.FloatTensor
     ) -> torch.FloatTensor:
@@ -136,6 +165,17 @@ class PitchValidLogitsProcessorV2(LogitsProcessor):
                 scores[b, self.all_tab_ids] = -1e4
                 continue
             scores[b, self.masked_tab_ids_for_pitch[pitch]] = -1e4
+            # Onset-aware string masking: one note per string per onset.
+            allowed = self.valid_tabs_for_pitch.get(pitch, set())
+            used = self._current_onset_strings(input_ids[b].tolist())
+            if used:
+                to_mask = [tid for tid in allowed if self.tab_string.get(tid) in used]
+                # Only apply if it does not wipe out every pitch-valid position;
+                # a same-onset string collision is better left to post-processing
+                # than forcing a wrong/invalid pitch.
+                if to_mask and (allowed - set(to_mask)):
+                    for tid in to_mask:
+                        scores[b, tid] = -1e4
             if self.penalty_bias_for_pitch is not None:
                 scores[b] = scores[b] + self.penalty_bias_for_pitch[pitch]
         return scores

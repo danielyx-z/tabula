@@ -95,6 +95,7 @@ def repair_overlaps(
     gt_notes: list[Note] | None = None,
     tuning: tuple[int, ...] = STANDARD,
     frets: int = 24,
+    max_fret: int | None = None,
 ) -> list[DecodedNote]:
     """Move same-string overlapping notes to another valid position.
 
@@ -130,7 +131,11 @@ def repair_overlaps(
             assigned[note.s].append(note)
             continue
 
-        candidates = positions(target, tuning, frets)
+        candidates = [
+            (s2, f2)
+            for s2, f2 in positions(target, tuning, frets)
+            if max_fret is None or f2 <= max_fret
+        ]
         candidates = sorted(
             candidates,
             key=lambda sf: (abs(sf[0] - note.s), abs(sf[1] - note.f)),

@@ -45,6 +45,7 @@ from core.quantise import quantise_notes, ticks_to_seconds  # noqa: E402
 from tablature.metrics import compute_difficulty, compute_rhythm_metrics  # noqa: E402
 from corpus.parse.midi import parse_midi  # noqa: E402
 from tablature.playability import (  # noqa: E402
+    assign_onsets,
     cap_simultaneous,
     fix_chord_spans,
     limit_jumps,
@@ -107,7 +108,17 @@ def write_tab_midi(
     pm.write(str(path))
 
 
-def generate(model, vocab, notes, beam: int, pitch_constraint: bool, max_len: int, device: str) -> list[dict]:
+def generate(
+    model,
+    vocab,
+    notes,
+    beam: int,
+    pitch_constraint: bool,
+    max_len: int,
+    device: str,
+    max_fret: int | None = None,
+    fret_penalty: float = 0.0,
+) -> list[dict]:
     # Quantise input notes to training distribution (20-tick grid, 40-tick chord window).
     notes = quantise_notes(notes)
     chunks = make_inference_chunks(notes, vocab, "input", ChunkConfig(max_tokens=max_len))
@@ -135,6 +146,8 @@ def generate(model, vocab, notes, beam: int, pitch_constraint: bool, max_len: in
                 attention_mask=attn,
                 max_new_tokens=max_new,
                 prompt_tabs=0,
+                max_fret=max_fret,
+                fret_penalty=fret_penalty,
             )
 
         tokens = vocab.decode(gen[0, prompt.size(1) :].tolist())
@@ -157,22 +170,31 @@ def generate(model, vocab, notes, beam: int, pitch_constraint: bool, max_len: in
     return raw, all_tokens
 
 
-def playability_pass(raw: list[dict]) -> tuple[list[dict], dict]:
+def playability_pass(
+    raw: list[dict],
+    max_fret: int | None = None,
+    max_span: int = 4,
+    max_jump: int = 5,
+) -> tuple[list[dict], dict]:
     nodes = [
         DecodedNote(t=n["t"], dur=n["dur"], pitch=n["pitch"], s=n["s"], f=n["f"])
         for n in raw
     ]
     nodes, dropped_a = cap_simultaneous(nodes)
-    nodes = repair_overlaps(nodes)  # no ground truth: pitch is preserved
-    nodes, chord_moves = fix_chord_spans(nodes)
-    nodes, jump_moves = limit_jumps(nodes)
-    nodes = repair_overlaps(nodes)
+    # Layer 2: joint per-onset assignment enforcing the fret cap and string
+    # uniqueness before the span/jump repairs.
+    nodes, onset_moves = assign_onsets(nodes, max_fret=max_fret, max_span=max_span)
+    nodes = repair_overlaps(nodes, max_fret=max_fret)  # no ground truth: pitch is preserved
+    nodes, chord_moves = fix_chord_spans(nodes, max_span=max_span, max_fret=max_fret)
+    nodes, jump_moves = limit_jumps(nodes, max_jump=max_jump, max_fret=max_fret)
+    nodes = repair_overlaps(nodes, max_fret=max_fret)
     nodes, dropped_b = cap_simultaneous(nodes)
     final = [{"t": n.t, "dur": n.dur, "pitch": n.pitch, "s": n.s, "f": n.f} for n in nodes]
     stats = {
         "dropped_impossible": dropped_a + dropped_b,
         "refingered_chord_span": chord_moves,
         "refingered_jump": jump_moves,
+        "refingered_onset": onset_moves,
     }
     return final, stats
 
@@ -221,13 +243,27 @@ def main() -> int:
     ap.add_argument(
         "--width",
         type=int,
-        default=160,
+        default=120,
         help="max chars per tab line (default: 160)",
     )
     ap.add_argument(
         "--pitch-constraint",
         action="store_true",
-        help="force every TAB pitch to match an encoder NOTE_ON",
+        default=False,
+        help="enable pitch-valid / low-position constrained decoding (opt-in; "
+        "the model is not trained for it, so off by default)",
+    )
+    ap.add_argument(
+        "--max-fret",
+        type=int,
+        default=9,
+        help="avoid frets above this unless no lower position exists (default: 9, i.e. no fret >= 10)",
+    )
+    ap.add_argument(
+        "--fret-penalty",
+        type=float,
+        default=0.3,
+        help="soft bias -lambda*fret toward lower positions (default: 0.3)",
     )
     args = ap.parse_args()
 
@@ -246,8 +282,18 @@ def main() -> int:
     # Quantise input to training grid so the model sees familiar timings.
     notes = quantise_notes(notes)
 
-    raw, gen_tokens = generate(model, vocab, notes, args.beam, args.pitch_constraint, args.max_len, device)
-    final, proc_stats = playability_pass(raw)
+    raw, gen_tokens = generate(
+        model,
+        vocab,
+        notes,
+        args.beam,
+        args.pitch_constraint,
+        args.max_len,
+        device,
+        max_fret=args.max_fret,
+        fret_penalty=args.fret_penalty,
+    )
+    final, proc_stats = playability_pass(raw, max_fret=args.max_fret)
 
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -292,6 +338,8 @@ def main() -> int:
         "checkpoint": str(args.checkpoint),
         "beam": args.beam,
         "pitch_constraint": bool(args.pitch_constraint),
+        "max_fret": args.max_fret,
+        "fret_penalty": args.fret_penalty,
         "comparison": compare(notes, raw),
         "rhythm": rhythm.to_dict(),
         "postprocessing": proc_stats,
