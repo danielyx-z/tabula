@@ -19,6 +19,8 @@ from core.fretboard import (
     positions,
 )
 from corpus.parse.alphatex import parse_body, parse_file  # noqa: E402
+from core.schema import Note  # noqa: E402
+from core.quantise import quantise_notes  # noqa: E402
 
 FAILS: list[str] = []
 
@@ -123,11 +125,43 @@ def test_file() -> None:
     check("track 2 notes", tracks[1].n_notes == 4, str(tracks[1].n_notes))
 
 
+def test_quantise_pitch_only() -> None:
+    notes = [
+        Note(20, 960, 49, 0, 0),
+        Note(20, 960, 56, 0, 0),
+        Note(20, 960, 58, 0, 0),
+        Note(25, 960, 60, 0, 0),  # within the 40-tick chord window
+        Note(20, 960, 49, 0, 0),  # duplicate pitch
+    ]
+    out = quantise_notes(notes)
+    check("pitch-only chord notes preserved", len(out) == 4, str(out))
+    check(
+        "pitch-only onsets collapsed",
+        len(set(n.t for n in out)) == 1,
+        str([n.t for n in out]),
+    )
+    check(
+        "pitch-only duplicate pitch removed",
+        sum(n.pitch == 49 for n in out) == 1,
+        str([n.pitch for n in out]),
+    )
+    same_string = quantise_notes([
+        Note(0, 960, 60, 1, 0),
+        Note(0, 960, 64, 1, 5),
+    ])
+    check(
+        "same-string same-tick still deduped",
+        len(same_string) == 1,
+        str(same_string),
+    )
+
+
 def main() -> int:
     test_tuning()
     test_positions()
     test_body()
     test_file()
+    test_quantise_pitch_only()
     print()
     if FAILS:
         print(f"{len(FAILS)} failure(s)")

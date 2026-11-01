@@ -271,24 +271,44 @@ def compute_rhythm_metrics(
     gt_notes: list[Note],
     vocab: Vocab,
     tolerance_ticks: int = 120,
+    pred_notes: list[dict] | None = None,
 ) -> RhythmCounts:
     """
-    Compute rhythm metrics by decoding the model's TIME_SHIFT tokens to onsets
-    and comparing to ground-truth onsets.
+    Compute rhythm metrics from timed predictions and ground-truth onsets.
+
+    By default the model's TIME_SHIFT tokens are decoded, which is correct for
+    a single chunk.  For multi-chunk inference pass ``pred_notes`` (dicts with
+    t/dur/pitch/s/f), because concatenated chunk tokens each start at their own
+    base time.
 
     Uses greedy nearest-onset matching within tolerance_ticks (default 120 = 2 grids).
     """
     from tablature.stream import decode_tab_stream
 
-    # Decode the full token stream (including TIME_SHIFT) to timed notes.
-    decoded = decode_tab_stream(pred_tokens)
-
-    # Build predicted timed notes from decoded stream.
-    pred_notes = []
-    for d in decoded:
-        s, f = d["s"], d["f"]
-        pitch = pitch_of(s, f, STANDARD)
-        pred_notes.append(Note(t=d["t"], dur=d["dur"], pitch=pitch, s=s, f=f))
+    if pred_notes is None:
+        # Decode a single token stream whose TIME_SHIFT is relative to t=0.
+        decoded = decode_tab_stream(pred_tokens)
+        pred_notes = [
+            Note(
+                t=d["t"],
+                dur=d["dur"],
+                pitch=pitch_of(d["s"], d["f"], STANDARD),
+                s=d["s"],
+                f=d["f"],
+            )
+            for d in decoded
+        ]
+    else:
+        pred_notes = [
+            Note(
+                t=int(d["t"]),
+                dur=int(d["dur"]),
+                pitch=int(d["pitch"]),
+                s=int(d["s"]),
+                f=int(d["f"]),
+            )
+            for d in pred_notes
+        ]
 
     # Sort both by onset, then string.
     pred_notes.sort(key=lambda n: (n.t, n.s))

@@ -67,9 +67,11 @@ def notes_to_tab(
         if char_pos + len(fret_str) <= len(line):
             tab_lines[n.s] = line[:char_pos] + fret_str + line[char_pos + len(fret_str):]
 
-    # Build systems (wrap at ``width`` chars)
+    # Build systems (wrap at whole measures so bar lines stay aligned).
+    # ``width`` is a soft cap; each system holds whole measures only.
     systems = []
-    chars_per_system = width
+    measures_per_system = max(1, width // measure_width)
+    chars_per_system = measures_per_system * measure_width
     total_chars = measures * measure_width
 
     for sys_start in range(0, total_chars, chars_per_system):

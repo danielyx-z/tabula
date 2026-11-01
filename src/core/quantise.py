@@ -34,6 +34,38 @@ class QuantConfig:
 CFG = QuantConfig()
 
 
+def ticks_to_seconds(tick: int, tempo_changes: list[tuple[float, float]], ppq: int = PPQ) -> float:
+    """Convert a MIDI tick position to seconds using a tempo map.
+
+    ``tempo_changes`` is a list of ``(seconds, bpm)`` pairs sorted by seconds,
+    with the first entry at time 0.  Returns the seconds for the given tick.
+    """
+    if not tempo_changes:
+        return tick * 60.0 / (120.0 * ppq)
+
+    prev_tick = 0
+    prev_time = 0.0
+    prev_bpm = tempo_changes[0][1]
+
+    # Append a sentinel so the final segment is handled.
+    for change_time, change_bpm in tempo_changes[1:] + [(float("inf"), None)]:
+        if change_bpm is None:
+            # Final segment: convert remaining ticks at prev_bpm.
+            return prev_time + (tick - prev_tick) * 60.0 / (prev_bpm * ppq)
+
+        # Tick position of this tempo change under the current tempo.
+        change_tick = prev_tick + int(round((change_time - prev_time) * prev_bpm * ppq / 60.0))
+
+        if tick <= change_tick:
+            return prev_time + (tick - prev_tick) * 60.0 / (prev_bpm * ppq)
+
+        prev_tick = change_tick
+        prev_time = change_time
+        prev_bpm = change_bpm
+
+    return prev_time + (tick - prev_tick) * 60.0 / (prev_bpm * ppq)
+
+
 def quantise_tick(t: int, grid: int = GRID) -> int:
     """Round tick to nearest grid multiple."""
     return round(t / grid) * grid
@@ -160,11 +192,12 @@ def quantise_notes(
                     )
             i = j
 
-    # Deduplicate same string at same tick (keep first).
-    seen: set[tuple[int, int]] = set()
+    # Deduplicate same string at same tick (keep first).  A pitch-only MIDI
+    # (s=0) has no string, so use pitch in the key to preserve chord notes.
+    seen: set[tuple] = set()
     unique = []
     for n in quantised:
-        key = (n.s, n.t)
+        key = (n.s, n.t, n.pitch) if n.s == 0 else (n.s, n.t)
         if key in seen:
             continue
         seen.add(key)

@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import pretty_midi
 
-from core.quantise import PPQ
+from core.quantise import PPQ, ticks_to_seconds  # noqa: E402
 
 # Default SoundFont path (FluidR3_GM from fluid-soundfont-gm package)
 DEFAULT_SF2 = "/usr/share/sounds/sf2/FluidR3_GM.sf2"
@@ -46,23 +46,44 @@ def _midi_duration_seconds(mid_path: Path) -> float:
     return pm.get_end_time()
 
 
-def _write_temp_midi(notes, bpm: float, ppq: int = PPQ) -> Path:
-    """Write notes to a temporary MIDI file and return its path."""
-    pm = pretty_midi.PrettyMIDI(initial_tempo=bpm)
+def _write_temp_midi(
+    notes, bpm: float, ppq: int = PPQ,
+    tempo_changes: list[tuple[float, float]] | None = None,
+    source_midi_path: Path | None = None,
+) -> Path:
+    """Write notes to a temporary MIDI file and return its path.
+
+    String 0 is a pitch-only input (a normal MIDI file carries no fingering);
+    those notes must still be rendered.  Strings 1-6 are output fingering.
+    If ``source_midi_path`` is given, that file is loaded and its instruments
+    are replaced with our string tracks, preserving the original tempo map.
+    Note times are converted from ticks to seconds using ``tempo_changes``.
+    """
+    if source_midi_path is not None:
+        pm = pretty_midi.PrettyMIDI(str(source_midi_path))
+        pm.instruments = []  # drop original instruments, keep tempo map etc.
+    else:
+        pm = pretty_midi.PrettyMIDI(initial_tempo=bpm)
     string_names = ["E2", "A2", "D3", "G3", "B3", "E4"]
-    for s in range(1, 7):
-        track = pretty_midi.Instrument(program=25, name=f"string {s} ({string_names[s-1]})")
-        for n in notes:
-            d = n  # already dict from synthesize
-            if d.get("s") == s:
-                pitch = _to_py(d.get("pitch"))
-                start = _to_py(d.get("t")) / ppq * 60.0 / bpm
-                end = (_to_py(d.get("t")) + _to_py(d.get("dur"))) / ppq * 60.0 / bpm
-                track.notes.append(pretty_midi.Note(
-                    velocity=100, pitch=pitch,
-                    start=start, end=end
-                ))
+    tracks = {}
+    for s in [0, *range(1, 7)]:
+        name = "pitch only" if s == 0 else f"string {s} ({string_names[s-1]})"
+        track = pretty_midi.Instrument(program=25, name=name)
         pm.instruments.append(track)
+        tracks[s] = track
+
+    for n in notes:
+        d = n  # already dict from synthesize
+        s = int(d.get("s") or 0)
+        if s not in tracks:
+            s = 0
+        pitch = _to_py(d.get("pitch"))
+        start = ticks_to_seconds(int(d.get("t")), tempo_changes, ppq)
+        end = ticks_to_seconds(int(d.get("t")) + max(1, int(d.get("dur"))), tempo_changes, ppq)
+        tracks[s].notes.append(pretty_midi.Note(
+            velocity=100, pitch=pitch,
+            start=start, end=end
+        ))
 
     tmp = tempfile.NamedTemporaryFile(suffix=".mid", delete=False)
     pm.write(tmp.name)
@@ -76,6 +97,8 @@ def synthesize(
     ppq: int = PPQ,
     sf2_path: str = DEFAULT_SF2,
     release_tail: float = 0.5,
+    tempo_changes: list[tuple[float, float]] | None = None,
+    source_midi_path: Path | None = None,
 ) -> np.ndarray:
     """Render canonical notes to mono float32 audio via FluidSynth.
 
@@ -99,7 +122,8 @@ def synthesize(
     notes = [{k: _to_py(v) for k, v in d.items()} for d in notes]
 
     # Write notes to temporary MIDI
-    mid_path = _write_temp_midi(notes, bpm, ppq)
+    mid_path = _write_temp_midi(notes, bpm, ppq, tempo_changes=tempo_changes,
+                                source_midi_path=source_midi_path)
 
     try:
         # Get MIDI duration
@@ -122,11 +146,22 @@ def synthesize(
         if result.returncode != 0:
             raise RuntimeError(f"FluidSynth failed: {result.stderr}")
 
-        # Read and trim to render duration
+        # Read and trim to render duration.
+        # FluidSynth writes stereo; downmix to mono before trimming so we
+        # don't interpret interleaved L/R frames as twice as many samples.
         import wave
         with wave.open(str(wav_path), "rb") as w:
+            nchan = w.getnchannels()
+            sw = w.getsampwidth()
             frames = w.readframes(w.getnframes())
+        if sw == 2:
             audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        elif sw == 4:
+            audio = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
+        else:
+            raise RuntimeError(f"Unsupported WAV sample width {sw}")
+        if nchan > 1:
+            audio = audio.reshape(-1, nchan).mean(axis=1)
 
         # Trim or pad to exact render duration
         if len(audio) > max_samples:
