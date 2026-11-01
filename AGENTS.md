@@ -66,13 +66,6 @@ tail -f logs/<jobid>-tabula-t5.out
 scancel <jobid>
 ```
 
-See `docs/WATCLOUD.md` for the full cluster reference (node/GPU table, GRES
-semantics, notifications, troubleshooting).
-
-Verified throughput on `trpro-slurm1` (RTX 3090 shard, batch 8 × grad-accum 8,
-warm chunk cache): ~4.2 optimizer steps/s, so 30,000 steps ≈ 2 h including
-validation loss and periodic full-track metrics.
-
 WATcloud notifications (instead of Slurm mail):
 
 ```bash
@@ -162,14 +155,37 @@ is off by default; enable it only if memory becomes tight.
 - `src/model/model.py` — paper-config T5 factory.
 - `src/tablature/tokenizer.py` — v3 event/target encoding.
 - `src/model/chunk.py` — 512-token train windows / 20-note inference chunks.
-- `src/corpus/chunk_store.py` — tokenises training chunks **once** into flat
-  arrays and caches them under `<data-dir>/.chunk_cache/`. Training epochs then
-  only reshuffle indices (~0.4 ms/batch vs ~47 ms of re-chunking per batch).
-  Do not reintroduce per-epoch chunking in the training loop.
 - `src/tablature/postproc.py` — overlap correction + neighbor search.
 - `src/tablature/metrics.py` — tab/pitch accuracy, difficulty, **rhythm**.
 - `src/model/train.py` — training, validation loss, full metrics.
 - `src/model/decode.py` — T5 generation helpers.
-- `src/core/quantise.py` — 20-tick grid, shift decomposition, `quantise_notes`.
+- `src/core/quantise.py` — 20-tick grid, shift decomposition, `quantise_notes`,
+  **`ticks_to_seconds(tick, tempo_changes, ppq)`** converts tick → seconds
+  following a tempo map.
+- `src/audio/synth.py` — FluidSynth guitar synthesis. Writes a temporary MIDI
+  then renders with `fluidsynth -ni -g 1.0 -R 0 -C 0`. **Critical:** FluidSynth
+  writes **stereo** WAVs; `synthesize()` reads `nchan`/`sampwidth` and downmixes
+  to mono before trimming, otherwise interleaved L/R frames are read as
+  twice as many samples and audio plays 2× slow / half-length. Accepts
+  `tempo_changes` and `source_midi_path` to preserve the input tempo map.
+- `scripts/midi2tab.py` — `write_tab_midi(path, notes, bpm, ppq,
+  source_midi_path, tempo_changes)`. If `source_midi_path` is given, loads that
+  MIDI, sets `pm.instruments = []`, appends six string tracks and writes — this
+  preserves the source's full tempo map, key signature and time signature.
+  `ticks_to_seconds` converts note ticks to seconds using the tempo map.
 - `vocab/guitarset.json` — frozen 248-token vocab. Do not use the unpruned
   `DEFAULT_VOCAB` (286) for training.
+
+## Fixed bugs (recent)
+
+- **Tempo map flattening** — output `input/raw/final.mid` previously flattened
+  to a single constant BPM. Now they load the source MIDI and replace instruments,
+  keeping all original tempo changes (e.g. lover_girl.mid: 37 tempo changes,
+  74–83 BPM, first 80.9 BPM, duration 176.56 s).
+- **2× slow WAV synthesis** — FluidSynth writes stereo; the old code treated the
+  interleaved L/R stream as consecutive mono samples, halving the playback rate
+  and trimming to half the music. Fixed by downmixing to mono before trim.
+  Every WAV (`input/raw/final.wav`) is now derived from its own MIDI at the
+  correct speed.
+- **Tab measure wrapping** — `notes_to_tab` now wraps at whole-measure
+  boundaries so bar lines align across all six strings within each system.
