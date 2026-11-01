@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -235,7 +236,12 @@ def main() -> int:
     ap.add_argument("--beam", type=int, default=4)
     ap.add_argument("--max-len", type=int, default=512)
     ap.add_argument("--bpm", type=float, default=120.0)
-    ap.add_argument("--width", type=int, default=100)
+    ap.add_argument(
+        "--width",
+        type=int,
+        default=shutil.get_terminal_size(fallback=(80, 24)).columns,
+        help="max chars per tab line (default: terminal width)",
+    )
     ap.add_argument(
         "--pitch-constraint",
         dest="pitch_constraint",
