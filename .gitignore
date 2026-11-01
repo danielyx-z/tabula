@@ -21,3 +21,6 @@ __pycache__/
 
 # external reference checkouts
 baselines/
+
+# generated demo artefacts
+out/

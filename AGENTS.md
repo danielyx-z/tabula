@@ -189,3 +189,20 @@ is off by default; enable it only if memory becomes tight.
   correct speed.
 - **Tab measure wrapping** — `notes_to_tab` now wraps at whole-measure
   boundaries so bar lines align across all six strings within each system.
+- **Chunk-boundary duplication** — the T5 decoder could generate past its
+  20-note inference window, and `scripts/midi2tab.py` only stripped one
+  re-emitted context note. Output was therefore not time-sorted, contained
+  exact duplicates, and had notes at onsets the input never had. Each chunk's
+  output is now trimmed to `base_t < t <= last_input_t`, giving 0 duplicates
+  and 0 backwards jumps (lover_girl: 1199 raw notes -> 965, 14 breaks -> 0).
+- **Pitch provenance in `final.mid`** — `final.mid` now takes onset, duration
+  and pitch from the input MIDI (ground truth) and only the string from the
+  model (`fret = pitch - tuning[string]`), so final pitch accuracy is 1.0 by
+  construction. `raw.mid` stays uncorrected so the model's own pitch errors
+  are still visible.
+- **Low-position prior** — `assign_onsets()` assigns each onset's chord
+  jointly to unique strings, minimising `(notes above --max-fret, max fret,
+  sum of frets, deviation from the model)`. `fix_chord_spans`, `limit_jumps`
+  and `repair_overlaps` also filter candidates by `--max-fret` (default 9).
+  On lover_girl, final frets >= 10 dropped from 12.9% to 0.0%, mean fret from
+  5.66 to ~3.25, with pitch unchanged.

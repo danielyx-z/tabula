@@ -143,13 +143,21 @@ python scripts/midi2tab.py /path/to/song.mid \
 The CLI writes:
 - `input.mid` — quantised input (one track per string)
 - `raw.mid` — model's own output: onsets from generated `TIME_SHIFT`, pitches from `TAB`
-- `final.mid` — raw after pitch-preserving playability correction
+- `final.mid` — input pitch/timing + the model's string choice, pitch-preserving playability repair and `--max-fret` low-position cap (pitch exact by construction)
 - `input.wav` / `raw.wav` / `final.wav` — FluidSynth (SoundFont) render
 - `final_tab.txt` — ASCII tab of corrected fingering
 - `report.json` — pitch/tab accuracy, rhythm metrics, post-processing stats
 
 `input.mid`, `raw.mid` and `final.mid` have different hashes. Each is written
 one track per string so the fingering is stored.
+
+`raw.mid` is deliberately uncorrected: onsets come from generated `TIME_SHIFT`
+and pitches from generated `TAB<s,f>`, so it shows the model's own errors.
+`final.mid` takes pitch, onset and duration from the input MIDI (ground truth)
+and keeps only the model's string choice; the fret is `pitch - tuning[string]`,
+so every note is pitched exactly. Chunk generation is trimmed to each chunk's
+own note window, which removed duplicate notes and backwards time jumps at
+chunk boundaries.
 
 ## 7. Tests
 

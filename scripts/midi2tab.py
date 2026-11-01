@@ -23,8 +23,10 @@ final differ even when they sound the same.
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import sys
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -40,7 +42,7 @@ from audio.synth import synthesize  # noqa: E402
 from audio.wav import write_wav  # noqa: E402
 from model.chunk import ChunkConfig, make_inference_chunks  # noqa: E402
 from model.decode import constrained_beam_search  # noqa: E402
-from core.fretboard import STANDARD  # noqa: E402
+from core.fretboard import STANDARD, positions  # noqa: E402
 from core.quantise import quantise_notes, ticks_to_seconds  # noqa: E402
 from tablature.metrics import compute_difficulty, compute_rhythm_metrics  # noqa: E402
 from corpus.parse.midi import parse_midi  # noqa: E402
@@ -154,20 +156,127 @@ def generate(
         all_tokens.extend(tokens)
         chunk_notes = decode_tab_stream(tokens, base_t=chunk.meta["base_t"])
 
+        # Trim this chunk's output to its own note window.  The model is free
+        # to keep generating past the 20-note window, and the prompt repeats
+        # the previous note; without trimming those bleed into the next chunk
+        # (duplicate notes, backwards time jumps).
         start = chunk.meta["note_start"]
-        if start > 0 and chunk_notes:
-            ctx = notes[start - 1]
-            first = chunk_notes[0]
-            if (
-                first["s"] == ctx.s
-                and first["f"] == ctx.f
-                and first["t"] == chunk.meta["base_t"]
-            ):
-                chunk_notes = chunk_notes[1:]
+        end = chunk.meta["note_end"]
+        base_t = chunk.meta["base_t"]
+        if start > 0:
+            # Anything at or before the context note is a re-emitted prompt.
+            chunk_notes = [n for n in chunk_notes if n["t"] > base_t]
+        else:
+            chunk_notes = [n for n in chunk_notes if n["t"] >= base_t]
+        # Never occupy the next chunk's input onsets.
+        last_t = notes[end - 1].t
+        chunk_notes = [n for n in chunk_notes if n["t"] <= last_t]
 
         raw.extend(chunk_notes)
 
     return raw, all_tokens
+
+
+def final_from_input(
+    raw: list[dict],
+    input_notes,
+    max_fret: int | None = None,
+    tuning: tuple[int, ...] = STANDARD,
+    frets: int = 24,
+) -> list[dict]:
+    """Build the final artefact: input pitch/timing + the model's fingering.
+
+    The input MIDI is ground truth for pitch and time; the model only decides
+    which string plays each note.  For every input note we look at the raw
+    notes at the same onset (or the nearest raw onset within half a beat),
+    prefer one with the same pitch, and keep its string when that string can
+    sound the input pitch.  The fret is derived from the input pitch, so the
+    pitch is exact by construction.  Notes the model missed fall back to the
+    lowest valid position.
+    """
+    raw_by_t: dict[int, list[dict]] = defaultdict(list)
+    for n in raw:
+        raw_by_t[n["t"]].append(n)
+    raw_times = sorted(raw_by_t)
+
+    def nearest(t: int) -> list[dict]:
+        if not raw_times:
+            return []
+        i = bisect.bisect_left(raw_times, t)
+        best_t = None
+        for j in (i - 1, i):
+            if 0 <= j < len(raw_times):
+                if best_t is None or abs(raw_times[j] - t) < abs(best_t - t):
+                    best_t = raw_times[j]
+        return raw_by_t[best_t] if best_t is not None else []
+
+    used: dict[int, set[int]] = {}
+    out: list[dict] = []
+    for gt in input_notes:
+        cands = raw_by_t.get(gt.t)
+        if not cands:
+            near = nearest(gt.t)
+            cands = near if near and abs(near[0]["t"] - gt.t) <= 480 else []
+        taken = used.setdefault(gt.t, set())
+
+        chosen = None
+        for n in cands:
+            if n["pitch"] == gt.pitch and n["s"] not in taken:
+                chosen = n
+                break
+        if chosen is None:
+            for n in cands:
+                if n["s"] not in taken:
+                    chosen = n
+                    break
+        if chosen is None and cands:
+            chosen = cands[0]
+
+        s = chosen["s"] if chosen is not None else None
+        f = (gt.pitch - tuning[s - 1]) if s is not None else None
+
+        if f is None or not (0 <= f <= frets):
+            cand_pos = positions(gt.pitch, tuning, frets)
+            if not cand_pos:
+                # Pitch outside the instrument's range; keep a valid-looking
+                # placeholder so downstream code cannot crash.
+                out.append({"t": gt.t, "dur": gt.dur, "pitch": gt.pitch, "s": 1, "f": 0})
+                continue
+            if max_fret is not None:
+                low = [c for c in cand_pos if c[1] <= max_fret]
+                cand_pos = low if low else cand_pos
+            on_model_string = [c for c in cand_pos if c[0] == s]
+            if on_model_string:
+                s, f = on_model_string[0]
+            else:
+                s, f = min(cand_pos, key=lambda c: (c[1], c[0]))
+
+        if s is not None:
+            taken.add(s)
+        out.append({"t": gt.t, "dur": gt.dur, "pitch": gt.pitch, "s": s, "f": f})
+    return out
+
+
+def pitch_coverage(input_notes, pred: list[dict]) -> dict:
+    """Per-onset pitch-multiset coverage of the input by ``pred``."""
+    gt_by_t: dict[int, Counter] = defaultdict(Counter)
+    for n in input_notes:
+        gt_by_t[n.t][n.pitch] += 1
+    pred_by_t: dict[int, Counter] = defaultdict(Counter)
+    for n in pred:
+        pred_by_t[n["t"]][n["pitch"]] += 1
+
+    total = correct = 0
+    for t, counts in gt_by_t.items():
+        for pitch, cnt in counts.items():
+            total += cnt
+            correct += min(cnt, pred_by_t[t][pitch])
+    return {
+        "input_notes": total,
+        "pred_notes": len(pred),
+        "pitch_correct": correct,
+        "pitch_accuracy": round(correct / total, 4) if total else 0.0,
+    }
 
 
 def playability_pass(
@@ -180,18 +289,18 @@ def playability_pass(
         DecodedNote(t=n["t"], dur=n["dur"], pitch=n["pitch"], s=n["s"], f=n["f"])
         for n in raw
     ]
-    nodes, dropped_a = cap_simultaneous(nodes)
-    # Layer 2: joint per-onset assignment enforcing the fret cap and string
-    # uniqueness before the span/jump repairs.
+    # Assign onsets first: it makes strings unique and applies the fret cap
+    # without dropping any note.  All later passes are pitch-preserving, and
+    # cap_simultaneous is only a safety net for >6-note onsets.
     nodes, onset_moves = assign_onsets(nodes, max_fret=max_fret, max_span=max_span)
-    nodes = repair_overlaps(nodes, max_fret=max_fret)  # no ground truth: pitch is preserved
+    nodes = repair_overlaps(nodes, max_fret=max_fret)  # pitch is preserved
     nodes, chord_moves = fix_chord_spans(nodes, max_span=max_span, max_fret=max_fret)
     nodes, jump_moves = limit_jumps(nodes, max_jump=max_jump, max_fret=max_fret)
     nodes = repair_overlaps(nodes, max_fret=max_fret)
-    nodes, dropped_b = cap_simultaneous(nodes)
+    nodes, dropped = cap_simultaneous(nodes)
     final = [{"t": n.t, "dur": n.dur, "pitch": n.pitch, "s": n.s, "f": n.f} for n in nodes]
     stats = {
-        "dropped_impossible": dropped_a + dropped_b,
+        "dropped_impossible": dropped,
         "refingered_chord_span": chord_moves,
         "refingered_jump": jump_moves,
         "refingered_onset": onset_moves,
@@ -293,7 +402,10 @@ def main() -> int:
         max_fret=args.max_fret,
         fret_penalty=args.fret_penalty,
     )
-    final, proc_stats = playability_pass(raw, max_fret=args.max_fret)
+    # final = input pitch/timing (ground truth) + the model's fingering,
+    # then pitch-preserving playability and low-fret correction.
+    final_seed = final_from_input(raw, notes, max_fret=args.max_fret)
+    final, proc_stats = playability_pass(final_seed, max_fret=args.max_fret)
 
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -341,6 +453,7 @@ def main() -> int:
         "max_fret": args.max_fret,
         "fret_penalty": args.fret_penalty,
         "comparison": compare(notes, raw),
+        "final_comparison": pitch_coverage(notes, final),
         "rhythm": rhythm.to_dict(),
         "postprocessing": proc_stats,
         "final_notes": len(final),

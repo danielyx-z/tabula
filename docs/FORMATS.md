@@ -170,12 +170,29 @@ The checkpoint's `config.vocab_size` must equal the vocabulary size.
 | --- | --- | --- |
 | `input.mid` | MIDI, type 1 | parsed input notes (source tempo map preserved) |
 | `raw.mid` | MIDI, type 1 | model tokens only (source tempo map preserved) |
-| `final.mid` | MIDI, type 1 | raw + playability correction (source tempo map preserved) |
+| `final.mid` | MIDI, type 1 | input pitch/timing + model string choice, `--max-fret` capped (source tempo map preserved) |
 | `input.wav` | 44.1 kHz mono | synthesis of `input.mid` |
 | `raw.wav` | 44.1 kHz mono | synthesis of `raw.mid` |
 | `final.wav` | 44.1 kHz mono | synthesis of `final.mid` |
-| `final_tab.txt` | ASCII tab | corrected fingering |
+| `final_tab.txt` | ASCII tab | low-fret corrected fingering of `final.mid` |
 | `report.json` | JSON | counts, alignment metrics, post-processing stats, rhythm metrics |
+
+### Pitch and fingering provenance
+
+`raw.mid` is the model's own token stream: onsets come from generated
+`TIME_SHIFT` tokens and pitches from generated `TAB<s,f>` tokens. It is left
+uncorrected on purpose, so it shows the model's own over/under-generation and
+pitch errors.
+
+`final.mid` starts from the **input** MIDI, which is ground truth for pitch,
+onset and duration. For each input note the model's preferred string at the
+same onset is kept and the fret is derived from the input pitch
+(`fret = pitch - tuning[string]`), so the pitch is exact by construction.
+`final.mid` therefore contains exactly the input notes (count, timing and
+pitch), with the model's fingering, after pitch-preserving playability repair
+and the `--max-fret` low-position cap (`assign_onsets`). The input pitch is
+authoritative; `raw.mid` is where the model's own pitch predictions remain
+visible.
 
 ### WAV synthesis
 
@@ -219,6 +236,12 @@ synthesis, so rendered audio timing matches the source.
     "tab_exact": 0,
     "tab_accuracy": 0.0
   },
+  "final_comparison": {
+    "input_notes": 133,
+    "pred_notes": 133,
+    "pitch_correct": 133,
+    "pitch_accuracy": 1.0
+  },
   "rhythm": {
     "matched": 120,
     "missing": 13,
@@ -234,9 +257,10 @@ synthesis, so rendered audio timing matches the source.
     "mean_dur_error": 180.5
   },
   "postprocessing": {
-    "dropped_impossible": 7,
+    "dropped_impossible": 0,
     "refingered_chord_span": 10,
-    "refingered_jump": 31
+    "refingered_jump": 31,
+    "refingered_onset": 12
   },
   "final_notes": 123
 }
