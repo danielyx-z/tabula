@@ -46,12 +46,7 @@ from core.fretboard import STANDARD, positions  # noqa: E402
 from core.quantise import quantise_notes, ticks_to_seconds  # noqa: E402
 from tablature.metrics import compute_difficulty, compute_rhythm_metrics  # noqa: E402
 from corpus.parse.midi import parse_midi  # noqa: E402
-from tablature.playability import (  # noqa: E402
-    assign_onsets,
-    cap_simultaneous,
-    fix_chord_spans,
-    limit_jumps,
-)
+from tablature.playability import playability_pass  # noqa: E402
 from tablature.postproc import DecodedNote, repair_overlaps  # noqa: E402
 from tablature.render import render_tab  # noqa: E402
 from tablature.stream import decode_tab_stream  # noqa: E402
@@ -277,35 +272,6 @@ def pitch_coverage(input_notes, pred: list[dict]) -> dict:
         "pitch_correct": correct,
         "pitch_accuracy": round(correct / total, 4) if total else 0.0,
     }
-
-
-def playability_pass(
-    raw: list[dict],
-    max_fret: int | None = None,
-    max_span: int = 4,
-    max_jump: int = 5,
-) -> tuple[list[dict], dict]:
-    nodes = [
-        DecodedNote(t=n["t"], dur=n["dur"], pitch=n["pitch"], s=n["s"], f=n["f"])
-        for n in raw
-    ]
-    # Assign onsets first: it makes strings unique and applies the fret cap
-    # without dropping any note.  All later passes are pitch-preserving, and
-    # cap_simultaneous is only a safety net for >6-note onsets.
-    nodes, onset_moves = assign_onsets(nodes, max_fret=max_fret, max_span=max_span)
-    nodes = repair_overlaps(nodes, max_fret=max_fret)  # pitch is preserved
-    nodes, chord_moves = fix_chord_spans(nodes, max_span=max_span, max_fret=max_fret)
-    nodes, jump_moves = limit_jumps(nodes, max_jump=max_jump, max_fret=max_fret)
-    nodes = repair_overlaps(nodes, max_fret=max_fret)
-    nodes, dropped = cap_simultaneous(nodes)
-    final = [{"t": n.t, "dur": n.dur, "pitch": n.pitch, "s": n.s, "f": n.f} for n in nodes]
-    stats = {
-        "dropped_impossible": dropped,
-        "refingered_chord_span": chord_moves,
-        "refingered_jump": jump_moves,
-        "refingered_onset": onset_moves,
-    }
-    return final, stats
 
 
 def compare(input_notes, raw) -> dict:

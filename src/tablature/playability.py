@@ -30,6 +30,11 @@ def fix_chord_spans(
 ) -> tuple[list[DecodedNote], int]:
     """Re-finger chords whose frets are farther apart than a hand can reach.
 
+    Each chord is re-assigned *jointly* to unique strings, so a move can never
+    put two notes on the same string.  When no unique-string voicing fits
+    ``max_span``, it falls back to the most compact unique-string voicing over
+    all positions (minimising the maximum fret) instead of creating a
+    collision; if even that is impossible the chord is left untouched.
     When ``max_fret`` is set, candidate positions above it are excluded unless
     no lower position exists for the pitch.  Returns the notes and the number
     of notes whose string/fret changed.
@@ -47,25 +52,68 @@ def fix_chord_spans(
             continue
 
         center = ordered[len(ordered) // 2]
-        used_strings: set[int] = set()
-        # Fix the worst outlier first so later choices see the settled notes.
-        for i in sorted(idxs, key=lambda j: -abs(notes[j].f - center)):
+        cand_lists: list[list[tuple[int, int]]] = []
+        for i in idxs:
             n = notes[i]
             cands = [
                 (s, f)
                 for s, f in positions(n.pitch, tuning, frets)
-                if s not in used_strings
-                and abs(f - center) <= max_span
+                if abs(f - center) <= max_span
                 and (max_fret is None or f <= max_fret)
             ]
-            if cands:
-                s, f = min(
-                    cands, key=lambda c: (abs(c[1] - center), abs(c[0] - n.s))
+            # Keep the current position as a fallback so a note that cannot
+            # reach the target window does not make the whole chord
+            # unsolvable; the unique-string check still applies.
+            cand_lists.append(cands or [(n.s, n.f)])
+
+        predicted = [(notes[i].s, notes[i].f) for i in idxs]
+        best_key = None
+        best_combo = None
+        for combo in itertools.product(*cand_lists):
+            strings = [c[0] for c in combo]
+            if len(set(strings)) != len(strings):
+                continue
+            frets_used = [c[1] for c in combo]
+            span = max(frets_used) - min(frets_used)
+            key = (
+                span,
+                max(frets_used),
+                sum(frets_used),
+                sum(0 if c == p else 1 for c, p in zip(combo, predicted)),
+            )
+            if best_key is None or key < best_key:
+                best_key = key
+                best_combo = combo
+
+        if best_combo is None:
+            # No unique-string voicing inside the span.  Choose the most
+            # compact achievable voicing over all positions rather than
+            # leaving an extreme fret (e.g. a piano chord with one note at
+            # fret 22); unique strings are still required.
+            full_lists = [positions(notes[i].pitch, tuning, frets) for i in idxs]
+            for combo in itertools.product(*full_lists):
+                strings = [c[0] for c in combo]
+                if len(set(strings)) != len(strings):
+                    continue
+                frets_used = [c[1] for c in combo]
+                span = max(frets_used) - min(frets_used)
+                key = (
+                    max(frets_used),
+                    span,
+                    sum(frets_used),
+                    sum(0 if c == p else 1 for c, p in zip(combo, predicted)),
                 )
-            else:
-                s, f = n.s, n.f
-            used_strings.add(s)
-            if (s, f) != (n.s, n.f):
+                if best_key is None or key < best_key:
+                    best_key = key
+                    best_combo = combo
+
+        if best_combo is None:
+            # Truly no unique-string voicing; leave the chord as-is.
+            continue
+
+        for i, (s, f) in zip(idxs, best_combo):
+            n = notes[i]
+            if (n.s, n.f) != (s, f):
                 n.s, n.f = s, f
                 moved += 1
 
@@ -188,28 +236,40 @@ def assign_onsets(
             cand_lists.append(cands)
 
         predicted = [(out[i].s, out[i].f) for i in idxs]
-        best_key = None
-        best_combo = None
-        for combo in itertools.product(*cand_lists):
-            strings = [c[0] for c in combo]
-            if len(set(strings)) != len(strings):
-                continue
-            frets_used = [c[1] for c in combo]
-            span = max(frets_used) - min(frets_used)
-            above = sum(1 for f in frets_used if f > max_fret)
-            key = (
-                above,
-                max(frets_used),
-                sum(frets_used),
-                span,
-                sum(0 if c == p else 1 for c, p in zip(combo, predicted)),
-            )
-            if best_key is None or key < best_key:
-                best_key = key
-                best_combo = combo
 
+        def _best(cand_sets):
+            best_key = None
+            best_combo = None
+            for combo in itertools.product(*cand_sets):
+                strings = [c[0] for c in combo]
+                if len(set(strings)) != len(strings):
+                    continue
+                frets_used = [c[1] for c in combo]
+                span = max(frets_used) - min(frets_used)
+                above = sum(1 for f in frets_used if f > max_fret)
+                key = (
+                    above,
+                    max(frets_used),
+                    sum(frets_used),
+                    span,
+                    sum(0 if c == p else 1 for c, p in zip(combo, predicted)),
+                )
+                if best_key is None or key < best_key:
+                    best_key = key
+                    best_combo = combo
+            return best_combo
+
+        best_combo = _best(cand_lists)
         if best_combo is None:
-            # Fallback: greedy lowest fret per note with unique strings.
+            # No unique-string assignment within the fret cap.  Allow frets
+            # above ``max_fret`` rather than dropping a note: the ``above``
+            # term still minimises how many notes cross the cap, then the
+            # maximum fret.  This is the "only when necessary" case.
+            full_lists = [positions(out[i].pitch, tuning, frets) for i in idxs]
+            best_combo = _best(full_lists)
+        if best_combo is None:
+            # Truly infeasible (>6 distinct-string pitches at one onset):
+            # greedy lowest-fret assignment; cap_simultaneous drops the rest.
             used: set[int] = set()
             best_combo = []
             for cands in cand_lists:
@@ -294,22 +354,41 @@ def playability_pass(
     max_span: int = 4,
     max_jump: int = 5,
 ) -> tuple[list[dict], dict]:
+    """Pitch-preserving playability and low-position correction.
+
+    Notes are never dropped unless a single onset really has more notes than
+    the guitar has strings.  Assign onsets first (unique strings + fret cap),
+    then the span/jump/overlap repairs, and finally a collision safety net.
+    """
     nodes = [
         DecodedNote(t=n["t"], dur=n["dur"], pitch=n["pitch"], s=n["s"], f=n["f"])
         for n in raw
     ]
-    nodes, dropped_a = cap_simultaneous(nodes)
-    # Layer 2: joint per-onset assignment enforcing the fret cap and string
-    # uniqueness before the span/jump repairs.
+    # Assign onsets first: it makes strings unique and applies the fret cap
+    # without dropping any note.  All later passes are pitch-preserving.
     nodes, onset_moves = assign_onsets(nodes, max_fret=max_fret, max_span=max_span)
-    nodes = repair_overlaps(nodes, max_fret=max_fret)  # no ground truth: pitch is preserved
+    nodes = repair_overlaps(nodes, max_fret=max_fret)  # pitch is preserved
     nodes, chord_moves = fix_chord_spans(nodes, max_span=max_span, max_fret=max_fret)
     nodes, jump_moves = limit_jumps(nodes, max_jump=max_jump, max_fret=max_fret)
     nodes = repair_overlaps(nodes, max_fret=max_fret)
-    nodes, dropped_b = cap_simultaneous(nodes)
+    # Safety net: if a later pass still left two notes on one string at the
+    # same onset, reassign those onsets jointly instead of dropping the note.
+    seen: dict[int, set[int]] = defaultdict(set)
+    colliding_t: set[int] = set()
+    for n in nodes:
+        if n.s in seen[n.t]:
+            colliding_t.add(n.t)
+        seen[n.t].add(n.s)
+    if colliding_t:
+        assign_onsets(
+            [n for n in nodes if n.t in colliding_t],
+            max_fret=max_fret,
+            max_span=max_span,
+        )
+    nodes, dropped = cap_simultaneous(nodes)
     final = [{"t": n.t, "dur": n.dur, "pitch": n.pitch, "s": n.s, "f": n.f} for n in nodes]
     stats = {
-        "dropped_impossible": dropped_a + dropped_b,
+        "dropped_impossible": dropped,
         "refingered_chord_span": chord_moves,
         "refingered_jump": jump_moves,
         "refingered_onset": onset_moves,

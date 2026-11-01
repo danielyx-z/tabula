@@ -206,3 +206,16 @@ is off by default; enable it only if memory becomes tight.
   and `repair_overlaps` also filter candidates by `--max-fret` (default 9).
   On lover_girl, final frets >= 10 dropped from 12.9% to 0.0%, mean fret from
   5.66 to ~3.25, with pitch unchanged.
+- **Unplayable input chords** — a piano-derived MIDI can contain six-note
+  chords wider than any hand (e.g. Valentine's `[51,58,62,63,67,70]`). The old
+  `fix_chord_spans` re-fingered greedily and could move two notes onto one
+  string, after which `cap_simultaneous` dropped 42 notes. It is now a *joint*
+  per-onset assignment, so it cannot create a string collision; when no
+  voicing fits the target span it falls back to the most compact unique-string
+  voicing (minimising the maximum fret). `playability_pass` also re-assigns
+  any residual collision instead of dropping the note. Valentine now keeps all
+  750 input pitches; its 21 six-note chords use the compact
+  `11/13/12/8/8/6` voicing instead of a single fret 22.
+- **One `playability_pass`** — `scripts/midi2tab.py` carried a duplicate copy
+  of the pass; it now imports `tablature.playability.playability_pass`, so the
+  CLI and library cannot drift apart.
