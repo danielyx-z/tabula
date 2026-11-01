@@ -7,96 +7,77 @@ from dataclasses import dataclass
 from core.fretboard import STANDARD, pitch_name
 from core.schema import Note
 
+PPQ = 960
+
 
 @dataclass
 class TabSystem:
     """One system (line group) of tab."""
-    strings: list[str]    # 6 strings, each a single line of tab
-    bar_lines: list[int]  # character positions of bar lines
-    beat_width: int = 4   # chars per 16th note
+    strings: list[str]   # 6 string lines, high to low
 
 
 def notes_to_tab(
     notes: list[Note],
-    beats_per_bar: int = 16,
-    beat_width: int = 4,
-    width: int = 80,
+    ppq: int = PPQ,
+    slots_per_bar: int = 16,   # 16 sixteenths = one bar of 4/4
+    width: int = 160,
 ) -> list[TabSystem]:
-    """
-    Convert notes to ASCII tab systems.
-    Returns list of systems (each fits terminal width).
-    """
     if not notes:
         return []
 
-    # Sort by time
-    notes = sorted(notes, key=lambda n: (n.t, n.pitch))
+    ticks_per_slot = ppq // 4  # one 16th note (240 at PPQ=960)
 
-    # PPQ=960, 16th=60 ticks
-    TICKS_PER_16TH = 60
+    def slot(t: int) -> int:
+        return round(t / ticks_per_slot)
 
-    # Find time range
-    start_t = min(n.t for n in notes)
-    end_t = max(n.t + n.dur for n in notes)
+    # Align to absolute bar boundaries (bar 0 starts at tick 0), not to the
+    # first note's position.  This preserves pickup bars and offbeat starts.
+    first_bar = 0
+    last_bar = max(slot(n.t) for n in notes) // slots_per_bar
+    n_bars = last_bar - first_bar + 1
 
-    # Quantize to 16th grid
-    start_16th = start_t // TICKS_PER_16TH
-    end_16th = (end_t + TICKS_PER_16TH - 1) // TICKS_PER_16TH
-    total_16ths = end_16th - start_16th
+    col_w = 3 if any(n.f >= 10 for n in notes) else 2
+    bar_w = slots_per_bar * col_w
+    stride = bar_w + 1  # +1 for the bar line
 
-    # Measures
-    beats_per_measure = beats_per_bar
-    measures = total_16ths // beats_per_measure + 1
+    total = n_bars * stride
 
-    # Build one continuous string per string
-    measure_width = beats_per_measure * beat_width + 1
-    tab_lines = {s: "" for s in range(1, 7)}
-    for m in range(measures):
-        for s in range(1, 7):
-            tab_lines[s] += "-" * (beats_per_measure * beat_width) + "|"
+    def blank() -> list[str]:
+        row = ["-"] * total
+        for b in range(n_bars):
+            row[b * stride + bar_w] = "|"
+        return row
 
-    # Place notes
+    rows = {s: blank() for s in range(1, 7)}
+
     for n in notes:
-        pos_16th = (n.t - start_16th * TICKS_PER_16TH) // TICKS_PER_16TH
-        measure = pos_16th // beats_per_measure
-        beat_in_measure = pos_16th % beats_per_measure
-        char_pos = measure * measure_width + beat_in_measure * beat_width
+        abs_slot = slot(n.t)
+        bar = abs_slot // slots_per_bar
+        rel = abs_slot - bar * slots_per_bar
+        pos = bar * stride + rel * col_w
+        for i, ch in enumerate(str(n.f)):  # left-justified
+            rows[n.s][pos + i] = ch
 
-        fret_str = str(n.f).rjust(2)
-        line = tab_lines[n.s]
-        if char_pos + len(fret_str) <= len(line):
-            tab_lines[n.s] = line[:char_pos] + fret_str + line[char_pos + len(fret_str):]
-
-    # Build systems (wrap at whole measures so bar lines stay aligned).
-    # ``width`` is a soft cap; each system holds whole measures only.
+    # Wrap on whole bars
+    label_w = 3
+    bars_per_sys = max(1, (width - label_w - 1) // stride)
     systems = []
-    measures_per_system = max(1, width // measure_width)
-    chars_per_system = measures_per_system * measure_width
-    total_chars = measures * measure_width
-
-    for sys_start in range(0, total_chars, chars_per_system):
-        sys_end = min(sys_start + chars_per_system, total_chars)
-        sys_strings = []
-        for s in range(6, 0, -1):  # Display high to low
-            line = tab_lines[s][sys_start:sys_end]
-            sys_strings.append(f"{pitch_name(STANDARD[s-1]):>3} |{line}")
-        systems.append(TabSystem(
-            strings=sys_strings,
-            bar_lines=[],
-            beat_width=beat_width,
-        ))
-
+    for b0 in range(0, n_bars, bars_per_sys):
+        a = b0 * stride
+        z = min(b0 + bars_per_sys, n_bars) * stride
+        strings = [
+            f"{pitch_name(STANDARD[s - 1]):>{label_w}}|{''.join(rows[s][a:z])}"
+            for s in range(6, 0, -1)
+        ]
+        systems.append(TabSystem(strings=strings))
     return systems
 
 
-def render_tab(notes: list[Note], width: int = 80) -> str:
-    """Render notes as ASCII tab string."""
-    systems = notes_to_tab(notes, width=width)
+def render_tab(notes: list[Note], width: int = 160) -> str:
     lines = []
-    for sys in systems:
-        for s in sys.strings:
-            lines.append(s)
-        lines.append("")  # blank line between systems
+    for sys in notes_to_tab(notes, width=width):
+        lines.extend(sys.strings)
+        lines.append("")
     return "\n".join(lines)
 
 

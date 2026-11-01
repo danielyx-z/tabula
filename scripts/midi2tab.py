@@ -12,10 +12,7 @@ Writes, all derived independently:
                  tokens, pitches from generated TAB tokens
     final.mid    raw after pitch-preserving playability correction
     *.wav        synthesis of each of the above
-    raw_tab.txt  ASCII tab of the model's uncorrected fingering
     final_tab.txt ASCII tab of the corrected fingering
-    input.json / raw.json / final.json
-                 machine-readable note lists for comparison
     report.json  note counts, alignment metrics, and rhythm metrics
 
 MIDI cannot store a fingering, so each output is written as one track per
@@ -27,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sys
 from pathlib import Path
 
@@ -56,7 +52,7 @@ from tablature.playability import (  # noqa: E402
 from tablature.postproc import DecodedNote, repair_overlaps  # noqa: E402
 from tablature.render import render_tab  # noqa: E402
 from tablature.stream import decode_tab_stream  # noqa: E402
-from tablature.tokenizer import PAD_TOKEN, Vocab, tab_token  # noqa: E402
+from tablature.tokenizer import PAD_TOKEN, Vocab  # noqa: E402
 
 NOTE_DTYPE = [("t", "<i4"), ("dur", "<i4"), ("pitch", "<i1"), ("s", "<i1"), ("f", "<i1")]
 
@@ -111,8 +107,7 @@ def write_tab_midi(
     pm.write(str(path))
 
 
-def generate(model, vocab, notes, beam: int, pitch_constraint: bool, max_len: int, device: str,
-             max_fret: int | None = 12, fret_penalty: float = 0.0) -> list[dict]:
+def generate(model, vocab, notes, beam: int, pitch_constraint: bool, max_len: int, device: str) -> list[dict]:
     # Quantise input notes to training distribution (20-tick grid, 40-tick chord window).
     notes = quantise_notes(notes)
     chunks = make_inference_chunks(notes, vocab, "input", ChunkConfig(max_tokens=max_len))
@@ -120,17 +115,10 @@ def generate(model, vocab, notes, beam: int, pitch_constraint: bool, max_len: in
     raw: list[dict] = []
     all_tokens: list[str] = []
 
-    prev_generated: dict | None = None
     for chunk in chunks:
         enc = torch.tensor([chunk.enc_tokens], dtype=torch.long, device=device)
         attn = (enc != pad_id).long()
-        # A pitch-only input has no TAB token for the context note.  The paper's
-        # carry-over context is the *previous generated* note, so replace the
-        # decoder prompt's context token after the first chunk.
-        dec_tokens = list(chunk.dec_tokens)
-        if chunk.meta["has_context"] and prev_generated is not None:
-            dec_tokens[-1] = vocab[tab_token(prev_generated["s"], prev_generated["f"])]
-        prompt = torch.tensor([dec_tokens], dtype=torch.long, device=device)
+        prompt = torch.tensor([chunk.dec_tokens], dtype=torch.long, device=device)
         max_new = min(max_len, max(16, 8 * chunk.meta["num_notes"] + 16))
 
         with torch.no_grad(), torch.autocast(
@@ -147,8 +135,6 @@ def generate(model, vocab, notes, beam: int, pitch_constraint: bool, max_len: in
                 attention_mask=attn,
                 max_new_tokens=max_new,
                 prompt_tabs=0,
-                max_fret=max_fret,
-                fret_penalty=fret_penalty,
             )
 
         tokens = vocab.decode(gen[0, prompt.size(1) :].tolist())
@@ -156,18 +142,17 @@ def generate(model, vocab, notes, beam: int, pitch_constraint: bool, max_len: in
         chunk_notes = decode_tab_stream(tokens, base_t=chunk.meta["base_t"])
 
         start = chunk.meta["note_start"]
-        if start > 0 and chunk_notes and prev_generated is not None:
+        if start > 0 and chunk_notes:
+            ctx = notes[start - 1]
             first = chunk_notes[0]
             if (
-                first["s"] == prev_generated["s"]
-                and first["f"] == prev_generated["f"]
+                first["s"] == ctx.s
+                and first["f"] == ctx.f
                 and first["t"] == chunk.meta["base_t"]
             ):
                 chunk_notes = chunk_notes[1:]
 
         raw.extend(chunk_notes)
-        if chunk_notes:
-            prev_generated = chunk_notes[-1]
 
     return raw, all_tokens
 
@@ -196,7 +181,6 @@ def compare(input_notes, raw) -> dict:
     """Greedy nearest-onset alignment, purely descriptive."""
     used: set[int] = set()
     aligned = pitch_hits = tab_hits = 0
-    has_strings = any(int(gt.s) > 0 for gt in input_notes)
     for gt in input_notes:
         best_j = None
         best_dt = None
@@ -212,8 +196,7 @@ def compare(input_notes, raw) -> dict:
         aligned += 1
         p = raw[best_j]
         pitch_hits += int(p["pitch"] == gt.pitch)
-        if has_strings:
-            tab_hits += int(p["s"] == gt.s and p["f"] == gt.f)
+        tab_hits += int(p["s"] == gt.s and p["f"] == gt.f)
     n = len(input_notes)
     return {
         "input_notes": n,
@@ -221,17 +204,16 @@ def compare(input_notes, raw) -> dict:
         "aligned": aligned,
         "pitch_correct": pitch_hits,
         "pitch_accuracy": round(pitch_hits / n, 4) if n else 0.0,
-        "input_has_strings": has_strings,
-        "tab_exact": tab_hits if has_strings else None,
-        "tab_accuracy": round(tab_hits / n, 4) if n and has_strings else None,
+        "tab_exact": tab_hits,
+        "tab_accuracy": round(tab_hits / n, 4) if n else 0.0,
     }
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("input", help="input MIDI file")
-    ap.add_argument("--checkpoint", default="runs/finetune_t5_guitarset/best")
-    ap.add_argument("--vocab", default="vocab/canonical.json")
+    ap.add_argument("--checkpoint", default="runs/pretrain_t5_guitarset/best")
+    ap.add_argument("--vocab", default="vocab/guitarset.json")
     ap.add_argument("--out-dir", default="out/midi2tab")
     ap.add_argument("--beam", type=int, default=4)
     ap.add_argument("--max-len", type=int, default=512)
@@ -239,34 +221,13 @@ def main() -> int:
     ap.add_argument(
         "--width",
         type=int,
-        default=shutil.get_terminal_size(fallback=(80, 24)).columns,
-        help="max chars per tab line (default: terminal width)",
+        default=160,
+        help="max chars per tab line (default: 160)",
     )
     ap.add_argument(
         "--pitch-constraint",
-        dest="pitch_constraint",
         action="store_true",
-        default=True,
         help="force every TAB pitch to match an encoder NOTE_ON",
-    )
-    ap.add_argument(
-        "--no-pitch-constraint",
-        dest="pitch_constraint",
-        action="store_false",
-        help="disable pitch/low-position masking",
-    )
-    ap.add_argument(
-        "--max-fret",
-        type=int,
-        default=12,
-        help="prefer positions at or below this fret when possible; "
-             "-1 disables the low-position rule",
-    )
-    ap.add_argument(
-        "--fret-penalty",
-        type=float,
-        default=0.0,
-        help="soft penalty (-lambda*fret) among allowed positions",
     )
     args = ap.parse_args()
 
@@ -285,17 +246,7 @@ def main() -> int:
     # Quantise input to training grid so the model sees familiar timings.
     notes = quantise_notes(notes)
 
-    raw, gen_tokens = generate(
-        model,
-        vocab,
-        notes,
-        args.beam,
-        args.pitch_constraint,
-        args.max_len,
-        device,
-        max_fret=None if args.max_fret < 0 else args.max_fret,
-        fret_penalty=args.fret_penalty,
-    )
+    raw, gen_tokens = generate(model, vocab, notes, args.beam, args.pitch_constraint, args.max_len, device)
     final, proc_stats = playability_pass(raw)
 
     out = Path(args.out_dir)
@@ -303,8 +254,8 @@ def main() -> int:
 
     # Preserve the input file's tempo map so output timing matches the source.
     _pm_in = pretty_midi.PrettyMIDI(str(args.input))
-    tc_in = _pm_in.get_tempo_changes()
-    tempo_changes = list(zip(tc_in[0].tolist(), tc_in[1].tolist())) if tc_in[1].size else None
+    _tc_in = _pm_in.get_tempo_changes()
+    tempo_changes = list(zip(_tc_in[0].tolist(), _tc_in[1].tolist())) if _tc_in[1].size else None
 
     in_dicts = [{"t": n.t, "dur": n.dur, "pitch": n.pitch, "s": n.s, "f": n.f} for n in notes]
     write_tab_midi(out / "input.mid", in_dicts, bpm=args.bpm,
@@ -316,14 +267,14 @@ def main() -> int:
 
     for name, ds in (("input", in_dicts), ("raw", raw), ("final", final)):
         write_wav(out / f"{name}.wav",
-                  synthesize(to_array(ds), args.bpm, tempo_changes=tempo_changes,
-                             source_midi_path=args.input))
+                  synthesize(to_array(ds), args.bpm,
+                             source_midi_path=args.input, tempo_changes=tempo_changes))
 
     # Convert notes to Note objects for rhythm metrics.
     from core.schema import Note
     gt_notes = [Note(t=n.t, dur=n.dur, pitch=n.pitch, s=n.s, f=n.f) for n in notes]
     pred_tabs = [(n["s"], n["f"]) for n in raw]
-    rhythm = compute_rhythm_metrics(pred_tabs, gen_tokens, gt_notes, vocab, pred_notes=raw)
+    rhythm = compute_rhythm_metrics(pred_tabs, gen_tokens, gt_notes, vocab)
 
     nodes = [DecodedNote(t=n["t"], dur=n["dur"], pitch=n["pitch"], s=n["s"], f=n["f"]) for n in final]
     tab_text = render_tab(nodes, width=args.width)
@@ -332,7 +283,6 @@ def main() -> int:
     raw_nodes = [DecodedNote(t=n["t"], dur=n["dur"], pitch=n["pitch"], s=n["s"], f=n["f"]) for n in raw]
     (out / "raw_tab.txt").write_text(render_tab(raw_nodes, width=args.width) + "\n", encoding="utf-8")
 
-    # Machine-readable note lists: each is derived from its own stage.
     (out / "input.json").write_text(json.dumps(in_dicts, indent=2) + "\n", encoding="utf-8")
     (out / "raw.json").write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
     (out / "final.json").write_text(json.dumps(final, indent=2) + "\n", encoding="utf-8")
@@ -342,8 +292,6 @@ def main() -> int:
         "checkpoint": str(args.checkpoint),
         "beam": args.beam,
         "pitch_constraint": bool(args.pitch_constraint),
-        "max_fret": args.max_fret,
-        "fret_penalty": args.fret_penalty,
         "comparison": compare(notes, raw),
         "rhythm": rhythm.to_dict(),
         "postprocessing": proc_stats,
