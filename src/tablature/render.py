@@ -20,7 +20,7 @@ def notes_to_tab(
     notes: list[Note],
     ppq: int = PPQ,
     slots_per_bar: int = 16,   # 16 sixteenths = one bar of 4/4
-    width: int = 160,
+    width: int = 80,
 ) -> list[TabSystem]:
     if not notes:
         return []
@@ -73,7 +73,7 @@ def notes_to_tab(
     return systems
 
 
-def render_tab(notes: list[Note], width: int = 160) -> str:
+def render_tab(notes: list[Note], width: int = 80) -> str:
     lines = []
     for sys in notes_to_tab(notes, width=width):
         lines.extend(sys.strings)

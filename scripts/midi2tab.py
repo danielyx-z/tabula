@@ -221,7 +221,7 @@ def main() -> int:
     ap.add_argument(
         "--width",
         type=int,
-        default=160,
+        default=80,
         help="max chars per tab line (default: 160)",
     )
     ap.add_argument(
