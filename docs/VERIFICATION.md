@@ -113,27 +113,6 @@ PYTHONPATH=src .venv/bin/python3 -m model.train \
   bound). Evaluation uses `pred`.
 - Early stopping on validation loss with `patience=10`, `min_delta=1e-4`.
 
-### Raw vs post-processed metrics
-
-`evaluate()` reports both. Post-processing is GT-assisted by construction: it
-takes ground-truth onsets/durations and repairs fingerings against the input
-pitch, so **post pitch accuracy is 100 %** even for an untrained model. Notes
-the model never predicted are filled in with `_first_valid`, and that fallback
-often matches the corpus's canonical fingering.
-
-Two coverage fields keep the honest picture visible:
-
-- **Coverage** — fraction of ground-truth notes actually backed by a model TAB
-  token. Fallback-invented notes count as uncovered.
-- **Tab@Pred** — exact `(string, fret)` accuracy over covered notes only.
-
-Use **raw accuracy** as the end-to-end number. Post `Tab@Pred` is still
-GT-assisted in a second way: `neighbor_search` rewrites the fret from the
-input pitch while keeping the predicted string, so it mostly measures
-**string choice**, not fret prediction. That is a useful fingering diagnostic,
-but it is not a substitute for raw tab accuracy. The all-notes post number is
-for paper comparability only.
-
 ### Smoke test (2 optimizer steps)
 
 ```bash
@@ -187,9 +166,11 @@ tests/test_chunk.py     all checks passed
 - `decompose_shift(640) == [480, 120, 40]`;
 - a strummed chord collapses to one onset and keeps its release tick.
 
-`test_synth.py` checks that a single E2 is in tune (dominant spectral peak
-within 2.5 Hz of 82.41 Hz), that levels are limited, that chords are finite,
-and that synthesis is deterministic.
+`test_synth.py` checks that synthesis is not silent, peak is limited,
+chords are finite, synthesis is deterministic, **note onset is at the
+requested time (not 2× slow — FluidSynth stereo downmix regression)**,
+duration ≈ midi end + release tail, and low notes render with
+substantial low-frequency energy.
 
 `test_chunk.py` verifies:
 - `_avoid_chord_split` retreats to chord start / extends through chord
@@ -207,44 +188,18 @@ trims to MIDI length + 0.5 s release tail, normalises peak to 0.89, and adds
 a 5 ms fade in/out. `tests/test_synth.py` checks tuning, level and
 determinism.
 
+**Stereo downmix:** FluidSynth writes stereo WAVs. `synthesize()` reads
+`getnchannels()`/`getsampwidth()` and downmixes to mono before trimming so
+interleaved L/R frames are not read as twice as many samples (previously this
+made audio play 2× slow and half-length).
+
+**Tempo map preservation:** `synthesize()` accepts `tempo_changes` and
+`source_midi_path`; `_write_temp_midi` loads the source MIDI, drops its
+instruments, appends six string tracks and writes, keeping every original
+tempo/key/time change. Note times are converted from ticks to seconds via
+`ticks_to_seconds(tick, tempo_changes, ppq)`.
+
 The old Karplus-Strong implementation was removed entirely.
-
-## Raw fret diagnostics and the low-position prior
-
-`postprocess()` rewrites the fret from the input pitch and the predicted
-string, so the post-processed `Tab@Pred` is **string-dominated** and cannot
-show whether the model chose implausible high positions.  The evaluator now
-reports raw diagnostics separately:
-
-* `String Acc` / `Fret Acc` — string and fret match independently;
-* `Mean Fret` — mean predicted fret over all predicted TAB tokens;
-* `High Fret >=15` — share of predicted TAB tokens at fret 15 or above
-  (the corpus rates are 0.23% for GuitarSet and 2.12% for DadaGP).
-
-Inference and evaluation share the same pitch-valid decoder.  Two optional
-priors address gratuitous high positions without changing the training loss:
-
-* `--max-fret N` (default 12) masks TAB tokens above fret `N` **when the
-  source pitch has at least one playable position at or below `N`**.  Genuinely
-  high notes (e.g. E6, which only exists at fret 24 on the high E) remain
-  playable.
-* `--fret-penalty L` subtracts `L * fret` from the allowed positions, a soft
-  preference for lower frets.  It defaults to 0 because a large value can
-  destabilise free-running generation; tune it on the validation split.
-
-`--no-pitch-constraint` restores the paper's unconstrained baseline.  Use it
-when comparing against the published numbers; the default path is the
-guitar-realistic one.
-
-## Fine-tuning versus resuming
-
-* `--resume-from DIR` restores weights, vocabulary, optimizer, scheduler and
-  early-stopping state.  Use it to continue an interrupted run.
-* `--init-from DIR` restores **weights and vocabulary only**, with a fresh
-  optimizer, cosine schedule and step counter.  Use it to fine-tune a
-  pretrained model on GuitarSet.
-
-The fine-tune recipe is documented in `scripts/train_t5.sh`.
 
 ## Not proved
 

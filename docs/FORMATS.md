@@ -168,9 +168,9 @@ The checkpoint's `config.vocab_size` must equal the vocabulary size.
 
 | File | Format | Source |
 | --- | --- | --- |
-| `input.mid` | MIDI, type 1 | parsed input notes |
-| `raw.mid` | MIDI, type 1 | model tokens only |
-| `final.mid` | MIDI, type 1 | raw + playability correction |
+| `input.mid` | MIDI, type 1 | parsed input notes (source tempo map preserved) |
+| `raw.mid` | MIDI, type 1 | model tokens only (source tempo map preserved) |
+| `final.mid` | MIDI, type 1 | raw + playability correction (source tempo map preserved) |
 | `input.wav` | 44.1 kHz mono | synthesis of `input.mid` |
 | `raw.wav` | 44.1 kHz mono | synthesis of `raw.mid` |
 | `final.wav` | 44.1 kHz mono | synthesis of `final.mid` |
@@ -186,10 +186,25 @@ trims to MIDI length + 0.5 s release tail, normalises peak to 0.89, and adds
 a 5 ms fade in/out. It is deterministic for a given note list, so each WAV is
 derived only from its own MIDI.
 
+**Stereo downmix:** FluidSynth writes stereo WAVs (interleaved L/R frames).
+`synthesize()` reads `wave.getnchannels()`/`getsampwidth()` and downmixes to
+mono **before** trimming, so interleaved frames are not read as twice as many
+samples. Without this downmix, audio plays 2× slow and is cut at half length.
+
 Each MIDI file uses **one track per string** (`string 1` … `string 6`,
 program 25 acoustic guitar). A plain MIDI file stores pitch and time only, so
 two different fingerings of the same notes would otherwise be byte-identical.
 Input MIDI without string information goes on a `pitch only` track.
+
+### Tempo map preservation
+
+All three output MIDI files (`input.mid`, `raw.mid`, `final.mid`) preserve the
+source file's complete tempo map (every tempo, key and time signature change),
+not a single constant BPM. `write_tab_midi` loads `source_midi_path`,
+sets `pm.instruments = []`, appends six string tracks, and writes — note times
+are converted from ticks to seconds via `ticks_to_seconds(tick, tempo_changes,
+ppq)` following the original tempo map. The same path is used for WAV
+synthesis, so rendered audio timing matches the source.
 
 `report.json`:
 
