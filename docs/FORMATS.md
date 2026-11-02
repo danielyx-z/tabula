@@ -239,11 +239,13 @@ Input MIDI without string information goes on a `pitch only` track.
 
 All three output MIDI files (`input.mid`, `raw.mid`, `final.mid`) preserve the
 source file's complete tempo map (every tempo, key and time signature change),
-not a single constant BPM. `write_tab_midi` loads `source_midi_path`,
-sets `pm.instruments = []`, appends six string tracks, and writes — note times
-are converted from ticks to seconds via `ticks_to_seconds(tick, tempo_changes,
-ppq)` following the original tempo map. The same path is used for WAV
-synthesis, so rendered audio timing matches the source.
+not a single constant BPM. `input.mid` is the parsed pitch-only input;
+`raw.mid` and `final.mid` are written by `write_tab_midi`, which loads
+`source_midi_path`, sets `pm.instruments = []`, appends six string tracks, and
+writes — note times are converted from ticks to seconds via
+`ticks_to_seconds(tick, tempo_changes, ppq)` following the original tempo map.
+The same path is used for WAV synthesis, so rendered audio timing matches the
+source.
 
 `report.json`:
 
