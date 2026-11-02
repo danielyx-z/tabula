@@ -838,7 +838,7 @@ a:hover {
   background: var(--accent);
   border-radius: 50%;
   box-shadow: 0 0 0 4px var(--accent-soft);
-  animation: scan 2.2s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  animation: scan 4s steps(8) infinite;
 }
 
 .error-state .button-quiet {
@@ -1347,17 +1347,14 @@ a:hover {
 }
 
 @keyframes scan {
-  0% { top: 7px; left: 12px; }
-  10% { top: 41px; left: 181px; }
-  20% { top: 12px; left: 64px; }
-  30% { top: 88px; left: 13px; }
-  40% { top: 55px; left: 209px; }
-  50% { top: 22px; left: 97px; }
-  60% { top: 101px; left: 28px; }
-  70% { top: 33px; left: 152px; }
-  80% { top: 77px; left: 73px; }
-  90% { top: 18px; left: 221px; }
-  100% { top: 7px; left: 12px; }
+  0%   { top: 62px; left: 40px; }
+  14%  { top: 110px; left: 200px; }
+  28%  { top: 158px; left: 80px; }
+  42%  { top: 86px; left: 240px; }
+  56%  { top: 134px; left: 160px; }
+  70%  { top: 182px; left: 100px; }
+  84%  { top: 62px; left: 190px; }
+  100% { top: 62px; left: 40px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

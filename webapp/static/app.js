@@ -721,7 +721,6 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     }
     setPlaying(false);
     sessionPanel.hidden = true;
-    setState("loading");
     setBusy(true);
 
     currentBar = -1;
