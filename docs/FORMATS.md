@@ -198,7 +198,7 @@ visible.
 
 `src/audio/synth.py` uses **FluidSynth + the Live HQ Natural GM V3 SoundFont**
 (`~/soundfonts/Live_HQ_Natural_GM_V3.sf2`, from
-musical-artifacts.com/artifacts/1176), selectable with `--sf2` or
+musical-artifacts.com/artifacts/1176, by UnderxPipe1985, CC BY), selectable with `--sf2` or
 `$TABULA_SF2`; FluidR3_GM is the fallback. The wrapper
 writes a temporary MIDI, renders with `fluidsynth -ni -g 1.0 -R 0 -C 0`,
 trims to MIDI length + 0.5 s release tail, normalises peak to 0.89, and adds
