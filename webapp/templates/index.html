@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Tabula — MIDI to tab</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2320231e'/%3E%3Cpath d='M7 9h18M7 13h18M7 17h18M7 21h18M7 25h18' stroke='%23f3eee3' stroke-width='1.2' opacity='.65'/%3E%3Ccircle cx='13' cy='17' r='2.6' fill='%23c2663d'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="wordmark" href="/" aria-label="Tabula, home">
+        <svg class="wordmark-mark" viewBox="0 0 30 34" aria-hidden="true">
+          <path d="M4 7h22M4 11h22M4 15h22M4 19h22M4 23h22M4 27h22" />
+          <circle cx="12" cy="19" r="2.4" />
+          <path class="stem" d="M14 19V9" />
+        </svg>
+        <span>tabula</span>
+      </a>
+      <div class="topbar-meta" aria-label="Server status">
+        <span id="server-dot" class="server-dot" data-state="{{ 'ok' if checkpoint_ready and vocab_ready else 'down' }}" aria-hidden="true"></span>
+        <span id="server-label">{% if checkpoint_ready and vocab_ready %}local server{% else %}model files missing{% endif %}</span>
+        <span class="meta-sep" aria-hidden="true">/</span>
+        <span class="meta-long">Guitar Pro via alphaTab</span>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <aside class="control-rail" aria-label="Session controls">
+        <section class="rail-section upload-section" aria-labelledby="upload-title">
+          <div class="section-heading">
+            <h2 id="upload-title">New take</h2>
+            <p>One MIDI performance. Six strings, one capo.</p>
+          </div>
+
+          <form id="upload-form" novalidate data-max-mb="{{ max_upload_mb }}">
+            <label id="drop-zone" class="drop-zone" for="midi-file">
+              <input id="midi-file" class="sr-only" name="file" type="file"
+                     accept=".mid,.midi,audio/midi,audio/x-midi">
+              <svg class="drop-icon" viewBox="0 0 40 40" aria-hidden="true">
+                <path d="M11 5.5h12l7 7v22H11z" />
+                <path d="M23 5.5v7h7" />
+                <path d="M20 21v9M20 21l4-1.4v8" />
+                <circle cx="19" cy="30.5" r="2.2" />
+              </svg>
+              <span id="drop-title" class="drop-title">Drop a MIDI here</span>
+              <span id="drop-hint" class="drop-hint">or browse <span class="hint-sep">·</span> {{ max_upload_mb }} MB max</span>
+            </label>
+
+            <div id="selected-file" class="selected-file" hidden>
+              <span class="file-glyph" aria-hidden="true">
+                <svg viewBox="0 0 20 20"><path d="M5 2.5h6l4 4v11H5z"/><path d="M11 2.5v4h4"/></svg>
+              </span>
+              <span class="file-copy">
+                <span id="selected-name" class="file-name"></span>
+                <span id="selected-size" class="file-size"></span>
+              </span>
+              <button type="button" id="clear-file" class="icon-button" aria-label="Remove file" title="Remove file">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>
+              </button>
+            </div>
+
+            <button type="submit" id="convert-button" class="button button-primary" disabled>
+              <span class="button-spinner" aria-hidden="true"></span>
+              <span id="convert-label">Make tab</span>
+              <svg class="button-arrow" viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M3 10h13M11 5l5 5-5 5"/>
+              </svg>
+            </button>
+          </form>
+          <p id="form-status" class="form-status" role="status" aria-live="polite"></p>
+        </section>
+
+        <section id="session-panel" class="rail-section session-section" aria-labelledby="session-title" hidden>
+          <div class="section-heading compact">
+            <h2 id="session-title">This take</h2>
+            <p id="session-file" class="session-file"></p>
+          </div>
+
+          <dl class="facts">
+            <div class="fact">
+              <dt>Capo</dt>
+              <dd id="fact-capo">—</dd>
+            </div>
+            <div class="fact">
+              <dt>Notes</dt>
+              <dd id="fact-notes">—</dd>
+            </div>
+            <div class="fact">
+              <dt>Open strings</dt>
+              <dd id="fact-open">—</dd>
+            </div>
+            <div class="fact">
+              <dt>Max fret</dt>
+              <dd id="fact-max">—</dd>
+            </div>
+            <div class="fact">
+              <dt>Above fret 6</dt>
+              <dd id="fact-high">—</dd>
+            </div>
+            <div class="fact">
+              <dt>Dropped</dt>
+              <dd id="fact-dropped">—</dd>
+            </div>
+          </dl>
+
+          <div class="export-block">
+            <h3>Take it with you</h3>
+            <div class="export-links">
+              <a id="download-gp5" class="export-link export-link-strong" href="#" download>
+                <span>Guitar Pro</span><span class="export-ext">.gp5</span>
+              </a>
+              <a id="download-midi" class="export-link" href="#" download>MIDI</a>
+              <a id="download-tab" class="export-link" href="#" download>Text tab</a>
+              <a id="download-report" class="export-link" href="#" download>Report</a>
+            </div>
+            <p id="export-note" class="fine-print" hidden></p>
+          </div>
+        </section>
+
+        <section class="rail-section how-section" aria-labelledby="how-title">
+          <h2 id="how-title">How it works</h2>
+          <ol class="steps">
+            <li>
+              <span class="step-rule" aria-hidden="true"></span>
+              <div><strong>Read</strong><p>Pitch, timing and the original tempo map.</p></div>
+            </li>
+            <li>
+              <span class="step-rule" aria-hidden="true"></span>
+              <div><strong>Place</strong><p>Open strings first; high frets only when the phrase needs them.</p></div>
+            </li>
+            <li>
+              <span class="step-rule" aria-hidden="true"></span>
+              <div><strong>Write</strong><p>Guitar Pro 5 tablature, played with a nylon guitar.</p></div>
+            </li>
+          </ol>
+        </section>
+      </aside>
+
+      <section class="score-stage" aria-label="Tab and playback" aria-busy="false">
+        <div id="empty-state" class="state empty-state">
+          <div class="empty-visual" aria-hidden="true">
+            <svg viewBox="0 0 340 260">
+              <g class="empty-strings">
+                <path d="M28 62H312M28 86H312M28 110H312M28 134H312M28 158H312M28 182H312" />
+              </g>
+              <g class="empty-bars">
+                <path d="M28 50v144M150 50v144M238 50v144M312 50v144" />
+              </g>
+              <rect class="empty-highlight" x="150" y="52" width="88" height="140" rx="2" />
+              <path class="empty-cursor" d="M196 52v140" />
+              <g class="empty-numbers">
+                <text x="52" y="68">0</text>
+                <text x="74" y="92">2</text>
+                <text x="96" y="116">3</text>
+                <text x="118" y="140">5</text>
+                <text x="166" y="68">3</text>
+                <text x="188" y="92">2</text>
+                <text x="210" y="116">0</text>
+                <text x="256" y="140">2</text>
+                <text x="278" y="164">3</text>
+                <text x="300" y="188">0</text>
+              </g>
+              <g class="empty-ticks">
+                <path d="M28 50v-5M150 50v-5M238 50v-5M312 50v-5" />
+                <text x="28" y="38">1</text>
+                <text x="150" y="38">2</text>
+                <text x="238" y="38">3</text>
+              </g>
+            </svg>
+          </div>
+          <div class="empty-copy">
+            <h1>Turn a MIDI into a tab you can hear.</h1>
+            <p class="empty-lede">Tabula chooses the capo, finds the strings, writes Guitar Pro tablature, and plays it back with the current measure in view.</p>
+            <p class="fine-print">Nylon guitar <span class="fine-sep">·</span> original tempo map <span class="fine-sep">·</span> files stay on this PC</p>
+          </div>
+        </div>
+
+        <div id="loading-state" class="state loading-state" hidden>
+          <div class="working-mark" aria-hidden="true">
+            <span class="working-line"></span>
+            <span class="working-line"></span>
+            <span class="working-line"></span>
+            <span class="working-line"></span>
+            <span class="working-line"></span>
+            <span class="working-line"></span>
+            <span class="working-note"></span>
+          </div>
+          <h2>Finding the fingering.</h2>
+          <p>Reading the performance, choosing a capo and writing the tab. The first run can take a minute.</p>
+        </div>
+
+        <div id="error-state" class="state error-state" hidden>
+          <h2>That one didn’t make it.</h2>
+          <p id="error-message" class="error-message"></p>
+          <details id="error-details" class="error-details">
+            <summary>Converter output</summary>
+            <pre id="error-log"></pre>
+          </details>
+          <button type="button" id="retry-button" class="button button-quiet">Try another MIDI</button>
+        </div>
+
+        <div id="score-view" class="score-view" hidden>
+          <div class="score-toolbar">
+            <button type="button" id="play-button" class="play-button" aria-label="Play" disabled>
+              <svg id="play-icon" viewBox="0 0 22 22" aria-hidden="true"><path d="M7 4.8l11 6.2-11 6.2z"/></svg>
+              <svg id="pause-icon" viewBox="0 0 22 22" aria-hidden="true" hidden><path d="M7 5h3v12H7zM13 5h3v12h-3z"/></svg>
+            </button>
+            <div class="playback-time" aria-label="Playback time">
+              <span id="current-time">0:00</span>
+              <span class="time-sep">/</span>
+              <span id="total-time">0:00</span>
+            </div>
+            <label class="seek-wrap" for="seek">
+              <span class="sr-only">Playback position</span>
+              <input id="seek" type="range" min="0" max="1000" step="1" value="0">
+            </label>
+            <div id="bar-readout" class="bar-readout">Bar —</div>
+            <span id="player-status" class="player-status" role="status" aria-live="polite"></span>
+          </div>
+          <div class="score-sheet">
+            <div id="score-loading" class="score-loading" hidden>
+              <span class="score-loading-line" aria-hidden="true"></span>
+              <p>Laying out the tab…</p>
+            </div>
+            <div id="alphaTab" class="alphaTab" aria-label="Guitar Pro tablature"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <p>Tabula <span class="footer-sep">·</span> a local MIDI-to-tab workbench.</p>
+      <p>
+        Rendered and played by
+        <a href="https://www.alphatab.net/" target="_blank" rel="noreferrer">alphaTab</a>.
+        {% if not checkpoint_ready or not vocab_ready %}
+          <span class="footer-warning">Model files are missing on this PC.</span>
+        {% endif %}
+      </p>
+    </footer>
+  </div>
+
+  <noscript>This page needs JavaScript for the tab renderer.</noscript>
+  <script type="module" src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

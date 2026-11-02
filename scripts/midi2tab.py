@@ -418,6 +418,11 @@ def main() -> int:
         help="never drop an inner chord tone, even for an unplayable voicing",
     )
     ap.add_argument(
+        "--no-audio",
+        action="store_true",
+        help="skip WAV synthesis (MIDI, JSON and text tab are still written)",
+    )
+    ap.add_argument(
         "--fret-penalty",
         type=float,
         default=0.3,
@@ -515,11 +520,12 @@ def main() -> int:
     write_tab_midi(out / "final.mid", final, bpm=args.bpm,
                    source_midi_path=args.input, tempo_changes=tempo_changes)
 
-    for name, ds in (("input", in_dicts), ("raw", raw), ("final", final)):
-        write_wav(out / f"{name}.wav",
-                  synthesize(to_array(ds), args.bpm,
-                             sf2_path=args.sf2,
-                             source_midi_path=args.input, tempo_changes=tempo_changes))
+    if not args.no_audio:
+        for name, ds in (("input", in_dicts), ("raw", raw), ("final", final)):
+            write_wav(out / f"{name}.wav",
+                      synthesize(to_array(ds), args.bpm,
+                                 sf2_path=args.sf2,
+                                 source_midi_path=args.input, tempo_changes=tempo_changes))
 
     # Convert notes to Note objects for rhythm metrics.
     from core.schema import Note
@@ -550,7 +556,7 @@ def main() -> int:
         "capo_feasible_max": capo_max,
         "capo_scores": capo_trials,
         "dropped_chord_tones": proc_stats.get("dropped_chord_tones", []),
-        "soundfont": str(args.sf2),
+        "soundfont": None if args.no_audio else str(args.sf2),
         "comparison": compare(notes, raw),
         "final_comparison": pitch_coverage(notes, final),
         "rhythm": rhythm.to_dict(),

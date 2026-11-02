@@ -74,6 +74,33 @@ the tab shows `Capo: N`. If an input chord is genuinely unplayable, one inner
 tone may be dropped; `report.json` lists it (Valentine: 21 duplicated-Eb drops,
 729/750 notes).
 
+## Web app
+
+The Flask workbench turns a MIDI upload into a real Guitar Pro 5 score and
+plays it in the browser with alphaTab. The score keeps the source tempo map,
+uses the nylon-guitar program (24), and highlights the current measure during
+playback. It invokes the same `midi2tab.py` pipeline with `--no-audio` and
+exports `score.gp5` from that job's own `final.json` and `final.mid`.
+
+On the machine that has the checkpoint and vocabulary:
+
+```bash
+.venv/bin/pip install -r webapp/requirements-web.txt
+.venv/bin/python -m webapp.server --port 8000
+# Reach it from another machine on the LAN:
+.venv/bin/python -m webapp.server --host 0.0.0.0 --port 8000
+```
+
+Open <http://127.0.0.1:8000>, upload a `.mid`/`.midi`, and wait for the score.
+A conversion takes roughly 20–30 s on the 3070. Job files live under
+`webapp/jobs/<id>/` (`upload.mid`, `score.gp5`, `final.mid`,
+`final_tab.txt`, `report.json`); that directory is local data and is ignored
+by git. Jobs older than 24 hours are removed on startup.
+
+The page vendors alphaTab 1.9.0 (MPL-2.0) with its Bravura font and Sonivox
+soundfont; keep the rendered attribution visible. See
+`webapp/static/alphatab/README.md` and `webapp/static/fonts/README.md`.
+
 ## Layout
 
 ```
@@ -126,6 +153,7 @@ plain wheel reports `False`.
 .venv/bin/python tests/test_chunk.py    # chord-safe chunking / string order
 .venv/bin/python tests/test_synth.py    # FluidSynth wrapper
 .venv/bin/python -m pytest tests/test_playability.py  # capo / open strings / chord drop
+.venv/bin/python -m pytest -q           # full suite, including webapp GP5 export
 .venv/bin/python scripts/verify.py      # invariants over the built dataset
 .venv/bin/python scripts/audit_guitarset.py --jams-dir /path/to/guitarSet_annotation --data-dir data/processed_guitarset --vocab vocab/guitarset.json
 ```

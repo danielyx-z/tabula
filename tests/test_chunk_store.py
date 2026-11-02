@@ -11,6 +11,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -59,6 +60,12 @@ def write_corpus(root: Path) -> None:
             notes_to_array(notes),
         )
     writer.close()
+
+
+@pytest.fixture
+def root(tmp_path: Path) -> Path:
+    write_corpus(tmp_path)
+    return tmp_path
 
 
 def reference_chunks(root: Path, split: str) -> list:

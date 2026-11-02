@@ -24,3 +24,6 @@ baselines/
 
 # generated demo artefacts
 out/
+
+# web app runtime artifacts (uploads, scores, reports)
+webapp/jobs/
