@@ -33,20 +33,20 @@
 :root {
   --font-sans: "Instrument Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
   --font-serif: "Instrument Serif", Georgia, "Times New Roman", serif;
-  --paper: #f4efe5;
-  --paper-deep: #ebe3d4;
-  --surface: #fffdf8;
-  --ink: #20231e;
-  --ink-soft: #52554c;
-  --muted: #686a5e;
-  --line: #ddd4c4;
-  --line-strong: #c0b4a0;
-  --accent: #a94724;
-  --accent-ink: #7d3118;
-  --accent-soft: #f3ddcc;
-  --green: #3f6b50;
-  --red: #a33a2c;
-  --shadow-sheet: 0 22px 50px -32px rgba(52, 40, 23, 0.42), 0 2px 5px rgba(52, 40, 23, 0.05);
+  --canvas: #f6f1e8;
+  --canvas-deep: #efe5d3;
+  --surface: #ffffff;
+  --ink: #2a221c;
+  --ink-soft: #5f5247;
+  --muted: #837667;
+  --line: #e1d5c2;
+  --line-strong: #ccb8a0;
+  --accent: #a85f2c;
+  --accent-ink: #7e4217;
+  --accent-soft: #f4e3cf;
+  --green: #5c7a54;
+  --red: #a3452f;
+  --shadow-sheet: 0 22px 50px -32px rgba(34, 24, 15, 0.45), 0 2px 5px rgba(34, 24, 15, 0.06);
 }
 
 * {
@@ -55,7 +55,7 @@
 
 html {
   height: 100%;
-  background: var(--paper);
+  background: var(--canvas);
 }
 
 body {
@@ -63,7 +63,7 @@ body {
   height: 100%;
   margin: 0;
   color: var(--ink);
-  background-color: var(--paper);
+  background-color: var(--canvas);
   background-image: radial-gradient(rgba(75, 58, 35, 0.035) 0.7px, transparent 0.7px);
   background-size: 6px 6px;
   font-family: var(--font-sans);
@@ -149,7 +149,7 @@ a:hover {
   justify-content: space-between;
   gap: 20px;
   padding: 17px 28px;
-  background: var(--paper);
+  background: var(--canvas);
   border-bottom: 1px solid var(--line);
 }
 
@@ -418,7 +418,7 @@ a:hover {
 
 .icon-button:hover {
   color: var(--ink);
-  background: var(--paper-deep);
+  background: var(--canvas-deep);
 }
 
 .icon-button svg {
@@ -478,7 +478,7 @@ a:hover {
 }
 
 .button-quiet:hover {
-  background: var(--paper-deep);
+  background: var(--canvas-deep);
 }
 
 .button-arrow {
@@ -645,7 +645,7 @@ a:hover {
   width: 6px;
   height: 6px;
   content: "";
-  background: var(--paper);
+  background: var(--canvas);
   border: 1.5px solid var(--line-strong);
   border-radius: 50%;
 }
@@ -970,7 +970,7 @@ a:hover {
   height: 12px;
   margin-top: -5px;
   background: var(--accent);
-  border: 2px solid var(--paper);
+  border: 2px solid var(--canvas);
   border-radius: 50%;
   box-shadow: 0 0 0 1px var(--accent);
   appearance: none;
@@ -980,7 +980,7 @@ a:hover {
   width: 10px;
   height: 10px;
   background: var(--accent);
-  border: 2px solid var(--paper);
+  border: 2px solid var(--canvas);
   border-radius: 50%;
   box-shadow: 0 0 0 1px var(--accent);
 }
@@ -1122,6 +1122,219 @@ a:hover {
 
 .footer-warning {
   color: var(--red);
+}
+
+/* Practice-control toolbar */
+.score-toolbar {
+  flex-wrap: wrap;
+}
+
+.toolbar-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.toolbar-button {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, opacity 150ms ease;
+}
+
+.toolbar-button:hover:not(:disabled) {
+  background: var(--canvas-deep);
+  border-color: var(--line-strong);
+}
+
+.toolbar-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.toolbar-button svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.toolbar-toggle {
+  position: relative;
+}
+
+.toolbar-toggle.is-on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--surface);
+}
+
+.toolbar-toggle.is-muted {
+  background: var(--canvas-deep);
+  border-color: var(--line);
+  color: var(--muted);
+}
+
+.toolbar-toggle.is-on svg {
+  stroke: var(--surface);
+}
+
+.speed-label {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-right: 6px;
+  white-space: nowrap;
+}
+
+.toolbar-select {
+  flex: 0 0 auto;
+  min-width: 56px;
+  height: 30px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-family: var(--font-sans);
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.volume-wrap {
+  flex: 0 0 auto;
+  width: 78px;
+}
+
+.toolbar-seek {
+  flex: 1 1 240px;
+  min-width: 180px;
+}
+
+/* Recent takes */
+.recent-takes {
+  margin-top: 26px;
+  border-top: 1px solid var(--line);
+  padding-top: 18px;
+}
+
+.recent-takes h3 {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.105em;
+  text-transform: uppercase;
+}
+
+.recent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.recent-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--ink);
+  transition: border-color 150ms ease, background-color 150ms ease;
+}
+
+.recent-item:hover {
+  border-color: var(--line-strong);
+  background: var(--canvas-deep);
+}
+
+.recent-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.recent-meta {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Voicing details disclosure */
+.voicing-details {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+
+.voicing-details summary {
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  cursor: pointer;
+  list-style: none;
+}
+
+.voicing-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.facts-compact {
+  margin: 0;
+  border: 0;
+}
+
+.facts-compact .fact {
+  padding: 8px 10px;
+  border-bottom: 0;
+  border-right: 0;
+}
+
+.facts-compact .fact:last-child {
+  border-bottom: 0;
+}
+
+.start-over {
+  margin-top: 16px;
+}
+
+/* Score cursor tweak for the new palette */
+#alphaTab .at-cursor-bar {
+  background: rgba(168, 95, 44, 0.09) !important;
+  border: 1.5px solid rgba(168, 95, 44, 0.6) !important;
+  border-radius: 2px;
+}
+#alphaTab .at-cursor-beat {
+  width: 2px !important;
+  background: var(--accent) !important;
+  opacity: 0.85;
 }
 
 @keyframes spin {

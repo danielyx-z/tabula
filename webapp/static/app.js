@@ -39,6 +39,16 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   const barReadout = byId("bar-readout");
   const playerStatus = byId("player-status");
 
+  // Practice controls
+  const prevBarButton = byId("prev-bar");
+  const nextBarButton = byId("next-bar");
+  const loopButton = byId("loop-button");
+  const followButton = byId("follow-button");
+  const speedSelect = byId("speed-select");
+  const muteButton = byId("mute-button");
+  const volumeSlider = byId("volume-slider");
+  const cancelButton = byId("cancel-button");
+
   const sessionPanel = byId("session-panel");
   const sessionFile = byId("session-file");
   const factCapo = byId("fact-capo");
@@ -55,6 +65,8 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
   const serverDot = byId("server-dot");
   const serverLabel = byId("server-label");
+  const startOverButton = byId("start-over-button");
+  const recentList = byId("recent-list");
 
   const MAX_MB = Number(form.dataset.maxMb) || 32;
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -69,6 +81,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   let lastFileName = "";
   let busy = false;
   let serverReady = false;
+  let abortController = null;
 
   let api = null;
   let score = null;
@@ -83,6 +96,17 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   let lastEndTime = 0;
   let seeking = false;
   let isPlaying = false;
+
+  // Persisted practice preferences
+  let playbackSpeed = Number(localStorage.getItem("tabula:playbackSpeed")) || 1;
+  if (!Number.isFinite(playbackSpeed) || playbackSpeed <= 0) playbackSpeed = 1;
+  let masterVolume = Number(localStorage.getItem("tabula:masterVolume"));
+  if (!Number.isFinite(masterVolume) || masterVolume < 0 || masterVolume > 1) masterVolume = 1;
+  let isMuted = localStorage.getItem("tabula:isMuted") === "1";
+  let followEnabled = localStorage.getItem("tabula:followEnabled") !== "0"; // on by default
+  let loopEnabled = localStorage.getItem("tabula:loopEnabled") === "1";
+
+  const MAX_RECENT = 5;
 
   function formatTime(milliseconds) {
     if (!Number.isFinite(milliseconds) || milliseconds <= 0) {
@@ -115,6 +139,14 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     return safe || "tabula";
   }
 
+  function escapeHtml(value) {
+    return String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
   function setStatus(message) {
     formStatus.textContent = message || "";
   }
@@ -135,12 +167,12 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   function setServerState(ok) {
     serverReady = Boolean(ok);
     serverDot.dataset.state = ok ? "ok" : "down";
-    serverLabel.textContent = ok ? "local server" : "model files missing";
+    serverLabel.textContent = ok ? "local server" : "unavailable";
     if (!busy) {
       convertButton.disabled = !currentFile || !serverReady;
     }
     if (!ok) {
-      setStatus("The model checkpoint or vocabulary is missing on this PC.");
+      setStatus("The server isn't responding. Is the Tabula workbench running?");
     }
   }
 
@@ -151,10 +183,14 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     convertButton.disabled = value || !currentFile || !serverReady;
     midiInput.disabled = value;
     clearFileButton.disabled = value;
+    cancelButton.disabled = !value;
     form.setAttribute("aria-busy", value ? "true" : "false");
     dropZone.setAttribute("aria-disabled", value ? "true" : "false");
     if (value) {
       dropZone.classList.remove("is-dragging");
+      abortController = new AbortController();
+    } else {
+      abortController = null;
     }
     updatePlayAvailability();
   }
@@ -187,11 +223,14 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     dropHint.textContent = `drop another file, or browse · ${MAX_MB} MB max`;
     dropZone.classList.add("has-file");
     convertButton.disabled = !serverReady;
+    convertLabel.textContent = lastConverted ? "Convert again" : "Make tab";
 
     if (!errorState.hidden) {
       setState("empty");
     }
   }
+
+  let lastConverted = false;
 
   function clearFile() {
     if (busy) {
@@ -230,6 +269,11 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     if (!api || !scoreReady) {
       playButton.disabled = true;
       seek.disabled = true;
+      prevBarButton.disabled = true;
+      nextBarButton.disabled = true;
+      speedSelect.disabled = true;
+      muteButton.disabled = true;
+      volumeSlider.disabled = true;
       if (!scoreReady) {
         setPlayerStatus("");
       }
@@ -239,6 +283,11 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     if (audioProblem) {
       playButton.disabled = true;
       seek.disabled = true;
+      prevBarButton.disabled = true;
+      nextBarButton.disabled = true;
+      speedSelect.disabled = true;
+      muteButton.disabled = true;
+      volumeSlider.disabled = true;
       setPlayerStatus(audioProblem);
       return;
     }
@@ -252,6 +301,11 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
     playButton.disabled = !playable;
     seek.disabled = !playable;
+    prevBarButton.disabled = !playable || !bars.length;
+    nextBarButton.disabled = !playable || !bars.length;
+    speedSelect.disabled = !playable;
+    muteButton.disabled = !playable;
+    volumeSlider.disabled = !playable || isMuted;
 
     if (playable) {
       setPlayerStatus("");
@@ -262,10 +316,56 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     }
   }
 
+  function applyPlaybackSpeed() {
+    if (!api) return;
+    try {
+      api.player.playbackSpeed = playbackSpeed;
+    } catch (error) {
+      // Some builds clamp or ignore; ignore gracefully.
+    }
+    speedSelect.value = String(playbackSpeed);
+    try { localStorage.setItem("tabula:playbackSpeed", String(playbackSpeed)); } catch {}
+  }
+
+  function applyVolume() {
+    if (!api) return;
+    try {
+      api.player.masterVolume = isMuted ? 0 : masterVolume;
+    } catch (error) {
+      // ignore
+    }
+    volumeSlider.disabled = isMuted;
+    volumeSlider.value = isMuted ? 0 : masterVolume;
+    muteButton.setAttribute("aria-pressed", isMuted ? "true" : "false");
+    muteButton.classList.toggle("is-muted", isMuted);
+    try {
+      localStorage.setItem("tabula:masterVolume", String(masterVolume));
+      localStorage.setItem("tabula:isMuted", isMuted ? "1" : "0");
+    } catch {}
+  }
+
+  function toggleMute() {
+    isMuted = !isMuted;
+    applyVolume();
+    updatePlayAvailability();
+  }
+
+  function setFollow(enabled) {
+    followEnabled = enabled;
+    followButton.setAttribute("aria-pressed", followEnabled ? "true" : "false");
+    followButton.classList.toggle("is-on", followEnabled);
+    try { localStorage.setItem("tabula:followEnabled", followEnabled ? "1" : "0"); } catch {}
+  }
+
+  function setLoop(enabled) {
+    loopEnabled = enabled;
+    loopButton.setAttribute("aria-pressed", loopEnabled ? "true" : "false");
+    loopButton.classList.toggle("is-on", loopEnabled);
+    try { localStorage.setItem("tabula:loopEnabled", loopEnabled ? "1" : "0"); } catch {}
+  }
+
   function setPlaying(playing) {
     isPlaying = Boolean(playing);
-    // SVG elements do not reflect the `hidden` IDL property; toggle the
-    // attribute so the play/pause icons actually swap.
     playIcon.toggleAttribute("hidden", isPlaying);
     pauseIcon.toggleAttribute("hidden", !isPlaying);
     playButton.setAttribute("aria-label", isPlaying ? "Pause" : "Play");
@@ -293,14 +393,14 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
       player: {
         playerMode: PlayerMode ? PlayerMode.EnabledSynthesizer : 2,
         soundFont: "/static/alphatab/soundfont/sonivox.sf2",
-        // Scroll the internal score viewport, not the page. alphaTab styles the
-        // bar cursor; the app only adds a light tint and outline in CSS.
         scrollElement: alphaTabEl,
         scrollMode: ScrollMode ? ScrollMode.Off : 0,
         enableCursor: true,
         enableAnimatedBeatCursor: true,
         enableElementHighlighting: false,
         enableUserInteraction: true,
+        playbackRangeStartTime: 0,
+        playbackRangeEndTime: lastEndTick > 0 ? lastEndTick : 0,
       },
     };
 
@@ -318,6 +418,8 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
         ? `Bar 1 / ${bars.length}`
         : "Bar —";
       updatePlayAvailability();
+      applyPlaybackSpeed();
+      applyVolume();
     });
 
     api.renderFinished.on(() => {
@@ -341,6 +443,18 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
     api.playerFinished.on(() => {
       setPlaying(false);
+      if (loopEnabled && bars.length && currentBar >= 0) {
+        // Restart the current bar from its start tick.
+        const bar = bars[currentBar];
+        const startTick = bar.start;
+        try { api.tickPosition = startTick; } catch {}
+        lastTick = startTick;
+        currentTimeEl.textContent = formatTime((startTick / Math.max(1, lastEndTick)) * lastEndTime);
+        if (!isPlaying) {
+          try { api.play(); } catch {}
+          setPlaying(true);
+        }
+      }
     });
 
     api.playerPositionChanged.on((args) => {
@@ -364,7 +478,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
           seek.value = String(Math.max(0, Math.min(1000, Math.round((tick / lastEndTick) * 1000))));
         }
       }
-      updateMeasure(tick, false, true);
+      updateMeasure(tick, false, followEnabled);
     });
 
     api.error.on((error) => {
@@ -395,6 +509,10 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     return index;
   }
 
+  function barStartTick(index) {
+    return bars[index] ? bars[index].start : 0;
+  }
+
   function updateMeasure(tick, force = false, reveal = false) {
     if (!scoreReady || !api || !bars.length) {
       return;
@@ -408,7 +526,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     }
     currentBar = index;
     barReadout.textContent = `Bar ${index + 1} / ${bars.length}`;
-    if (reveal) {
+    if (reveal && followEnabled) {
       scrollMeasureIntoView(index);
     }
   }
@@ -445,6 +563,81 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     }
     return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
   }
+
+  // ---------- Recent takes (localStorage) ----------
+
+  function getRecent() {
+    try {
+      return JSON.parse(localStorage.getItem("tabula:recent") || "[]");
+    } catch {
+      return [];
+    }
+  }
+
+  function setRecent(arr) {
+    try {
+      localStorage.setItem("tabula:recent", JSON.stringify(arr.slice(0, MAX_RECENT)));
+    } catch {
+      // storage unavailable; recent takes won't persist
+    }
+  }
+
+  function renderRecent() {
+    const arr = getRecent();
+    recentList.hidden = arr.length === 0;
+    recentList.innerHTML = arr
+      .map(
+        (r) =>
+          `<button type="button" class="recent-item" data-id="${escapeHtml(
+            r.id
+          )}" title="${escapeHtml(r.name)}" aria-label="Open ${escapeHtml(r.name)}">
+            <span class="recent-name">${escapeHtml(r.name)}</span>
+            <span class="recent-meta">${r.notes} notes · ${formatTime(
+            (r.duration || 0) * 1000
+          )}</span>
+          </button>`
+      )
+      .join("");
+    recentList.querySelectorAll(".recent-item").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.id;
+        const entry = getRecent().find((r) => r.id === id);
+        if (!entry) return;
+        restoreRecent(entry);
+      });
+    });
+  }
+
+  function addRecent(entry) {
+    let arr = getRecent().filter((r) => r.id !== entry.id);
+    arr.unshift(entry);
+    setRecent(arr);
+    renderRecent();
+  }
+
+  function restoreRecent(entry) {
+    if (busy) return;
+    const payload = {
+      urls: entry.urls,
+      summary: {
+        notes: entry.notes || 0,
+        capo: entry.capo || 0,
+        open_notes: entry.open_notes || 0,
+        high_notes: entry.high_notes || 0,
+        dropped: entry.dropped || 0,
+        exported: { duration: entry.duration || 0, skipped: 0 },
+      },
+      title: entry.name,
+      elapsed: 0,
+    };
+    lastFileName = entry.name;
+    lastConverted = true;
+    populateSession(payload, entry.name);
+    setState("score");
+    loadScore(payload);
+  }
+
+  // ---------- End recent takes ----------
 
   function populateSession(payload, fileName) {
     const summary = payload.summary || {};
@@ -518,8 +711,23 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     bars = [];
     scoreReady = false;
     currentBar = -1;
+
+    if (api) {
+      try {
+        api.stop();
+      } catch (error) {
+        // A player that has not loaded a score yet can throw on stop.
+      }
+    }
+    setPlaying(false);
+    sessionPanel.hidden = true;
+    setState("loading");
+    setBusy(true);
+
+    currentBar = -1;
     lastTick = 0;
     lastEndTick = 0;
+    lastEndTime = 0;
     audioProblem = "";
     barReadout.textContent = "Bar —";
     setPlaying(false);
@@ -532,6 +740,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
       loaded = api.load(payload.urls.gp5);
     } catch (error) {
       showError("The tab could not be opened.", error && error.message ? error.message : String(error));
+      setBusy(false);
       return;
     }
     if (!loaded) {
@@ -539,6 +748,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
         "The tab could not be opened.",
         "alphaTab refused to load the generated Guitar Pro file."
       );
+      setBusy(false);
     }
   }
 
@@ -547,6 +757,28 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     populateSession(payload, fileName);
     setState("score");
     loadScore(payload);
+    lastConverted = true;
+
+    // Remember the take for recent-takes restore.
+    const summary = payload.summary || {};
+    const exported = summary.exported || {};
+    addRecent({
+      id: payload.job_id || slugify(fileName),
+      name: fileName || payload.title || "tabula",
+      date: Date.now(),
+      duration: Number(exported.duration) || 0,
+      notes: Number(summary.notes) || 0,
+      capo: Number(summary.capo) || 0,
+      open_notes: Number(summary.open_notes) || 0,
+      high_notes: Number(summary.high_notes) || 0,
+      dropped: Number(summary.dropped) || 0,
+      urls: {
+        gp5: payload.urls.gp5,
+        midi: payload.urls.midi,
+        tab: payload.urls.tab,
+        report: payload.urls.report,
+      },
+    });
 
     if (window.matchMedia("(max-width: 980px)").matches) {
       window.requestAnimationFrame(() => {
@@ -580,12 +812,19 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     const body = new FormData();
     body.append("file", currentFile, currentFile.name);
 
+    const signal = abortController && abortController.signal;
+
     try {
       const response = await fetch("/api/convert", {
         method: "POST",
         body,
         headers: { Accept: "application/json" },
+        signal,
       });
+
+      if (abortController && abortController.signal.aborted) {
+        return;
+      }
 
       let data = null;
       try {
@@ -606,12 +845,23 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
       handleConverted(data);
     } catch (error) {
+      if (error.name === "AbortError") {
+        setStatus("Conversion cancelled.");
+        setState("empty");
+        return;
+      }
       showError(
         (error && error.message) || "The conversion failed.",
         (error && error.detail) || ""
       );
     } finally {
       setBusy(false);
+    }
+  }
+
+  function cancelConversion() {
+    if (abortController) {
+      abortController.abort();
     }
   }
 
@@ -624,11 +874,79 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
         return response.json();
       })
       .then((data) => {
-        setServerState(Boolean(data.ok && data.checkpoint_ready && data.vocab_ready));
+        const ok = Boolean(data.ok && data.checkpoint_ready && data.vocab_ready);
+        setServerState(ok);
+        if (data.ok && !(data.checkpoint_ready && data.vocab_ready)) {
+          setStatus("The model checkpoint or vocabulary is missing on this PC.");
+        }
       })
       .catch(() => {
         setServerState(false);
       });
+  }
+
+  function startOver() {
+    if (busy) return;
+    if (api) {
+      try {
+        api.stop();
+      } catch {}
+    }
+    setPlaying(false);
+    currentFile = null;
+    midiInput.value = "";
+    selectedFile.hidden = true;
+    selectedName.textContent = "";
+    selectedSize.textContent = "";
+    dropTitle.textContent = "Drop a MIDI here";
+    dropHint.textContent = `or browse · ${MAX_MB} MB max`;
+    dropZone.classList.remove("has-file");
+    convertButton.disabled = true;
+    convertLabel.textContent = "Make tab";
+    lastConverted = false;
+    setStatus("");
+    setState("empty");
+  }
+
+  function seekBySeconds(delta) {
+    if (!api || !scoreReady || !lastEndTick) return;
+    seeking = true;
+    const fraction = Number(seek.value) / 1000;
+    const newTick = Math.round(((fraction * lastEndTick + delta) / lastEndTick) * 1000);
+    seek.value = String(Math.max(0, Math.min(1000, newTick)));
+    const tick = Math.round((Number(seek.value) / 1000) * lastEndTick);
+    currentTimeEl.textContent = formatTime((tick / Math.max(1, lastEndTick)) * lastEndTime);
+    updateMeasure(tick, true);
+    window.setTimeout(() => {
+      if (!seeking) return;
+      seeking = false;
+      try { api.tickPosition = tick; } catch {}
+      if (followEnabled) scrollMeasureIntoView(barIndexAt(tick));
+    }, 120);
+  }
+
+  function goToBar(offset) {
+    if (!api || !scoreReady || !bars.length) return;
+    let target = currentBar + offset;
+    target = Math.max(0, Math.min(bars.length - 1, target));
+    const tick = barStartTick(target);
+    seeking = true;
+    seek.value = String(Math.max(0, Math.min(1000, Math.round((tick / Math.max(1, lastEndTick)) * 1000))));
+    currentTimeEl.textContent = formatTime((tick / Math.max(1, lastEndTick)) * lastEndTime);
+    updateMeasure(tick, true);
+    window.setTimeout(() => {
+      seeking = false;
+      try { api.tickPosition = tick; } catch {}
+      if (followEnabled) scrollMeasureIntoView(target);
+    }, 120);
+  }
+
+  function isInteractiveInput(element) {
+    if (!element) return false;
+    const tag = element.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    if (element.isContentEditable) return true;
+    return false;
   }
 
   form.addEventListener("submit", (event) => {
@@ -685,6 +1003,10 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     midiInput.click();
   });
 
+  startOverButton.addEventListener("click", startOver);
+
+  cancelButton.addEventListener("click", cancelConversion);
+
   playButton.addEventListener("click", () => {
     if (!api || !scoreReady) {
       return;
@@ -701,8 +1023,28 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     if (lastEndTick > 0 && lastTick >= lastEndTick - 1) {
       api.tickPosition = bars.length ? bars[0].start : 0;
     }
+    applyPlaybackSpeed();
     api.play();
     setPlaying(true);
+  });
+
+  prevBarButton.addEventListener("click", () => goToBar(-1));
+  nextBarButton.addEventListener("click", () => goToBar(1));
+
+  loopButton.addEventListener("click", () => setLoop(!loopEnabled));
+  followButton.addEventListener("click", () => setFollow(!followEnabled));
+
+  speedSelect.addEventListener("change", () => {
+    playbackSpeed = Number(speedSelect.value) || 1;
+    applyPlaybackSpeed();
+  });
+
+  muteButton.addEventListener("click", toggleMute);
+
+  volumeSlider.addEventListener("input", () => {
+    isMuted = false;
+    masterVolume = Number(volumeSlider.value);
+    applyVolume();
   });
 
   seek.addEventListener("input", () => {
@@ -740,7 +1082,121 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     }
   });
 
-  setState("empty");
+  window.addEventListener("keydown", (event) => {
+    if (isInteractiveInput(document.activeElement)) return;
+    const key = event.key.toLowerCase();
+    switch (key) {
+      case " ":
+        event.preventDefault();
+        playButton.click();
+        break;
+      case "arrowleft":
+        event.preventDefault();
+        seekBySeconds(-4);
+        break;
+      case "arrowright":
+        event.preventDefault();
+        seekBySeconds(4);
+        break;
+      case "[":
+        event.preventDefault();
+        playbackSpeed = Math.max(0.5, playbackSpeed - 0.25);
+        speedSelect.value = String(playbackSpeed);
+        applyPlaybackSpeed();
+        break;
+      case "]":
+        event.preventDefault();
+        playbackSpeed = Math.min(2, playbackSpeed + 0.25);
+        speedSelect.value = String(playbackSpeed);
+        applyPlaybackSpeed();
+        break;
+      case "m":
+        event.preventDefault();
+        muteButton.click();
+        break;
+      case "f":
+        event.preventDefault();
+        followButton.click();
+        break;
+      case "l":
+        event.preventDefault();
+        loopButton.click();
+        break;
+    }
+  });
+
+  const params = new URLSearchParams(location.search);
+  const jobParam = params.get("job");
+  if (jobParam) {
+    setState("loading");
+    loadJobFromUrl(jobParam, params).catch((error) => {
+      showError("Could not load job.", String(error));
+      setState("empty");
+    });
+  } else {
+    setState("empty");
+  }
   initAlphaTab();
   checkHealth();
+  renderRecent();
 })();
+
+async function loadJobFromUrl(jobParam, params) {
+  try {
+    const reportRes = await fetch(`/api/jobs/${jobId}/report.json`);
+    const report = reportRes.ok ? await reportRes.json() : {};
+    const summary = report.summary || {};
+    const exported = summary.exported || {};
+    const duration = Number(exported.duration) || 0;
+    const notes = Number(summary.notes) || 0;
+
+    const payload = {
+      job_id: jobId,
+      title: `Job ${jobId.slice(0, 8)}`,
+      elapsed: 0,
+      summary: {
+        notes,
+        capo: Number(summary.capo) || 0,
+        open_notes: Number(summary.open_notes) || 0,
+        high_notes: Number(summary.high_notes) || 0,
+        dropped: Number(summary.dropped) || 0,
+        exported: { duration, skipped: Number(exported.skipped) || 0 },
+      },
+      urls: {
+        gp5: `/api/jobs/${jobId}/score.gp5`,
+        midi: `/api/jobs/${jobId}/upload.mid`,
+        tab: `/api/jobs/${jobId}/final_tab.txt`,
+        report: `/api/jobs/${jobId}/report.json`,
+      },
+    };
+
+    lastFileName = payload.title;
+    lastConverted = true;
+    populateSession(payload, payload.title);
+    setState("score");
+    loadScore(payload);
+
+    const playParam = params.get("play");
+    const seekParam = params.get("seek");
+    if (playParam === "1") {
+      const ready = setInterval(() => {
+        if (api && scoreReady && api.isReadyForPlayback) {
+          clearInterval(ready);
+          if (seekParam) {
+            const frac = Math.max(0, Math.min(1, Number(seekParam)));
+            seek.value = String(Math.round(frac * 1000));
+            const tick = Math.round(frac * lastEndTick);
+            currentTimeEl.textContent = formatTime(frac * lastEndTime);
+            updateMeasure(tick, true);
+          }
+          applyPlaybackSpeed();
+          api.play();
+          setPlaying(true);
+        }
+      }, 200);
+    }
+  } catch (error) {
+    showError("Could not load job.", String(error));
+    setState("empty");
+  }
+}
