@@ -173,8 +173,10 @@ is off by default; enable it only if memory becomes tight.
   MIDI, sets `pm.instruments = []`, appends six string tracks and writes — this
   preserves the source's full tempo map, key signature and time signature.
   `ticks_to_seconds` converts note ticks to seconds using the tempo map.
-- `vocab/guitarset.json` — frozen 248-token vocab. Do not use the unpruned
-  `DEFAULT_VOCAB` (286) for training.
+- `vocab/canonical.json` — frozen 262-token vocab used by the DadaGP pretrain
+  and the GuitarSet fine-tune (`runs/finetune_t5_guitarset/best`).
+  `vocab/guitarset.json` (248) is the older GuitarSet-only vocab. Do not use
+  the unpruned `DEFAULT_VOCAB` (286) for training.
 
 ## Fixed bugs (recent)
 
@@ -195,17 +197,22 @@ is off by default; enable it only if memory becomes tight.
   exact duplicates, and had notes at onsets the input never had. Each chunk's
   output is now trimmed to `base_t < t <= last_input_t`, giving 0 duplicates
   and 0 backwards jumps (lover_girl: 1199 raw notes -> 965, 14 breaks -> 0).
-- **Pitch provenance in `final.mid`** — `final.mid` now takes onset, duration
-  and pitch from the input MIDI (ground truth) and only the string from the
-  model (`fret = pitch - tuning[string]`), so final pitch accuracy is 1.0 by
-  construction. `raw.mid` stays uncorrected so the model's own pitch errors
-  are still visible.
+- **Pitch provenance in `final.mid`** — `final.mid` takes onset, duration and
+  pitch from the input MIDI (ground truth); the model's string is a
+  tie-breaker for a playable position
+  (`fret = pitch - tuning[string] - capo`), so every surviving note is pitched
+  exactly. `raw.mid` stays uncorrected so the model's own pitch errors are
+  still visible. Rare chord-tone drops are listed in the report and change
+  coverage, not pitch accuracy.
 - **Low-position prior** — `assign_onsets()` assigns each onset's chord
-  jointly to unique strings, minimising `(notes above --max-fret, max fret,
-  sum of frets, deviation from the model)`. `fix_chord_spans`, `limit_jumps`
-  and `repair_overlaps` also filter candidates by `--max-fret` (default 9).
-  On lover_girl, final frets >= 10 dropped from 12.9% to 0.0%, mean fret from
-  5.66 to ~3.25, with pitch unchanged.
+  jointly to unique strings, minimising `(max fret, notes above 6, open
+  strings, sum of frets, span, deviation from the model)`. It compares the
+  capped assignment (candidate frets <= `--max-fret`, default 6) with the
+  uncapped one and keeps the better key, so keeping one note cheap cannot
+  force another to fret 14. `fix_chord_spans`, `limit_jumps` and
+  `repair_overlaps` are capo-aware and also filter by `--max-fret`.
+  On lover_girl: 156 open strings (15.9%), 43 notes above 6 (4.4%, was 104 /
+  10.6%), mean fret 2.73 (was 3.25), max fret 9, 980/980 notes.
 - **Unplayable input chords** — a piano-derived MIDI can contain six-note
   chords wider than any hand (e.g. Valentine's `[51,58,62,63,67,70]`). The old
   `fix_chord_spans` re-fingered greedily and could move two notes onto one
@@ -213,9 +220,24 @@ is off by default; enable it only if memory becomes tight.
   per-onset assignment, so it cannot create a string collision; when no
   voicing fits the target span it falls back to the most compact unique-string
   voicing (minimising the maximum fret). `playability_pass` also re-assigns
-  any residual collision instead of dropping the note. Valentine now keeps all
-  750 input pitches; its 21 six-note chords use the compact
-  `11/13/12/8/8/6` voicing instead of a single fret 22.
+  any residual collision instead of dropping the note. If the best full
+  voicing still reaches fret 10, `drop_unplayable_chord_tones` removes **one
+  inner tone**, preferring a duplicated pitch class and a compact span, and
+  only if the max drops to <= 9 by at least 2 frets. Valentine drops the
+  duplicated Eb (pitch 63) in 21 chords, keeps the third (67), and uses a
+  compact `5/7/6/7/5` capo-relative voicing: 729/750 notes (97.2%), max fret
+  7, 0 collisions.
+- **Automatic capo** — `--capo auto` scans capo
+  0..min(6, --max-capo, min_input_pitch-40) (higher would need downtuning) and
+  keeps the lexicographically best result:
+  max relative fret, notes above 6, dropped notes, open strings, fret sum,
+  residual span. `final.json`/`final_tab.txt` frets are capo-relative and the
+  tab gets a `Capo: N` header; `raw.*` stays at capo 0. Valentine picks capo
+  1: 237/729 open (32.5%), 47 notes above 6 (6.4%), mean fret 2.23, max 7,
+  score 58.8 vs 42.8 at capo 0.
+- **Nylon/classical lead** — all output MIDI string tracks and the synthesis
+  temp MIDI use GM program 24 (Acoustic Guitar (nylon) / Live HQ "Concert
+  Nylon Guitar") instead of program 25 steel, so the WAVs are nylon.
 - **One `playability_pass`** — `scripts/midi2tab.py` carried a duplicate copy
   of the pass; it now imports `tablature.playability.playability_pass`, so the
   CLI and library cannot drift apart.

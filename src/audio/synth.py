@@ -86,7 +86,7 @@ def _write_temp_midi(
     tracks = {}
     for s in [0, *range(1, 7)]:
         name = "pitch only" if s == 0 else f"string {s} ({string_names[s-1]})"
-        track = pretty_midi.Instrument(program=25, name=name)
+        track = pretty_midi.Instrument(program=24, name=name)  # GM nylon/classical
         pm.instruments.append(track)
         tracks[s] = track
 

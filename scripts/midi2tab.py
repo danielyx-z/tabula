@@ -46,7 +46,7 @@ from core.fretboard import STANDARD, positions  # noqa: E402
 from core.quantise import quantise_notes, ticks_to_seconds  # noqa: E402
 from tablature.metrics import compute_difficulty, compute_rhythm_metrics  # noqa: E402
 from corpus.parse.midi import parse_midi  # noqa: E402
-from tablature.playability import playability_pass  # noqa: E402
+from tablature.playability import SOFT_FRET, playability_pass  # noqa: E402
 from tablature.postproc import DecodedNote, repair_overlaps  # noqa: E402
 from tablature.render import render_tab  # noqa: E402
 from tablature.stream import decode_tab_stream  # noqa: E402
@@ -85,7 +85,7 @@ def write_tab_midi(
     tracks = {}
     for s in [0, *range(1, 7)]:
         name = "pitch only" if s == 0 else f"string {s}"
-        inst = pretty_midi.Instrument(program=25, name=name)
+        inst = pretty_midi.Instrument(program=24, name=name)  # GM nylon/classical
         pm.instruments.append(inst)
         tracks[s] = inst
     for n in notes:
@@ -178,16 +178,16 @@ def final_from_input(
     max_fret: int | None = None,
     tuning: tuple[int, ...] = STANDARD,
     frets: int = 24,
+    capo: int = 0,
 ) -> list[dict]:
-    """Build the final artefact: input pitch/timing + the model's fingering.
+    """Build the final artefact: input pitch/timing + a playable fingering.
 
-    The input MIDI is ground truth for pitch and time; the model only decides
-    which string plays each note.  For every input note we look at the raw
-    notes at the same onset (or the nearest raw onset within half a beat),
-    prefer one with the same pitch, and keep its string when that string can
-    sound the input pitch.  The fret is derived from the input pitch, so the
-    pitch is exact by construction.  Notes the model missed fall back to the
-    lowest valid position.
+    The input MIDI is ground truth for pitch and time.  The model's string is
+    used as a tie-breaker, but the post-processor prefers the lowest
+    capo-relative fret (open strings naturally win) whenever that is strictly
+    better.  The fret is derived from the input pitch, so pitch is exact by
+    construction.  Notes the model missed fall back to the lowest valid
+    position.
     """
     raw_by_t: dict[int, list[dict]] = defaultdict(list)
     for n in raw:
@@ -214,40 +214,42 @@ def final_from_input(
             cands = near if near and abs(near[0]["t"] - gt.t) <= 480 else []
         taken = used.setdefault(gt.t, set())
 
-        chosen = None
+        # The model's string hint: same pitch first, then any free string.
+        s_model = None
         for n in cands:
             if n["pitch"] == gt.pitch and n["s"] not in taken:
-                chosen = n
+                s_model = n["s"]
                 break
-        if chosen is None:
+        if s_model is None:
             for n in cands:
                 if n["s"] not in taken:
-                    chosen = n
+                    s_model = n["s"]
                     break
-        if chosen is None and cands:
-            chosen = cands[0]
+        if s_model is None and cands:
+            s_model = cands[0]["s"]
 
-        s = chosen["s"] if chosen is not None else None
-        f = (gt.pitch - tuning[s - 1]) if s is not None else None
-
-        if f is None or not (0 <= f <= frets):
-            cand_pos = positions(gt.pitch, tuning, frets)
-            if not cand_pos:
-                # Pitch outside the instrument's range; keep a valid-looking
-                # placeholder so downstream code cannot crash.
-                out.append({"t": gt.t, "dur": gt.dur, "pitch": gt.pitch, "s": 1, "f": 0})
-                continue
-            if max_fret is not None:
-                low = [c for c in cand_pos if c[1] <= max_fret]
-                cand_pos = low if low else cand_pos
-            on_model_string = [c for c in cand_pos if c[0] == s]
-            if on_model_string:
-                s, f = on_model_string[0]
-            else:
-                s, f = min(cand_pos, key=lambda c: (c[1], c[0]))
-
-        if s is not None:
-            taken.add(s)
+        cand_pos = positions(gt.pitch, tuning, frets, capo)
+        if not cand_pos:
+            # Pitch outside the instrument's range; keep a valid-looking
+            # placeholder so downstream code cannot crash.
+            out.append(
+                {"t": gt.t, "dur": gt.dur, "pitch": gt.pitch, "s": 1, "f": 0}
+            )
+            continue
+        if max_fret is not None:
+            low = [c for c in cand_pos if c[1] <= max_fret]
+            cand_pos = low or cand_pos
+        free = [c for c in cand_pos if c[0] not in taken]
+        cand_pos = free or cand_pos
+        s, f = min(
+            cand_pos,
+            key=lambda c: (
+                c[1],                          # lowest fret; open first
+                0 if c[0] == s_model else 1,   # keep model string on ties
+                c[0],                          # low string on ties
+            ),
+        )
+        taken.add(s)
         out.append({"t": gt.t, "dur": gt.dur, "pitch": gt.pitch, "s": s, "f": f})
     return out
 
@@ -306,6 +308,66 @@ def compare(input_notes, raw) -> dict:
     }
 
 
+def _capo_key(final: list[dict], stats: dict) -> tuple:
+    """Lexicographic playability key for one capo (lower is better)."""
+    frets = [n["f"] for n in final]
+    if not frets:
+        return (0, 0, 0, 0, 0, 0)
+    by_t: dict[int, list[int]] = defaultdict(list)
+    for n in final:
+        by_t[n["t"]].append(n["f"])
+    span = max((max(v) - min(v) for v in by_t.values()), default=0)
+    dropped = len(stats.get("dropped_chord_tones", [])) + stats.get(
+        "dropped_impossible", 0
+    )
+    return (
+        max(frets),                                # lowest maximum fret
+        sum(1 for f in frets if f > SOFT_FRET),   # then fewest high frets
+        dropped,                                   # avoid drops unless they help
+        sum(1 for f in frets if f != 0),           # prefer open strings
+        sum(frets),                                # lower overall position
+        max(0, span - 4),                          # residual span violation
+    )
+
+
+def _capo_trial(capo: int, final: list[dict], stats: dict, key: tuple) -> dict:
+    """Human-readable stats and a 0-100 score for one capo candidate."""
+    frets = [n["f"] for n in final]
+    n = len(frets)
+    if not n:
+        return {"capo": capo, "feasible": True, "notes": 0, "score": 0.0}
+    open_notes = sum(1 for f in frets if f == 0)
+    high = sum(1 for f in frets if f > SOFT_FRET)
+    dropped = len(stats.get("dropped_chord_tones", [])) + stats.get(
+        "dropped_impossible", 0
+    )
+    open_rate = open_notes / n
+    high_rate = high / n
+    mean_fret = sum(frets) / n
+    maxf = max(frets)
+    drop_rate = dropped / (n + dropped) if (n + dropped) else 0.0
+    score = 100.0 * (
+        0.45 * open_rate
+        + 0.30 * (1.0 - high_rate)
+        + 0.15 * (1.0 - min(mean_fret, 12.0) / 12.0)
+        + 0.10 * (1.0 - min(maxf, 12.0) / 12.0)
+    ) - 10.0 * drop_rate
+    return {
+        "capo": capo,
+        "feasible": True,
+        "notes": n,
+        "open_notes": open_notes,
+        "open_rate": round(open_rate, 4),
+        "high_notes": high,
+        "high_rate": round(high_rate, 4),
+        "mean_fret": round(mean_fret, 3),
+        "max_fret": maxf,
+        "dropped": dropped,
+        "score": round(max(0.0, score), 1),
+        "key": list(key),
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("input", help="input MIDI file")
@@ -336,8 +398,24 @@ def main() -> int:
     ap.add_argument(
         "--max-fret",
         type=int,
-        default=9,
-        help="avoid frets above this unless no lower position exists (default: 9, i.e. no fret >= 10)",
+        default=6,
+        help="softly avoid capo-relative frets above this (default: 6)",
+    )
+    ap.add_argument(
+        "--capo",
+        default="auto",
+        help="capo selection: auto, off, or a fixed 0-6 (default: auto)",
+    )
+    ap.add_argument(
+        "--max-capo",
+        type=int,
+        default=6,
+        help="highest capo to consider (default: 6)",
+    )
+    ap.add_argument(
+        "--no-drop-chord-tones",
+        action="store_true",
+        help="never drop an inner chord tone, even for an unplayable voicing",
     )
     ap.add_argument(
         "--fret-penalty",
@@ -373,10 +451,53 @@ def main() -> int:
         max_fret=args.max_fret,
         fret_penalty=args.fret_penalty,
     )
-    # final = input pitch/timing (ground truth) + the model's fingering,
-    # then pitch-preserving playability and low-fret correction.
-    final_seed = final_from_input(raw, notes, max_fret=args.max_fret)
-    final, proc_stats = playability_pass(final_seed, max_fret=args.max_fret)
+    # Capo scan.  A capo at c raises the lowest open string to 40+c, so a note
+    # below that would need downtuning; only capos up to min_pitch-40 are
+    # feasible.  The model is not re-run: each candidate is a cheap re-fingering
+    # of the same raw string hints.  The final artefact uses the best one.
+    if not notes:
+        raise SystemExit("input MIDI has no notes")
+    min_pitch = min(n.pitch for n in notes)
+    max_capo = min(6, args.max_capo)
+    capo_max = min(max_capo, max(0, min_pitch - STANDARD[0]))
+    if args.capo == "off":
+        capos = [0]
+    elif args.capo == "auto":
+        capos = list(range(capo_max + 1))
+    else:
+        try:
+            fixed = int(args.capo)
+        except ValueError:
+            raise SystemExit(
+                f"--capo must be auto, off, or 0-{max_capo} "
+                f"(got {args.capo!r})"
+            )
+        if not 0 <= fixed <= max_capo:
+            raise SystemExit(f"--capo must be 0-{max_capo}")
+        if fixed > capo_max:
+            raise SystemExit(
+                f"capo {fixed} would need downtuning "
+                f"(lowest input pitch {min_pitch}); max feasible is {capo_max}"
+            )
+        capos = [fixed]
+
+    capo_trials = []
+    best = None
+    for c in capos:
+        seed = final_from_input(raw, notes, max_fret=args.max_fret, capo=c)
+        final_c, stats_c = playability_pass(
+            seed,
+            max_fret=args.max_fret,
+            capo=c,
+            allow_drop=not args.no_drop_chord_tones,
+        )
+        key = _capo_key(final_c, stats_c)
+        capo_trials.append(_capo_trial(c, final_c, stats_c, key))
+        if best is None or key < best[0]:
+            best = (key, c, final_c, stats_c)
+    if best is None:
+        raise SystemExit("no feasible capo")
+    _, capo, final, proc_stats = best
 
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -407,7 +528,7 @@ def main() -> int:
     rhythm = compute_rhythm_metrics(pred_tabs, gen_tokens, gt_notes, vocab)
 
     nodes = [DecodedNote(t=n["t"], dur=n["dur"], pitch=n["pitch"], s=n["s"], f=n["f"]) for n in final]
-    tab_text = render_tab(nodes, width=args.width)
+    tab_text = render_tab(nodes, width=args.width, capo=capo)
     (out / "final_tab.txt").write_text(tab_text + "\n", encoding="utf-8")
 
     raw_nodes = [DecodedNote(t=n["t"], dur=n["dur"], pitch=n["pitch"], s=n["s"], f=n["f"]) for n in raw]
@@ -423,7 +544,12 @@ def main() -> int:
         "beam": args.beam,
         "pitch_constraint": bool(args.pitch_constraint),
         "max_fret": args.max_fret,
+        "soft_fret": SOFT_FRET,
         "fret_penalty": args.fret_penalty,
+        "capo": capo,
+        "capo_feasible_max": capo_max,
+        "capo_scores": capo_trials,
+        "dropped_chord_tones": proc_stats.get("dropped_chord_tones", []),
         "soundfont": str(args.sf2),
         "comparison": compare(notes, raw),
         "final_comparison": pitch_coverage(notes, final),

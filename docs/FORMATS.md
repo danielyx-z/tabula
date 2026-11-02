@@ -170,12 +170,14 @@ The checkpoint's `config.vocab_size` must equal the vocabulary size.
 | --- | --- | --- |
 | `input.mid` | MIDI, type 1 | parsed input notes (source tempo map preserved) |
 | `raw.mid` | MIDI, type 1 | model tokens only (source tempo map preserved) |
-| `final.mid` | MIDI, type 1 | input pitch/timing + model string choice, `--max-fret` capped (source tempo map preserved) |
+| `final.mid` | MIDI, type 1 | input pitch/timing + playable fingering (auto capo, `--max-fret` soft cap; source tempo map preserved) |
 | `input.wav` | 44.1 kHz mono | synthesis of `input.mid` |
 | `raw.wav` | 44.1 kHz mono | synthesis of `raw.mid` |
 | `final.wav` | 44.1 kHz mono | synthesis of `final.mid` |
-| `final_tab.txt` | ASCII tab | low-fret corrected fingering of `final.mid` |
-| `report.json` | JSON | counts, alignment metrics, post-processing stats, rhythm metrics |
+| `input.json`, `raw.json`, `final.json` | JSON lists | notes as `{t, dur, pitch, s, f}`; `final.json` frets are capo-relative (capo in `report.json`) |
+| `raw_tab.txt` | ASCII tab | the model's own fingering at capo 0 (uncorrected) |
+| `final_tab.txt` | ASCII tab | capo-relative fingering of `final.mid`, with a `Capo: N` header when `N > 0` |
+| `report.json` | JSON | counts, alignment metrics, capo trials, post-processing stats, rhythm metrics |
 
 ### Pitch and fingering provenance
 
@@ -185,14 +187,31 @@ uncorrected on purpose, so it shows the model's own over/under-generation and
 pitch errors.
 
 `final.mid` starts from the **input** MIDI, which is ground truth for pitch,
-onset and duration. For each input note the model's preferred string at the
-same onset is kept and the fret is derived from the input pitch
-(`fret = pitch - tuning[string]`), so the pitch is exact by construction.
-`final.mid` therefore contains exactly the input notes (count, timing and
-pitch), with the model's fingering, after pitch-preserving playability repair
-and the `--max-fret` low-position cap (`assign_onsets`). The input pitch is
-authoritative; `raw.mid` is where the model's own pitch predictions remain
-visible.
+onset and duration. For each input note the post-processor chooses a playable
+(string, fret) that produces the input pitch
+(`pitch = tuning[string] + capo + fret`); the model's string is a tie-breaker,
+not a hard constraint. The capo-relative fret is derived from the pitch, so
+every surviving note is pitched exactly. `raw.mid` is where the model's own
+pitch predictions remain visible.
+
+`final.mid` normally contains the same notes as the input. The one exception
+is an unplayable chord: if the best full voicing needs a fret of 10 or more,
+`drop_unplayable_chord_tones` may remove **one inner tone** (preferring a
+duplicated pitch class and a compact hand shape). This is rare and is listed
+in `report.json` under `dropped_chord_tones`; `final_comparison` then shows
+coverage below 1.0. `raw.mid` is never modified this way.
+
+### Capo
+
+The final fingering is chosen by scanning every feasible capo from 0 up to
+`min(6, --max-capo, min_input_pitch - 40)` and keeping the capo with the best
+lexicographic key: maximum relative fret, number of notes above 6, dropped
+notes, open strings, fret sum, residual span. A capo above `min_pitch - 40`
+would need downtuning and is never considered. The capo is recorded in
+`report.json` (`capo`, `capo_feasible_max`, `capo_scores`), and the tab gets a
+`Capo: N` header. All frets in `final.json`, `final_tab.txt` and the final
+fingering are **capo-relative**; sounding pitches (MIDI/WAV) are unchanged by
+the capo. `raw.mid` and `raw_tab.txt` stay at capo 0 (honest model output).
 
 ### WAV synthesis
 
@@ -211,7 +230,8 @@ mono **before** trimming, so interleaved frames are not read as twice as many
 samples. Without this downmix, audio plays 2× slow and is cut at half length.
 
 Each MIDI file uses **one track per string** (`string 1` … `string 6`,
-program 25 acoustic guitar). A plain MIDI file stores pitch and time only, so
+program 24 = GM Acoustic Guitar (nylon) / Live HQ "Concert Nylon Guitar"). A
+plain MIDI file stores pitch and time only, so
 two different fingerings of the same notes would otherwise be byte-identical.
 Input MIDI without string information goes on a `pitch only` track.
 
@@ -258,15 +278,42 @@ synthesis, so rendered audio timing matches the source.
     "median_dur_error": 120.0,
     "mean_dur_error": 180.5
   },
+  "max_fret": 6,
+  "soft_fret": 6,
+  "capo": 0,
+  "capo_feasible_max": 0,
+  "capo_scores": [
+    {
+      "capo": 0,
+      "open_notes": 41,
+      "open_rate": 0.3333,
+      "high_notes": 3,
+      "high_rate": 0.0244,
+      "mean_fret": 2.1,
+      "max_fret": 8,
+      "dropped": 0,
+      "score": 52.1,
+      "key": [8, 3, 0, 82, 259, 1]
+    }
+  ],
+  "dropped_chord_tones": [],
   "postprocessing": {
     "dropped_impossible": 0,
+    "dropped_chord_tones": [],
     "refingered_chord_span": 10,
     "refingered_jump": 31,
     "refingered_onset": 12
   },
-  "final_notes": 123
+  "final_notes": 133
 }
 ```
+
+`capo_scores` has one entry for every feasible capo. Selection uses the
+lexicographic `key` (maximum relative fret, notes above 6, dropped notes,
+non-open strings, fret sum, residual span); `score` is a 0–100 display value.
+`dropped_chord_tones` lists any inner tone removed by the unplayable-chord
+policy. If a tone is dropped, `final_comparison.pred_notes` is lower than
+`input_notes`; otherwise the final note count matches the input.
 
 `tab_accuracy` is exact `(string, fret)` agreement with the input's fingering.
 For a plain MIDI input there is no ground-truth fingering, so it is only

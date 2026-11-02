@@ -22,7 +22,7 @@ def write_smf(
     notes,
     bpm: float = 120.0,
     ppq: int = PPQ,
-    program: int = 25,
+    program: int = 24,  # GM 25 (1-based): Acoustic Guitar (nylon)
 ) -> None:
     """Write ``notes`` (t, dur, pitch, ...) as a type-0 MIDI file."""
     events: list[tuple[int, int, bytes]] = [(0, 0, bytes([0xC0, program]))]

@@ -53,7 +53,7 @@ def main() -> int:
 
     # 1. Pitch-only input MIDI: no string or fret information.
     pm = pretty_midi.PrettyMIDI(initial_tempo=bpm)
-    inst = pretty_midi.Instrument(program=25, name="pitch only")
+    inst = pretty_midi.Instrument(program=24, name="pitch only")
     pm.instruments.append(inst)
     for t, d, p, s, f in notes:
         inst.notes.append(
@@ -70,7 +70,7 @@ def main() -> int:
     gpm = pretty_midi.PrettyMIDI(initial_tempo=bpm)
     tracks = {}
     for s in range(1, 7):
-        tr = pretty_midi.Instrument(program=25, name=f"string {s}")
+        tr = pretty_midi.Instrument(program=24, name=f"string {s}")
         gpm.instruments.append(tr)
         tracks[s] = tr
     for t, d, p, s, f in notes:

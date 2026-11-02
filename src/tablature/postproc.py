@@ -46,6 +46,7 @@ def _first_valid(
     pitch: int,
     tuning: tuple[int, ...] = STANDARD,
     frets: int = 24,
+    capo: int = 0,
 ) -> tuple[int, int]:
     """Canonical fallback position: lowest fret, then lowest string.
 
@@ -54,7 +55,7 @@ def _first_valid(
     string is available.  The paper's baseline uses the lowest possible fret
     for a pitch; use the same rule for the post-processing fallback.
     """
-    candidates = positions(pitch, tuning, frets)
+    candidates = positions(pitch, tuning, frets, capo)
     if candidates:
         return min(candidates, key=lambda sf: (sf[1], sf[0]))
     # Should only happen for out-of-range corpus notes; keep a valid-looking
@@ -96,6 +97,7 @@ def repair_overlaps(
     tuning: tuple[int, ...] = STANDARD,
     frets: int = 24,
     max_fret: int | None = None,
+    capo: int = 0,
 ) -> list[DecodedNote]:
     """Move same-string overlapping notes to another valid position.
 
@@ -133,12 +135,16 @@ def repair_overlaps(
 
         candidates = [
             (s2, f2)
-            for s2, f2 in positions(target, tuning, frets)
+            for s2, f2 in positions(target, tuning, frets, capo)
             if max_fret is None or f2 <= max_fret
         ]
         candidates = sorted(
             candidates,
-            key=lambda sf: (abs(sf[0] - note.s), abs(sf[1] - note.f)),
+            key=lambda sf: (
+                abs(sf[0] - note.s),
+                abs(sf[1] - note.f),
+                0 if sf[1] == 0 else 1,
+            ),
         )
         chosen: tuple[int, int] | None = None
         for s2, f2 in candidates:

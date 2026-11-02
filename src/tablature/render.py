@@ -73,8 +73,11 @@ def notes_to_tab(
     return systems
 
 
-def render_tab(notes: list[Note], width: int = 120) -> str:
+def render_tab(notes: list[Note], width: int = 120, capo: int = 0) -> str:
     lines = []
+    if capo:
+        lines.append(f"Capo: {capo}")
+        lines.append("")
     for sys in notes_to_tab(notes, width=width):
         lines.extend(sys.strings)
         lines.append("")

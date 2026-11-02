@@ -45,6 +45,11 @@ PYTHONPATH=src .venv/bin/python3 -m model.train \
 PYTHONPATH=src:. .venv/bin/python3 scripts/midi2tab.py song.mid \
     --checkpoint runs/pretrain_t5_guitarset/best --vocab vocab/guitarset.json \
     --out-dir out/song
+
+# Fine-tuned checkpoint (canonical 262-token vocab) + automatic capo
+PYTHONPATH=src:. .venv/bin/python3 scripts/midi2tab.py song.mid \
+    --checkpoint runs/finetune_t5_guitarset/best --vocab vocab/canonical.json \
+    --out-dir out/song --beam 4 --max-fret 6 --capo auto
 ```
 
 The exported MIDI files carry **one track per string**, because a normal MIDI
@@ -55,11 +60,19 @@ key and time signature change, not one constant BPM). `write_tab_midi` loads
 the source MIDI, sets `pm.instruments = []`, appends six string tracks and
 writes; `ticks_to_seconds` converts note ticks to seconds using the tempo map.
 
-WAVs are rendered via FluidSynth + the Live HQ Natural GM V3 SoundFont (by UnderxPipe1985, CC BY; FluidR3_GM is the fallback). FluidSynth writes
-stereo; `synthesize()` downmixes to mono before trimming so interleaved L/R
-frames are not read as twice as many samples (otherwise audio plays 2× slow
-and is cut at half length). Each WAV is derived only from its own MIDI.
+WAVs are rendered via FluidSynth + the Live HQ Natural GM V3 SoundFont (by
+UnderxPipe1985, CC BY; FluidR3_GM is the fallback), using GM program 24
+(Acoustic Guitar (nylon) / "Concert Nylon Guitar"). FluidSynth writes stereo;
+`synthesize()` downmixes to mono before trimming so interleaved L/R frames are
+not read as twice as many samples (otherwise audio plays 2× slow and is cut at
+half length). Each WAV is derived only from its own MIDI.
 
+Final fingering prefers the lowest capo-relative fret (open strings first) and
+soft-caps frets above 6. `--capo auto` scans feasible capos 0–6 and picks the
+most playable one; `final.json`/`final_tab.txt` frets are capo-relative and
+the tab shows `Capo: N`. If an input chord is genuinely unplayable, one inner
+tone may be dropped; `report.json` lists it (Valentine: 21 duplicated-Eb drops,
+729/750 notes).
 
 ## Layout
 
@@ -86,9 +99,9 @@ vocab/
 | TIME_SHIFT | 11 compositional values; exact for every grid multiple |
 | Strings | 1 = thickest (low E) … 6 = thinnest (high E) |
 | Tuning | standard only, `(40, 45, 50, 55, 59, 64)` |
-| Pitch | `pitch = tuning[s-1] + fret`, frets 0–24 |
+| Pitch | `pitch = tuning[s-1] + capo + fret`, frets 0–24 |
 | Chords | notes at same onset sorted ascending by string (s=1..6) |
-| Capo | out of scope |
+| Capo | auto 0–6; frets are capo-relative |
 | Pitch names | Scientific notation: MIDI 60 = C4 (middle C) |
 
 `src/core/fretboard.py` is the only place pitch ↔ (string, fret) happens;
@@ -112,6 +125,7 @@ plain wheel reports `False`.
 .venv/bin/python tests/test_metrics.py  # quantiser / post-processing / metrics checks
 .venv/bin/python tests/test_chunk.py    # chord-safe chunking / string order
 .venv/bin/python tests/test_synth.py    # FluidSynth wrapper
+.venv/bin/python -m pytest tests/test_playability.py  # capo / open strings / chord drop
 .venv/bin/python scripts/verify.py      # invariants over the built dataset
 .venv/bin/python scripts/audit_guitarset.py --jams-dir /path/to/guitarSet_annotation --data-dir data/processed_guitarset --vocab vocab/guitarset.json
 ```
@@ -176,8 +190,9 @@ leak across splits.
   32nds exactly, and leaves only 0.2 % of notes off-grid (quintuplets,
   septuplets). Storage keeps exact ticks. The model uses 11 compositional `TIME_SHIFT` values, so every multiple of
   20 ticks is encoded exactly instead of being snapped to a 60-tick step.
-- **No capo, no repeats, no ties, no dead notes, no time-signature directives**
-  in this export — those parser branches are defensive only.
+- **No capo in the corpus export**, no repeats, no ties, no dead notes, no
+  time-signature directives — those parser branches are defensive only.
+  (Inference can still apply a capo 0–6 to the fingering.)
 
 ## Training (WATcloud)
 

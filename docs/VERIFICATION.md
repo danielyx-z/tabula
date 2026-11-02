@@ -136,17 +136,21 @@ New best validation loss: 6.xxxx
 
 ```bash
 python scripts/midi2tab.py /path/to/song.mid \
-    --checkpoint runs/pretrain_t5_guitarset/best --vocab vocab/guitarset.json \
-    --out-dir out/song --beam 4
+    --checkpoint runs/finetune_t5_guitarset/best --vocab vocab/canonical.json \
+    --out-dir out/song --beam 4 --max-fret 6 --capo auto
 ```
 
+`--capo auto` scans every feasible capo (0 up to
+`min(--max-capo (default 6), min_pitch - 40)`);
+use `--capo off` or `--capo N` to force one. `--max-fret` is a soft cap
+(default 6); frets above it are used only when no lower position exists.
 The CLI writes:
 - `input.mid` — quantised input (one track per string)
 - `raw.mid` — model's own output: onsets from generated `TIME_SHIFT`, pitches from `TAB`
-- `final.mid` — input pitch/timing + the model's string choice, pitch-preserving playability repair and `--max-fret` low-position cap (pitch exact by construction)
+- `final.mid` — input pitch/timing + a playable fingering (auto capo, soft `--max-fret` cap; pitch exact for every surviving note)
 - `input.wav` / `raw.wav` / `final.wav` — FluidSynth (SoundFont) render
-- `final_tab.txt` — ASCII tab of corrected fingering
-- `report.json` — pitch/tab accuracy, rhythm metrics, post-processing stats
+- `final_tab.txt` — capo-relative ASCII tab of the corrected fingering (`Capo: N` header)
+- `report.json` — pitch/tab accuracy, capo trials, rhythm metrics, post-processing stats and any dropped chord tones
 
 `input.mid`, `raw.mid` and `final.mid` have different hashes. Each is written
 one track per string so the fingering is stored.
@@ -154,18 +158,23 @@ one track per string so the fingering is stored.
 `raw.mid` is deliberately uncorrected: onsets come from generated `TIME_SHIFT`
 and pitches from generated `TAB<s,f>`, so it shows the model's own errors.
 `final.mid` takes pitch, onset and duration from the input MIDI (ground truth)
-and keeps only the model's string choice; the fret is `pitch - tuning[string]`,
-so every note is pitched exactly. Chunk generation is trimmed to each chunk's
-own note window, which removed duplicate notes and backwards time jumps at
-chunk boundaries.
+and chooses a playable (string, fret) for each note; the model's string is a
+tie-breaker, not a hard constraint. The fret is derived from the input pitch
+and capo (`fret = pitch - tuning[string] - capo`), so every surviving note is
+pitched exactly. If a full chord voicing would need a fret of 10 or more, the
+pass may drop one inner tone (listed in `report.json`); otherwise the note
+count is unchanged. Chunk generation is trimmed to each chunk's own note
+window, which removed duplicate notes and backwards time jumps at chunk
+boundaries.
 
 ## 7. Tests
 
 ```
-tests/test_core.py      all checks passed
-tests/test_metrics.py   all checks passed
-tests/test_synth.py     all checks passed
-tests/test_chunk.py     all checks passed
+tests/test_core.py          all checks passed
+tests/test_metrics.py       all checks passed
+tests/test_synth.py         all checks passed
+tests/test_chunk.py         all checks passed
+tests/test_playability.py   all checks passed
 ```
 
 `test_metrics.py` asserts:
@@ -187,16 +196,21 @@ substantial low-frequency energy.
 - Decoder `TAB` tokens within a chord onset are strictly string-ascending
 - 512-token cap never exceeded after chord-boundary adjustment
 
+`test_playability.py` checks capo-relative positions, open-string preference,
+the uncapped low-max-fret fallback (73/66), one-tone chord drops, and the
+`Capo: N` tab header.
+
 ## 8. Synthesis
 
 `src/audio/synth.py` uses **FluidSynth + the Live HQ Natural GM V3 SoundFont**
 (`~/soundfonts/Live_HQ_Natural_GM_V3.sf2`, from
 musical-artifacts.com/artifacts/1176, by UnderxPipe1985, CC BY), selectable with `--sf2` or
-`$TABULA_SF2`; FluidR3_GM is the fallback. The wrapper
-writes a temporary MIDI, renders with `fluidsynth -ni -g 1.0 -R 0 -C 0`,
-trims to MIDI length + 0.5 s release tail, normalises peak to 0.89, and adds
-a 5 ms fade in/out. `tests/test_synth.py` checks tuning, level and
-determinism.
+`$TABULA_SF2`; FluidR3_GM is the fallback. The temporary MIDI uses GM program
+24 (Acoustic Guitar (nylon) / Live HQ "Concert Nylon Guitar"), not program 25
+steel. The wrapper writes a temporary MIDI, renders with
+`fluidsynth -ni -g 1.0 -R 0 -C 0`, trims to MIDI length + 0.5 s release tail,
+normalises peak to 0.89, and adds a 5 ms fade in/out. `tests/test_synth.py`
+checks tuning, level and determinism.
 
 **Stereo downmix:** FluidSynth writes stereo WAVs. `synthesize()` reads
 `getnchannels()`/`getsampwidth()` and downmixes to mono before trimming so
@@ -222,5 +236,7 @@ The old Karplus-Strong implementation was removed entirely.
 
 The playability pass still drops physically impossible notes (two notes on one
 string at the same tick). A model that has learned nothing can emit almost
-every note at one tick, so the pass may keep only a handful. That is
-intentional; the alternative is to emit an unplayable tab.
+every note at one tick, so the pass may keep only a handful. It also drops at
+most one inner tone from an otherwise unplayable chord (full voicing at fret
+10 or more); that is reported in `dropped_chord_tones`. Both are intentional;
+the alternative is to emit an unplayable tab.
