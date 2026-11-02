@@ -55,7 +55,7 @@ key and time signature change, not one constant BPM). `write_tab_midi` loads
 the source MIDI, sets `pm.instruments = []`, appends six string tracks and
 writes; `ticks_to_seconds` converts note ticks to seconds using the tempo map.
 
-WAVs are rendered via FluidSynth + FluidR3_GM SoundFont. FluidSynth writes
+WAVs are rendered via FluidSynth + the Live HQ Natural GM V3 SoundFont (FluidR3_GM is the fallback). FluidSynth writes
 stereo; `synthesize()` downmixes to mono before trimming so interleaved L/R
 frames are not read as twice as many samples (otherwise audio plays 2× slow
 and is cut at half length). Each WAV is derived only from its own MIDI.

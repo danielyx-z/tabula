@@ -5,6 +5,7 @@ Limits render duration to the actual MIDI length plus a short release tail.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -14,8 +15,25 @@ import pretty_midi
 
 from core.quantise import PPQ, ticks_to_seconds  # noqa: E402
 
-# Default SoundFont path (FluidR3_GM from fluid-soundfont-gm package)
-DEFAULT_SF2 = "/usr/share/sounds/sf2/FluidR3_GM.sf2"
+def _resolve_default_sf2() -> str:
+    """Pick the SoundFont used for synthesis.
+
+    Priority: ``$TABULA_SF2``, then the Live HQ Natural GM V3 SoundFont under
+    ``~/soundfonts``, then the distro FluidR3_GM bank.  The environment
+    override keeps the choice machine-independent; the fallback keeps the
+    package usable on hosts that do not have the large bank installed.
+    """
+    env = os.environ.get("TABULA_SF2")
+    if env:
+        return env
+    live_hq = Path.home() / "soundfonts" / "Live_HQ_Natural_GM_V3.sf2"
+    if live_hq.exists():
+        return str(live_hq)
+    return "/usr/share/sounds/sf2/FluidR3_GM.sf2"
+
+
+# Live HQ Natural GM V3 by default (see musical-artifacts.com/artifacts/1176).
+DEFAULT_SF2 = _resolve_default_sf2()
 
 
 def _to_dict(note) -> dict:

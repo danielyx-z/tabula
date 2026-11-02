@@ -38,7 +38,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from audio.synth import synthesize  # noqa: E402
+from audio.synth import DEFAULT_SF2, synthesize  # noqa: E402
 from audio.wav import write_wav  # noqa: E402
 from model.chunk import ChunkConfig, make_inference_chunks  # noqa: E402
 from model.decode import constrained_beam_search  # noqa: E402
@@ -316,6 +316,11 @@ def main() -> int:
     ap.add_argument("--max-len", type=int, default=512)
     ap.add_argument("--bpm", type=float, default=120.0)
     ap.add_argument(
+        "--sf2",
+        default=DEFAULT_SF2,
+        help="SoundFont used for WAV synthesis (default: Live HQ Natural GM V3)",
+    )
+    ap.add_argument(
         "--width",
         type=int,
         default=120,
@@ -392,6 +397,7 @@ def main() -> int:
     for name, ds in (("input", in_dicts), ("raw", raw), ("final", final)):
         write_wav(out / f"{name}.wav",
                   synthesize(to_array(ds), args.bpm,
+                             sf2_path=args.sf2,
                              source_midi_path=args.input, tempo_changes=tempo_changes))
 
     # Convert notes to Note objects for rhythm metrics.
@@ -418,6 +424,7 @@ def main() -> int:
         "pitch_constraint": bool(args.pitch_constraint),
         "max_fret": args.max_fret,
         "fret_penalty": args.fret_penalty,
+        "soundfont": str(args.sf2),
         "comparison": compare(notes, raw),
         "final_comparison": pitch_coverage(notes, final),
         "rhythm": rhythm.to_dict(),
