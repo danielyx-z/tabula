@@ -1347,10 +1347,17 @@ a:hover {
 }
 
 @keyframes scan {
-  0%, 9% { top: 7px; left: 12px; }
-  42% { top: 73px; left: 196px; }
-  58% { top: 73px; left: 196px; }
-  91%, 100% { top: 7px; left: 12px; }
+  0% { top: 7px; left: 12px; }
+  10% { top: 41px; left: 181px; }
+  20% { top: 12px; left: 64px; }
+  30% { top: 88px; left: 13px; }
+  40% { top: 55px; left: 209px; }
+  50% { top: 22px; left: 97px; }
+  60% { top: 101px; left: 28px; }
+  70% { top: 33px; left: 152px; }
+  80% { top: 77px; left: 73px; }
+  90% { top: 18px; left: 221px; }
+  100% { top: 7px; left: 12px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
