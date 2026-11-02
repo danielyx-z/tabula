@@ -838,7 +838,7 @@ a:hover {
   background: var(--accent);
   border-radius: 50%;
   box-shadow: 0 0 0 4px var(--accent-soft);
-  animation: scan 4s steps(8) infinite;
+  animation: scan 2.5s ease-in-out infinite;
 }
 
 .error-state .button-quiet {
@@ -888,6 +888,7 @@ a:hover {
   align-items: center;
   gap: 14px;
   flex: 0 0 auto;
+  flex-wrap: wrap;
   padding: 14px 0 13px;
   border-bottom: 1px solid var(--line);
 }
@@ -1125,10 +1126,6 @@ a:hover {
 }
 
 /* Practice-control toolbar */
-.score-toolbar {
-  flex-wrap: wrap;
-}
-
 .toolbar-nav {
   display: flex;
   align-items: center;
@@ -1347,14 +1344,9 @@ a:hover {
 }
 
 @keyframes scan {
-  0%   { top: 62px; left: 40px; }
-  14%  { top: 110px; left: 200px; }
-  28%  { top: 158px; left: 80px; }
-  42%  { top: 86px; left: 240px; }
-  56%  { top: 134px; left: 160px; }
-  70%  { top: 182px; left: 100px; }
-  84%  { top: 62px; left: 190px; }
-  100% { top: 62px; left: 40px; }
+  0% { left: 12px; }
+  50% { left: 220px; }
+  100% { left: 12px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
