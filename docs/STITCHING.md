@@ -164,6 +164,14 @@ note that the validator removed, add an overlay entry with `"keep": true` or
 `"non_note": false` at that `(t, s)`.  Disable the validator with
 `--no-non-note`.
 
+A short repeated run on one string and pitch is handled as context.  If at
+least four hits in the run are confident non-notes, the run spans at least two
+quarter notes, and a majority of the run is non-note evidence, remaining
+matched notes in that run are also converted.  This covers a percussion tap
+that happens to excite a stable pitch on one hit.  Those entries use
+`source: audio_non_note_run` and `reason: repeated_non_note_run` in
+`dead_notes.json` / `non_note_review.json`.
+
 Existing jobs created before raw audio classes were preserved are backfilled
 from `audio_events.json` when Stage 3 is resumed.  Re-run `--stage audio`
 first if that raw file is also missing.

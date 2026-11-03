@@ -314,6 +314,37 @@ def test_non_note_detector_converts_noise_but_keeps_harmonic_tone(
     assert review[0]["note"]["t"] == 480
 
 
+def test_non_note_run_catches_a_pitched_outlier() -> None:
+    notes = [
+        {"t": tick, "dur": 240, "pitch": 57, "s": 3, "f": 5}
+        for tick in (0, 480, 960, 1440, 1920)
+    ]
+    events = [
+        _matched_event(
+            time,
+            tick,
+            57,
+            audio_class="percussive" if index < 4 else "pitched",
+            harmonic_ratio=0.05 if index < 4 else 0.95,
+            voiced_prob=0.02 if index < 4 else 0.90,
+        )
+        for index, (time, tick) in enumerate(
+            zip((0.0, 0.25, 0.50, 0.75, 1.0), (0, 480, 960, 1440, 1920))
+        )
+    ]
+    result, dead, review, stats = detect_non_notes(
+        notes,
+        events,
+        grid_ticks=240,
+        min_confidence=0.60,
+    )
+    assert all(note.get("_drop") for note in result)
+    assert len(dead) == 5
+    assert dead[-1]["source"] == "audio_non_note_run"
+    assert stats["context_converted"] == 1
+    assert any(item.get("reason") == "repeated_non_note_run" for item in review)
+
+
 def test_dead_notes_ignore_dropped_notes_for_occupancy() -> None:
     notes = [{"t": 480, "dur": 240, "pitch": 43, "s": 1, "f": 3, "_drop": True}]
     events = [

@@ -13,6 +13,7 @@ string, timestamp, or section.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ from .evidence import (
     event_audio_class,
     non_note_score,
 )
+from .ticks import PPQ
 
 
 def detect_non_notes(
@@ -53,6 +55,9 @@ def detect_non_notes(
     dead_notes: list[dict[str, Any]] = []
     review: list[dict[str, Any]] = []
     seen_dead: set[tuple[int, int]] = set()
+    scores: dict[tuple[int, int], float] = {}
+    events_by_key: dict[tuple[int, int], dict[str, Any]] = {}
+    converted_keys: set[tuple[int, int]] = set()
 
     candidates = 0
     no_event = 0
@@ -71,6 +76,9 @@ def detect_non_notes(
             else 0.5
         )
         score = non_note_score(event, pitch_support)
+        key = (int(note["t"]), int(note["s"]))
+        scores[key] = score
+        events_by_key[key] = event
         item = {
             "note": {
                 "t": int(note["t"]),
@@ -104,7 +112,6 @@ def detect_non_notes(
             continue
 
         note["_drop"] = True
-        key = (int(note["t"]), int(note["s"]))
         if key not in seen_dead:
             dead_notes.append(
                 {
@@ -118,12 +125,107 @@ def detect_non_notes(
                 }
             )
             seen_dead.add(key)
+        converted_keys.add(key)
         converted += 1
+
+    # Context fallback for a short repeated run.  A body tap can occasionally
+    # excite a stable pitch on one hit while the surrounding hits are clearly
+    # non-note events.  This is a general run rule: same string and pitch,
+    # short gaps, at least four confident non-notes, and a majority of the run.
+    # It is only a fallback; isolated repetitive notes are never touched.
+    by_pitch: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
+    for note in result:
+        key = (int(note["t"]), int(note["s"]))
+        if key in scores:
+            by_pitch[(int(note["s"]), int(note["pitch"]))].append(note)
+
+    max_run_gap = max(1, int(grid_ticks) * 2)
+    context_converted = 0
+    for group in by_pitch.values():
+        group.sort(key=lambda item: int(item["t"]))
+        run: list[dict[str, Any]] = []
+        for note in group:
+            if run and int(note["t"]) - int(run[-1]["t"]) > max_run_gap:
+                run = []
+            run.append(note)
+            if len(run) < 5:
+                continue
+            run_keys = [(int(item["t"]), int(item["s"])) for item in run]
+            confident = [key for key in run_keys if key in converted_keys]
+            if len(confident) < 4:
+                continue
+            if len(confident) / len(run_keys) < 0.60:
+                continue
+            if int(run[-1]["t"]) - int(run[0]["t"]) < 2 * PPQ:
+                continue
+            for item in run:
+                key = (int(item["t"]), int(item["s"]))
+                if key in converted_keys or item.get("_drop"):
+                    continue
+                score = float(scores.get(key, 0.0))
+                item["_drop"] = True
+                if key not in seen_dead:
+                    dead_notes.append(
+                        {
+                            "t": int(item["t"]),
+                            "dur": max(1, int(grid_ticks)),
+                            "s": int(item["s"]),
+                            "f": 0,
+                            "kind": "dead",
+                            "source": "audio_non_note_run",
+                            "confidence": 0.60,
+                            "reason": "repeated_non_note_run",
+                        }
+                    )
+                    seen_dead.add(key)
+                event = events_by_key.get(key)
+                if event is not None:
+                    review.append(
+                        {
+                            "note": {
+                                "t": int(item["t"]),
+                                "s": int(item["s"]),
+                                "f": int(item.get("f", 0)),
+                                "pitch": int(item["pitch"]),
+                                "dur": int(item.get("dur", 0)),
+                            },
+                            "event": {
+                                "time": round(float(event.get("time", 0.0)), 6),
+                                "class": event_audio_class(event),
+                                "confidence": round(
+                                    float(
+                                        event.get(
+                                            "audio_confidence",
+                                            event.get("confidence", 0.0),
+                                        )
+                                        or 0.0
+                                    ),
+                                    6,
+                                ),
+                                "strength": round(
+                                    float(event.get("strength", 0.0) or 0.0), 6
+                                ),
+                                "harmonic_ratio": round(
+                                    float(event.get("harmonic_ratio", 0.0) or 0.0), 6
+                                ),
+                                "voiced_prob": round(
+                                    float(event.get("voiced_prob", 0.0) or 0.0), 6
+                                ),
+                            },
+                            "score": round(score, 6),
+                            "context_score": 0.60,
+                            "reason": "repeated_non_note_run",
+                        }
+                    )
+                converted_keys.add(key)
+                context_converted += 1
+                converted += 1
 
     review.sort(key=lambda item: (-float(item["score"]), int(item["note"]["t"])))
     stats = {
         "candidates": candidates,
         "converted": converted,
+        "context_converted": context_converted,
         "reviewed": len(review),
         "no_event": no_event,
         "min_confidence": float(min_confidence),
