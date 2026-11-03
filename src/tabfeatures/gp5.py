@@ -123,6 +123,44 @@ def _split_durations(slots: int, grid: int) -> list[tuple[gp.Duration, int]]:
     return result
 
 
+def _resolve_string_overlaps(records: list[dict[str, Any]]) -> int:
+    """Keep at most one sounding note per string at any time.
+
+    Tabula can emit a sustained note and a later attack on the same string.
+    Guitar Pro cannot represent both in one voice, so end the earlier note at
+    the attack (or drop an exact duplicate) rather than writing an invalid file.
+    """
+    by_string: dict[int, list[dict[str, Any]]] = {}
+    for record in records:
+        by_string.setdefault(int(record["s"]), []).append(record)
+
+    kept: list[dict[str, Any]] = []
+    adjusted = 0
+    for sequence in by_string.values():
+        sequence.sort(
+            key=lambda r: (
+                int(r["t"]),
+                0 if r["kind"] == "pitched" else 1,
+                int(r["f"]),
+            )
+        )
+        resolved: list[dict[str, Any]] = []
+        for record in sequence:
+            if resolved and record["t"] == resolved[-1]["t"]:
+                adjusted += 1
+                continue
+            resolved.append(record)
+        for previous, following in zip(resolved, resolved[1:]):
+            end = previous["t"] + previous["dur"]
+            if end > following["t"]:
+                previous["dur"] = max(1, following["t"] - previous["t"])
+                adjusted += 1
+        kept.extend(resolved)
+
+    records[:] = sorted(kept, key=lambda n: (n["t"], n["s"], n["kind"]))
+    return adjusted
+
+
 def _seconds_between(
     tempi: dict[int, float], start_tick: int, end_tick: int
 ) -> float:
@@ -264,6 +302,7 @@ def build_gp5(
         dead_count += 1
 
     records.sort(key=lambda n: (n["t"], n["s"], n["kind"]))
+    overlap_trimmed = _resolve_string_overlaps(records)
 
     tempi, signatures = read_timing(timing_midi)
     max_tick = max((n["t"] + n["dur"] for n in records), default=0)
@@ -426,6 +465,7 @@ def build_gp5(
         "beats": total_beats,
         "notes": total_notes,
         "dead_notes": dead_count,
+        "overlap_trimmed": overlap_trimmed,
         "skipped": skipped,
         "capo": capo,
         "title": song.title,

@@ -54,8 +54,10 @@ def insert_dead_notes(
     # Occupancy is measured on the 1/16 (or chosen) grid, not on exact ticks.
     # Tabula's final.json can sit on a 20-tick grid, so a note at tick 260 and a
     # dead note at 240 would otherwise both land in the same rendered slot.
+    active_notes = [note for note in notes if not note.get("_drop")]
     occupied: set[tuple[int, int]] = {
-        (_slot(int(note["t"]), grid_ticks), int(note["s"])) for note in notes
+        (_slot(int(note["t"]), grid_ticks), int(note["s"]))
+        for note in active_notes
     }
 
     candidates: list[tuple[int, float, dict[str, Any]]] = []
@@ -106,7 +108,7 @@ def insert_dead_notes(
             continue
 
         if strings == "nearest":
-            preferred = _nearest_string(notes, tick)
+            preferred = _nearest_string(active_notes, tick)
             order = (
                 [preferred] + [s for s in range(1, 7) if s != preferred]
                 if preferred is not None
@@ -188,3 +190,19 @@ def trim_notes_for_dead(
             note["dur"] = max(1, dead_tick - start)
             break
     return notes
+
+
+def merge_dead_notes(
+    *groups: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge dead-note groups, keeping the highest-confidence entry per slot."""
+    merged: dict[tuple[int, int], dict[str, Any]] = {}
+    for group in groups:
+        for note in group:
+            key = (int(note["t"]), int(note["s"]))
+            previous = merged.get(key)
+            if previous is None or float(note.get("confidence", 0.0) or 0.0) > float(
+                previous.get("confidence", 0.0) or 0.0
+            ):
+                merged[key] = note
+    return [merged[key] for key in sorted(merged)]

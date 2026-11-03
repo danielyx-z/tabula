@@ -171,6 +171,13 @@ def align_events(
     residuals: list[int] = []
     for item in matched_pass:
         event = dict(item["event"])
+        # Keep the timbre decision made before reconciliation.  A matched
+        # onset is not automatically a plucked note: a body knock can coincide
+        # with a MIDI note the transcriber invented.  The non-note validator
+        # and H/P gate consume these fields.
+        event["audio_class"] = str(event.get("class") or "")
+        event["audio_confidence"] = float(event.get("confidence", 0.0) or 0.0)
+        event["audio_strength"] = float(event.get("strength", 0.0) or 0.0)
         raw_tick = int(item["tick"])
         snapped = snap_tick(raw_tick, grid_ticks)
         matched = bool(item["matched"])

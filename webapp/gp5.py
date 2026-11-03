@@ -118,6 +118,33 @@ def _split_durations(slots: int, grid: int) -> list[tuple[gp.Duration, int]]:
     return result
 
 
+def _resolve_string_overlaps(records: list[dict]) -> int:
+    """Keep at most one sounding note per string at any time."""
+    by_string: dict[int, list[dict]] = {}
+    for record in records:
+        by_string.setdefault(int(record["s"]), []).append(record)
+
+    kept: list[dict] = []
+    adjusted = 0
+    for sequence in by_string.values():
+        sequence.sort(key=lambda r: (int(r["t"]), int(r["f"])))
+        resolved: list[dict] = []
+        for record in sequence:
+            if resolved and record["t"] == resolved[-1]["t"]:
+                adjusted += 1
+                continue
+            resolved.append(record)
+        for previous, following in zip(resolved, resolved[1:]):
+            end = previous["t"] + previous["dur"]
+            if end > following["t"]:
+                previous["dur"] = max(1, following["t"] - previous["t"])
+                adjusted += 1
+        kept.extend(resolved)
+
+    records[:] = sorted(kept, key=lambda n: (n["t"], n["s"], n["f"]))
+    return adjusted
+
+
 def _seconds_between(tempi: dict[int, float], start_tick: int, end_tick: int) -> float:
     tick = start_tick
     current = 120.0
@@ -181,6 +208,7 @@ def build_gp5(
             "f": value,
         })
     valid.sort(key=lambda n: (n["t"], n["s"], n["f"]))
+    overlap_trimmed = _resolve_string_overlaps(valid)
 
     tempi, signatures = read_timing(timing_midi)
     max_tick = max((n["t"] + n["dur"] for n in valid), default=0)
@@ -308,6 +336,7 @@ def build_gp5(
         "measures": len(plan),
         "beats": total_beats,
         "notes": total_notes,
+        "overlap_trimmed": overlap_trimmed,
         "skipped": skipped,
         "capo": capo,
         "title": song.title,

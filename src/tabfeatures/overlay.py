@@ -208,6 +208,27 @@ def apply_overlay(
             features.pop(key, None)
             continue
 
+        # A manual override can keep a note the general non-note validator
+        # marked for removal.  Remove only the automatic replacement so an
+        # unrelated unmatched percussion dead note at the same slot survives.
+        keep_non_note = (
+            bool(entry.get("keep"))
+            or entry.get("non_note") is False
+            or entry.get("dead") is False
+        )
+        if keep_non_note and note.get("_drop"):
+            note.pop("_drop", None)
+            dead_notes[:] = [
+                dead
+                for dead in dead_notes
+                if not (
+                    int(dead["t"]) == tick
+                    and int(dead["s"]) == string
+                    and dead.get("source") == "audio_non_note"
+                )
+            ]
+            dead_index.discard(key)
+
         feature = dict(features.get(key, {}))
 
         wants_hammer = bool(entry.get("hammer"))

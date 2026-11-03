@@ -2,8 +2,10 @@
 
 This pipeline adds performance features that a MIDI-only tab cannot represent:
 
-* dead notes / string mutes (`x`) detected from the source audio,
-* inferred hammer-ons and pull-offs (`h` / `p`),
+* dead notes / string mutes (`x`) detected from unmatched audio onsets,
+* matched notes that are actually percussion or other non-note hits replaced
+  with dead notes (`x`),
+* inferred hammer-ons and pull-offs (`h` / `p`), gated by audio evidence,
 * manually supplied slides, bends, vibrato, and H/P overrides.
 
 It does **not** retrain Tabula and does **not** replace the existing
@@ -14,8 +16,9 @@ It does **not** retrain Tabula and does **not** replace the existing
 * Guitar-only audio.
 * A quantised MIDI transcription (for example from MuScriptor), with a tempo
   map that follows the performance.  The default grid is `1/16`.
-* The MIDI is the source of truth for pitch and rhythm.  Audio is used only for
-  onsets that are absent from the MIDI.
+* The MIDI is the source of truth for pitch and rhythm.  Audio is used for
+  onsets absent from the MIDI, to validate matched notes against the expected
+  pitch, and to gate H/P decisions.
 
 ## Run it
 
@@ -70,7 +73,8 @@ After editing `articulations.json`, rerun only the last stage:
 | `percussion_events.json` | onsets after reconciliation (matched/unmatched, snapped ticks) |
 | `tabula/` | the job's own `final.json`, `final.mid`, `report.json`, logs |
 | `dead_notes.json` | inserted `x` notes, with ticks and confidence |
-| `hp_review.json` | inferred H/P pairs, gaps, intervals, confidence |
+| `non_note_review.json` | matched notes scored as possible non-notes, with audio features |
+| `hp_review.json` | H/P candidates, accepted/rejected state, gaps, confidence |
 | `articulations.json` | editable manual overlay (created empty) |
 | `tab_with_features.txt` | ASCII tab with `x`, `h`, `p`, slide/bend/vibrato markers |
 | `song.gp5` | real GP5 from `final.json` + the job's `final.mid` |
@@ -86,8 +90,11 @@ After editing `articulations.json`, rerun only the last stage:
    ratio, and `pyin` voiced probability around each onset.
 4. Convert onsets to PPQ-960 ticks via the MIDI tempo map.
 5. Match each onset to a MIDI note onset within half a grid cell (default).
-   A matched onset is a normal pluck attack and is discarded.  Unmatched
-   onsets are dead-note candidates.
+   The pre-reconciliation audio class, confidence, and strength are preserved
+   on the matched event (`audio_class`, `audio_confidence`,
+   `audio_strength`).  A match does not prove the MIDI note is real: a body tap
+   or muted knock can coincide with an invented pitch.  Unmatched non-pitched
+   onsets remain dead-note candidates.
 
 A coarse first pass estimates a global audio/MIDI offset for files with
 leading silence.  The correction is reported as `applied_offset_sec`.
@@ -106,14 +113,18 @@ job's own `final.json`, `final.mid`, `final_tab.txt`, and `report.json` into
 ### Stage 3: stitching
 
 1. Snap candidate ticks to the chosen grid.
-2. Insert dead notes.  Default string policy is `lowest`: try string 1
-   (low E), then the next free string.  If all strings are occupied in that
-   grid slot, the candidate is skipped and reported.
-3. Shorten any sustained note on the same string at the dead-note tick, so the
-   GP5 file never contains a tie and a dead note on the same string at once.
-4. Infer H/P on adjacent same-string notes with conservative guards.
-5. Apply `articulations.json` as the final override.
-6. Render ASCII and export GP5.
+2. Validate matched notes against audio.  High-confidence non-notes are marked
+   for removal and replaced by a dead note on their original string.
+3. Insert dead notes from unmatched candidates.  Default string policy is
+   `lowest`: try string 1 (low E), then the next free string.  If all strings
+   are occupied in that grid slot, the candidate is skipped and reported.
+4. Merge the two dead-note sources, then shorten any sustained note on the same
+   string at a dead-note tick, so the GP5 file never contains a tie and a dead
+   note on the same string at once.
+5. Infer H/P on adjacent same-string notes with conservative model and audio
+   guards.
+6. Apply `articulations.json` as the final override.
+7. Render ASCII and export GP5.
 
 `final.json` on disk is never mutated; dead notes are kept separately and
 merged at render/export time.
@@ -130,6 +141,33 @@ Occupancy is checked on the quantised grid slot, not only on exact ticks, so a
 note at tick 260 cannot collide with a dead note at tick 240 in the ASCII/GP5
 rendering.
 
+## Non-note validation
+
+Matched notes are not automatically trusted.  For each matched onset the
+validator measures:
+
+* harmonicity and `pyin` voiced probability from the onset window,
+* expected-pitch support: energy at the MIDI fundamental and its first
+  harmonics compared with the surrounding analysis band,
+* the pre-reconciliation audio class as a small prior.
+
+The combined non-note score is deliberately not tied to a pitch, string, time,
+or song.  A score at or above `--non-note-min-confidence` (default `0.60`)
+converts the note to a dead note on its original string.  Scores at or above
+`--non-note-review-confidence` (default `0.45`) but below the conversion
+threshold are left as notes.  All candidates at or above the review threshold
+are written to `non_note_review.json`, including the ones that were converted,
+so every automatic decision can be inspected.
+
+Ambiguous and medium-confidence events are never silently removed.  To keep a
+note that the validator removed, add an overlay entry with `"keep": true` or
+`"non_note": false` at that `(t, s)`.  Disable the validator with
+`--no-non-note`.
+
+Existing jobs created before raw audio classes were preserved are backfilled
+from `audio_events.json` when Stage 3 is resumed.  Re-run `--stage audio`
+first if that raw file is also missing.
+
 ## H/P guard rails
 
 An inferred H/P requires all of the following:
@@ -142,8 +180,21 @@ An inferred H/P requires all of the following:
 * both notes fretted (open strings skipped),
 * no chord at either onset (unless `--allow-hp-in-chords`).
 
-Every inferred pair is written to `hp_review.json`.  Disable inference with
-`--no-auto-hp`.
+When audio evidence is available (the default), a candidate must also pass an
+audio gate:
+
+* the first note's expected pitch is still present just before the second
+  onset,
+* the second onset does not have a full separate pluck attack relative to the
+  first note and nearby attacks,
+* the second note has pitched support rather than being another non-note.
+
+The gate is conservative: a strong second attack, a decayed first note, a weak
+second pitch, or a low combined confidence rejects the candidate.  The default
+threshold is `--hp-min-confidence 0.70`.  Use `--no-hp-audio` for the old
+model-only rules.  Every candidate, accepted or rejected, is written to
+`hp_review.json` with its metrics and rejection reason.  Disable inference
+entirely with `--no-auto-hp`.
 
 ## Manual overlay
 
@@ -174,16 +225,22 @@ Every inferred pair is written to `hp_review.json`.  Disable inference with
   `bendRelease`, `dip`, or `prebend`.
 * `"dead": true` converts the note at that `(t, s)` to an `x`; if no pitched
   note exists there, it adds a dead note.
+* `"keep": true` (or `"non_note": false`) keeps a note that the automatic
+  non-note validator removed, and removes that automatic replacement.
 
 ## Tuning knobs
 
 * `--grid 1/16` — grid used for snapping audio events (also `1/8`, `1/32`,
   triplet forms, or a tick count).
-* `--min-confidence 0.6` — dead-note candidate threshold.  Lower it to review
-  more candidates; the full list is in `percussion_events.json`.
+* `--min-confidence 0.6` — unmatched dead-note candidate threshold.  Lower it
+  to review more candidates; the full list is in `percussion_events.json`.
+* `--non-note-min-confidence 0.60` — matched non-note conversion threshold;
+  candidates at `--non-note-review-confidence` and above are reported.
+* `--no-non-note` — disable matched non-note conversion.
 * `--min-match-rate 0.5` — safety guard against mismatched audio/MIDI.
 * `--dead-strings lowest|nearest|all`.
 * `--hp-max-gap-beats 0.5`, `--hp-max-interval 7`, `--ring-tolerance 60`.
+* `--hp-min-confidence 0.70`, `--no-hp-audio` — tune or disable the audio gate.
 * `--no-auto-hp`, `--no-gp5`, `--keep-intermediate`.
 * `--onset-delta`, `--onset-wait`, `--window-before`, `--window-after` for the
   onset detector.
@@ -200,6 +257,11 @@ The exporter is a feature-aware copy of the web app exporter.  It writes:
 * nylon guitar program 24,
 * `NoteType.dead` for `x`,
 * `NoteEffect.hammer`, `slides`, `vibrato`, and `bend`.
+
+A voice cannot sound two notes on one string at once.  If `final.json` contains
+a sustained note and a later attack on the same string, the exporter ends the
+earlier note at that attack (and drops exact same-tick duplicates) so the
+written GP5 stays valid.  The count is reported as `gp5.overlap_trimmed`.
 
 ## Tests
 

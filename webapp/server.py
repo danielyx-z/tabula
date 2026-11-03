@@ -119,6 +119,7 @@ def _summary(
     alignment = pipeline.get("alignment") or {}
     dead_notes = pipeline.get("dead_notes", exported.get("dead_notes", 0))
     hp = pipeline.get("hp_applied", 0)
+    non_note = (pipeline.get("non_note") or {}).get("converted", 0)
     return {
         "capo": capo,
         "feasible_max": report.get("capo_feasible_max"),
@@ -133,6 +134,7 @@ def _summary(
         "postprocessing": report.get("postprocessing") or {},
         "raw_difficulty": report.get("raw_difficulty"),
         "dead_notes": int(dead_notes or 0),
+        "non_note": int(non_note or 0),
         "hp": int(hp or 0),
         "match_rate": alignment.get("match_rate"),
         "offset_sec": alignment.get("applied_offset_sec"),

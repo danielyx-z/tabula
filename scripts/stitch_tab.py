@@ -5,7 +5,8 @@ Pipeline:
 
     1. audio  -- HPSS + percussive onset detection + MIDI reconciliation
     2. tab    -- existing ``scripts/midi2tab.py`` (unchanged)
-    3. stitch -- dead notes, H/P inference, manual overlays, ASCII + GP5
+    3. stitch -- non-note validation, dead notes, audio-gated H/P, manual
+       overlays, ASCII + GP5
 
 Example::
 
@@ -45,8 +46,12 @@ from tabfeatures import (  # noqa: E402
     write_audio_events,
 )
 from tabfeatures.audio_events import write_stems  # noqa: E402
+from tabfeatures.dead import merge_dead_notes  # noqa: E402
+from tabfeatures.evidence import AudioAnalysis  # noqa: E402
 from tabfeatures.gp5 import build_gp5  # noqa: E402
+from tabfeatures.non_note import detect_non_notes  # noqa: E402
 from tabfeatures.overlay import empty_overlay  # noqa: E402
+from tabfeatures.ticks import tick_to_seconds  # noqa: E402
 
 
 def _repo_path(value: str | Path) -> Path:
@@ -215,6 +220,35 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
         )
         grid_ticks = int(stored_grid)
 
+    # Older percussion_events.json files predate audio_class preservation.
+    # Backfill from the raw event list when resuming an old job, so the
+    # non-note validator keeps the original timbre prior.
+    raw_events_path = out / "audio_events.json"
+    if raw_events_path.exists():
+        raw_payload = _load_json(raw_events_path)
+        raw_events = (
+            raw_payload.get("events", [])
+            if isinstance(raw_payload, dict)
+            else raw_payload
+        )
+        if isinstance(raw_events, list):
+            for event in events:
+                if event.get("audio_class"):
+                    continue
+                index = event.get("index")
+                if not isinstance(index, int) or not 0 <= index < len(raw_events):
+                    continue
+                raw_event = raw_events[index]
+                if not isinstance(raw_event, dict):
+                    continue
+                event["audio_class"] = str(raw_event.get("class") or "")
+                event["audio_confidence"] = float(
+                    raw_event.get("confidence", 0.0) or 0.0
+                )
+                event["audio_strength"] = float(
+                    raw_event.get("strength", 0.0) or 0.0
+                )
+
     if alignment:
         total = int(alignment.get("total_events", 0) or 0)
         match_rate = (
@@ -242,6 +276,35 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
     report = _load_json(report_path) if report_path.exists() else {}
     capo = int(report.get("capo", 0) or 0)
 
+    # final.mid preserves the source tempo map and is also used to convert
+    # H/P ticks to audio time.  Resolve it before the audio-aware stages.
+    timing_midi = tab_dir / "final.mid"
+    if not timing_midi.exists():
+        timing_midi = _user_path(args.midi)
+
+    analysis: AudioAnalysis | None = None
+    if args.non_note or (args.auto_hp and args.hp_audio):
+        print("[stitch] measuring audio note evidence ...", flush=True)
+        analysis = AudioAnalysis.load(args.audio, sr=args.sr)
+
+    non_note_dead: list[dict[str, Any]] = []
+    non_note_review: list[dict[str, Any]] = []
+    non_note_stats: dict[str, Any] = {"enabled": False}
+    if args.non_note:
+        final_notes, non_note_dead, non_note_review, non_note_stats = detect_non_notes(
+            final_notes,
+            events,
+            analysis=analysis,
+            grid_ticks=grid_ticks,
+            min_confidence=args.non_note_min_confidence,
+            review_confidence=args.non_note_review_confidence,
+        )
+        print(
+            f"[stitch] non-note evidence: {non_note_stats.get('converted', 0)} converted, "
+            f"{non_note_stats.get('reviewed', 0)} in review",
+            flush=True,
+        )
+
     dead_notes, dead_stats = insert_dead_notes(
         final_notes,
         events,
@@ -249,7 +312,13 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
         grid_ticks=grid_ticks,
         min_confidence=args.min_confidence,
     )
+    dead_notes = merge_dead_notes(non_note_dead, dead_notes)
     final_notes = trim_notes_for_dead(final_notes, dead_notes)
+
+    tick_seconds = None
+    if analysis is not None and args.auto_hp:
+        pm, _ = read_midi_notes(timing_midi)
+        tick_seconds = lambda tick: tick_to_seconds(pm, tick)
 
     if args.auto_hp:
         features, hp_review = infer_hp(
@@ -259,6 +328,11 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
             ring_tolerance=args.ring_tolerance,
             skip_chords=not args.allow_hp_in_chords,
             grid_ticks=grid_ticks,
+            events=events if args.hp_audio else None,
+            analysis=analysis if args.hp_audio else None,
+            offset_sec=float(alignment.get("applied_offset_sec", 0.0) or 0.0),
+            tick_seconds=tick_seconds if args.hp_audio else None,
+            min_confidence=args.hp_min_confidence if args.hp_audio else 0.0,
         )
     else:
         features, hp_review = {}, []
@@ -290,13 +364,7 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
 
     _write_json(out / "dead_notes.json", dead_notes)
     _write_json(out / "hp_review.json", hp_review)
-
-    # The Tabula contract is final.json + the job's own final.mid (which
-    # preserves the source tempo map).  Fall back to the supplied MIDI only
-    # when final.mid is unavailable.
-    timing_midi = tab_dir / "final.mid"
-    if not timing_midi.exists():
-        timing_midi = _user_path(args.midi)
+    _write_json(out / "non_note_review.json", non_note_review)
 
     gp5_info: dict[str, Any] | None = None
     gp5_path = out / "song.gp5"
@@ -314,6 +382,7 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
     hp_applied = sum(
         1 for feature in features.values() if feature.get("hp")
     )
+    hp_inferred = sum(1 for item in hp_review if item.get("accepted"))
     pipeline_report = {
         "audio": str(_user_path(args.audio)),
         "midi": str(_user_path(args.midi)),
@@ -322,7 +391,9 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
         "notes": len(final_notes),
         "dead_notes": len(dead_notes),
         "dead_stats": dead_stats,
-        "hp_inferred": len(hp_review),
+        "non_note": non_note_stats,
+        "hp_candidates": len(hp_review),
+        "hp_inferred": hp_inferred,
         "hp_applied": hp_applied,
         "overlay": str(overlay_path),
         "overlay_errors": overlay_errors,
@@ -334,13 +405,14 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
             "gp5": str(gp5_path) if gp5_info else None,
             "dead_notes": str(out / "dead_notes.json"),
             "hp_review": str(out / "hp_review.json"),
+            "non_note_review": str(out / "non_note_review.json"),
         },
     }
     _write_json(out / "pipeline_report.json", pipeline_report)
 
     print(
         f"[stitch] {len(final_notes)} notes, {len(dead_notes)} dead notes, "
-        f"{len(hp_review)} inferred H/P",
+        f"{hp_inferred}/{len(hp_review)} H/P accepted",
         flush=True,
     )
     for error in overlay_errors:
@@ -400,6 +472,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="minimum dead-note confidence (default: 0.6)",
     )
     parser.add_argument(
+        "--no-non-note",
+        dest="non_note",
+        action="store_false",
+        default=True,
+        help="disable automatic conversion of matched non-note hits to dead notes",
+    )
+    parser.add_argument(
+        "--non-note-min-confidence",
+        type=float,
+        default=0.60,
+        help="minimum score to convert a matched non-note to X (default: 0.60)",
+    )
+    parser.add_argument(
+        "--non-note-review-confidence",
+        type=float,
+        default=0.45,
+        help="minimum score to record a non-note candidate in review (default: 0.45)",
+    )
+    parser.add_argument(
         "--min-match-rate",
         type=float,
         default=0.5,
@@ -434,6 +525,19 @@ def build_parser() -> argparse.ArgumentParser:
         dest="auto_hp",
         action="store_false",
         help="disable hammer-on/pull-off inference",
+    )
+    parser.add_argument(
+        "--no-hp-audio",
+        dest="hp_audio",
+        action="store_false",
+        default=True,
+        help="use model-only H/P rules instead of audio-gated inference",
+    )
+    parser.add_argument(
+        "--hp-min-confidence",
+        type=float,
+        default=0.70,
+        help="minimum audio-gated H/P confidence (default: 0.70)",
     )
     parser.add_argument(
         "--hp-max-gap-beats",

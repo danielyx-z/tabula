@@ -782,6 +782,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     const openNotes = Number(summary.open_notes) || 0;
     const highNotes = Number(summary.high_notes) || 0;
     const deadNotes = Number(summary.dead_notes) || 0;
+    const nonNoteCount = Number(summary.non_note) || 0;
     const hpCount = Number(summary.hp) || 0;
     const dropped = Number(summary.dropped) || 0;
     const capo = Number(summary.capo) || 0;
@@ -802,7 +803,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
       factDead,
       hasAlignment ? deadNotes.toLocaleString() : "—",
       hasAlignment
-        ? "Percussive dead notes inserted from the recording."
+        ? "Dead notes inserted for percussion and other non-note hits."
         : "Only available for audio + MIDI takes."
     );
     setFact(
@@ -869,9 +870,20 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
     const notesOut = [];
     const skipped = Number(exported.skipped) || 0;
+    const overlapTrimmed = Number(exported.overlap_trimmed) || 0;
     if (skipped > 0) {
       notesOut.push(
         `${skipped} note${skipped === 1 ? "" : "s"} could not be placed in the Guitar Pro file; the text tab is complete.`
+      );
+    }
+    if (overlapTrimmed > 0) {
+      notesOut.push(
+        `${overlapTrimmed} same-string overlap${overlapTrimmed === 1 ? "" : "s"} trimmed for playback.`
+      );
+    }
+    if (nonNoteCount > 0) {
+      notesOut.push(
+        `${nonNoteCount} matched non-note hit${nonNoteCount === 1 ? "" : "s"} converted to dead notes.`
       );
     }
     if (deadNotes > 0) {
@@ -1172,6 +1184,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
         high_notes: 0,
         dropped: Array.isArray(report.dropped_chord_tones) ? report.dropped_chord_tones.length : 0,
         dead_notes: 0,
+        non_note: 0,
         hp: 0,
         exported: report.exported || {},
       };

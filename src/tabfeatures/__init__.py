@@ -11,8 +11,10 @@ pull-offs and manual articulation overlays.
 """
 
 from .audio_events import detect_audio_events, write_audio_events
-from .dead import insert_dead_notes, trim_notes_for_dead
+from .dead import insert_dead_notes, merge_dead_notes, trim_notes_for_dead
+from .evidence import AudioAnalysis
 from .hp import infer_hp
+from .non_note import detect_non_notes
 from .overlay import apply_overlay, load_overlay
 from .reconcile import align_events, read_midi_notes
 from .render import render_tab_with_features
@@ -28,7 +30,10 @@ __all__ = [
     "read_midi_notes",
     "align_events",
     "insert_dead_notes",
+    "merge_dead_notes",
     "trim_notes_for_dead",
+    "AudioAnalysis",
+    "detect_non_notes",
     "infer_hp",
     "load_overlay",
     "apply_overlay",

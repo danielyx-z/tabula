@@ -21,9 +21,15 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from tabfeatures.audio_events import detect_audio_events  # noqa: E402
-from tabfeatures.dead import insert_dead_notes, trim_notes_for_dead  # noqa: E402
+from tabfeatures.dead import (  # noqa: E402
+    insert_dead_notes,
+    merge_dead_notes,
+    trim_notes_for_dead,
+)
+from tabfeatures.evidence import AudioAnalysis  # noqa: E402
 from tabfeatures.gp5 import build_gp5  # noqa: E402
 from tabfeatures.hp import infer_hp  # noqa: E402
+from tabfeatures.non_note import detect_non_notes  # noqa: E402
 from tabfeatures.overlay import apply_overlay  # noqa: E402
 from tabfeatures.reconcile import align_events, read_midi_notes  # noqa: E402
 from tabfeatures.render import render_tab_with_features  # noqa: E402
@@ -32,6 +38,7 @@ from tabfeatures.ticks import (  # noqa: E402
     seconds_to_tick,
     snap_tick,
 )
+from webapp.gp5 import build_gp5 as build_legacy_gp5  # noqa: E402
 
 
 def _write_midi(path: Path, starts: list[float], pitch: int = 55) -> None:
@@ -218,6 +225,176 @@ def test_hp_inference_hammer_and_pull() -> None:
     assert infer_hp(same_slot_notes, grid_ticks=240)[0] == {}
 
 
+def _matched_event(
+    time: float,
+    tick: int,
+    pitch: int,
+    *,
+    strength: float = 5.0,
+    audio_class: str = "pitched",
+    harmonic_ratio: float = 0.95,
+    voiced_prob: float = 0.9,
+) -> dict:
+    return {
+        "time": time,
+        "matched": True,
+        "tick": tick,
+        "class": "note_attack",
+        "audio_class": audio_class,
+        "audio_confidence": 0.8,
+        "confidence": 0.0,
+        "strength": strength,
+        "harmonic_ratio": harmonic_ratio,
+        "voiced_prob": voiced_prob,
+        "matched_note": {"tick": tick, "time": time, "pitch": pitch},
+    }
+
+
+def test_non_note_detector_converts_noise_but_keeps_harmonic_tone(
+    tmp_path: Path,
+) -> None:
+    sr = 22050
+    duration = 1.1
+    y = np.zeros(int(sr * duration), dtype=np.float32)
+    t = np.arange(len(y)) / sr
+
+    # A real plucked A3 with a stable harmonic series.
+    start = int(0.05 * sr)
+    length = int(0.45 * sr)
+    local = np.arange(length) / sr
+    env = np.exp(-local / 0.30)
+    tone = sum(
+        np.sin(2 * math.pi * 220.0 * harmonic * local) / harmonic
+        for harmonic in range(1, 6)
+    )
+    y[start : start + length] += (0.35 * tone * env).astype(np.float32)
+
+    # A short broadband knock at the second MIDI onset.
+    start = int(0.70 * sr)
+    length = int(0.06 * sr)
+    local = np.arange(length) / sr
+    rng = np.random.default_rng(4)
+    y[start : start + length] += (
+        0.9 * rng.standard_normal(length) * np.exp(-local / 0.008)
+    ).astype(np.float32)
+
+    audio = tmp_path / "note_evidence.wav"
+    sf.write(audio, y, sr, subtype="PCM_16")
+
+    notes = [
+        {"t": 0, "dur": 240, "pitch": 57, "s": 3, "f": 5},
+        {"t": 480, "dur": 240, "pitch": 57, "s": 3, "f": 5},
+    ]
+    events = [
+        _matched_event(0.05, 0, 57),
+        _matched_event(
+            0.70,
+            480,
+            57,
+            audio_class="percussive",
+            harmonic_ratio=0.05,
+            voiced_prob=0.02,
+        ),
+    ]
+    analysis = AudioAnalysis.load(audio, sr=sr)
+    result, dead, review, stats = detect_non_notes(
+        notes,
+        events,
+        analysis=analysis,
+        grid_ticks=240,
+        min_confidence=0.60,
+    )
+    assert not result[0].get("_drop")
+    assert result[1].get("_drop") is True
+    assert len(dead) == 1
+    assert (dead[0]["t"], dead[0]["s"]) == (480, 3)
+    assert dead[0]["source"] == "audio_non_note"
+    assert stats["converted"] == 1
+    assert review
+    assert review[0]["note"]["t"] == 480
+
+
+def test_dead_notes_ignore_dropped_notes_for_occupancy() -> None:
+    notes = [{"t": 480, "dur": 240, "pitch": 43, "s": 1, "f": 3, "_drop": True}]
+    events = [
+        {
+            "time": 0.5,
+            "tick": 480,
+            "matched": False,
+            "class": "dead",
+            "confidence": 0.9,
+        }
+    ]
+    dead, _ = insert_dead_notes(notes, events, strings="lowest", grid_ticks=240)
+    assert len(dead) == 1
+    assert (dead[0]["t"], dead[0]["s"]) == (480, 1)
+
+    merged = merge_dead_notes(
+        [{"t": 480, "s": 1, "confidence": 0.4}],
+        [{"t": 480, "s": 1, "confidence": 0.9}],
+    )
+    assert len(merged) == 1
+    assert merged[0]["confidence"] == 0.9
+
+
+def test_hp_audio_gate_rejects_separate_attack_and_accepts_weak_second() -> None:
+    notes = [
+        {"t": 0, "dur": 480, "pitch": 55, "s": 3, "f": 5},
+        {"t": 240, "dur": 480, "pitch": 57, "s": 3, "f": 7},
+    ]
+    strong = [
+        _matched_event(0.0, 0, 55, strength=5.0),
+        _matched_event(0.25, 240, 57, strength=5.0),
+    ]
+    features, review = infer_hp(
+        notes,
+        events=strong,
+        grid_ticks=240,
+        min_confidence=0.70,
+    )
+    assert features == {}
+    assert review[0]["rejection_reason"] == "separate_attack"
+
+    weak = [
+        _matched_event(0.0, 0, 55, strength=10.0),
+        _matched_event(0.25, 240, 57, strength=2.0),
+    ]
+    features, review = infer_hp(
+        notes,
+        events=weak,
+        grid_ticks=240,
+        min_confidence=0.70,
+    )
+    assert features[(240, 3)]["hp"] == "h"
+    assert review[0]["accepted"] is True
+
+
+def test_overlay_can_keep_an_auto_dropped_non_note() -> None:
+    notes = [
+        {"t": 480, "dur": 240, "pitch": 43, "s": 1, "f": 3, "_drop": True}
+    ]
+    dead = [
+        {
+            "t": 480,
+            "dur": 240,
+            "s": 1,
+            "f": 0,
+            "kind": "dead",
+            "source": "audio_non_note",
+            "confidence": 0.8,
+        }
+    ]
+    kept, kept_dead, _, errors = apply_overlay(
+        notes,
+        dead,
+        {},
+        {"notes": [{"t": 480, "s": 1, "keep": True}]},
+    )
+    assert errors == []
+    assert not kept[0].get("_drop")
+    assert kept_dead == []
+
+
 def test_ascii_render_marks_dead_and_hp() -> None:
     notes = [
         {"t": 0, "dur": 240, "pitch": 55, "s": 3, "f": 5},
@@ -250,6 +427,9 @@ def test_reconcile_audio_onsets_to_midi(tmp_path: Path) -> None:
     assert alignment["matched_events"] == 3
     assert alignment["unmatched_events"] == 1
     assert alignment["applied_offset_sec"] == 0.0
+    assert aligned[0]["class"] == "note_attack"
+    assert aligned[0]["audio_class"] == "dead"
+    assert aligned[0]["audio_confidence"] == pytest.approx(0.9)
 
     shifted = [
         {"time": 0.1, "class": "dead", "confidence": 0.9},
@@ -317,6 +497,28 @@ def test_gp5_roundtrip_dead_and_articulations(tmp_path: Path) -> None:
     assert gp.SlideType.shiftSlideTo in (vibrato[0].effect.slides or [])
     assert vibrato[0].effect.bend is not None
     assert len(vibrato[0].effect.bend.points) == 2
+
+
+def test_gp5_resolves_overlapping_notes_on_same_string(tmp_path: Path) -> None:
+    import guitarpro as gp
+
+    midi = tmp_path / "timing.mid"
+    _write_midi(midi, [0.0, 0.5])
+    notes = [
+        {"t": 0, "dur": 960, "pitch": 40, "s": 1, "f": 0},
+        {"t": 240, "dur": 240, "pitch": 43, "s": 1, "f": 3},
+    ]
+
+    for builder in (build_gp5, build_legacy_gp5):
+        output = tmp_path / f"{builder.__module__.replace('.', '_')}.gp5"
+        info = builder(notes, midi, output, capo=0, title="Overlap")
+        assert info["overlap_trimmed"] == 1
+
+        song = gp.parse(str(output))
+        for measure in song.tracks[0].measures:
+            for beat in measure.voices[0].beats:
+                strings = [note.string for note in beat.notes]
+                assert len(strings) == len(set(strings))
 
 
 def test_audio_event_detection_finds_click(tmp_path: Path) -> None:
