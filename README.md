@@ -14,6 +14,7 @@ targets GuitarSet; a real GuitarSet training run is the next step.
 New to the project? Read:
 
 * [`docs/FORMATS.md`](docs/FORMATS.md) — every input/output format.
+* [`docs/STITCHING.md`](docs/STITCHING.md) — audio dead notes and articulations on top of MIDI-to-tab.
 * [`docs/DATA_FORMAT.md`](docs/DATA_FORMAT.md) — the training data contract.
 * [`docs/VERIFICATION.md`](docs/VERIFICATION.md) — what was tested and what
   still fails.
