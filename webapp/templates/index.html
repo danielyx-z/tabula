@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>Tabula — MIDI to tab</title>
+  <title>Tabula — audio and MIDI to tab</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2320231e'/%3E%3Cpath d='M7 9h18M7 13h18M7 17h18M7 21h18M7 25h18' stroke='%23f3eee3' stroke-width='1.2' opacity='.65'/%3E%3Ccircle cx='13' cy='17' r='2.6' fill='%23c2663d'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
@@ -28,37 +28,59 @@
     <main class="workspace">
       <aside class="control-rail" aria-label="Session controls">
         <section class="rail-section upload-section" aria-labelledby="upload-title">
-          <div class="section-heading">
-            <h2 id="upload-title">New take</h2>
-            <p>One MIDI performance. Six strings, one capo.</p>
-          </div>
-
-          <form id="upload-form" novalidate data-max-mb="{{ max_upload_mb }}">
-            <label id="drop-zone" class="drop-zone" for="midi-file">
-              <input id="midi-file" class="sr-only" name="file" type="file"
-                     accept=".mid,.midi,audio/midi,audio/x-midi">
-              <svg class="drop-icon" viewBox="0 0 40 40" aria-hidden="true">
-                <path d="M11 5.5h12l7 7v22H11z" />
-                <path d="M23 5.5v7h7" />
-                <path d="M20 21v9M20 21l4-1.4v8" />
-                <circle cx="19" cy="30.5" r="2.2" />
-              </svg>
-              <span id="drop-title" class="drop-title">Drop a MIDI here</span>
-              <span id="drop-hint" class="drop-hint">or browse <span class="hint-sep">·</span> {{ max_upload_mb }} MB max</span>
-            </label>
-
-            <div id="selected-file" class="selected-file" hidden>
-              <span class="file-glyph" aria-hidden="true">
-                <svg viewBox="0 0 20 20"><path d="M5 2.5h6l4 4v11H5z"/><path d="M11 2.5v4h4"/></svg>
+          <details id="upload-details" class="upload-details" open>
+            <summary class="upload-summary">
+              <h2 id="upload-title">New take</h2>
+              <span class="summary-subtitle">Pair the recording with its MIDI transcription.</span>
+              <span class="summary-cue" aria-hidden="true">
+                <svg viewBox="0 0 20 20"><path d="M5 8l5 5 5-5"/></svg>
               </span>
-              <span class="file-copy">
-                <span id="selected-name" class="file-name"></span>
-                <span id="selected-size" class="file-size"></span>
-              </span>
-              <button type="button" id="clear-file" class="icon-button" aria-label="Remove file" title="Remove file">
-                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>
-              </button>
+            </summary>
+
+            <form id="upload-form" novalidate
+                data-max-audio-mb="{{ max_audio_mb }}"
+                data-max-midi-mb="{{ max_midi_mb }}">
+            <div class="file-pair" aria-label="Source files">
+              <div id="audio-row" class="pair-row" data-slot="audio">
+                <input id="audio-file" class="sr-only" name="audio" type="file"
+                       accept="audio/*,.wav,.flac,.ogg,.oga,.mp3,.m4a,.aac,.aif,.aiff,.opus">
+                <label id="audio-drop" class="pair-hit" for="audio-file">
+                  <span class="pair-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><path d="M3 12h3l2-6 4 12 3-9 2 3h4"/></svg>
+                  </span>
+                  <span class="pair-copy">
+                    <span class="pair-kicker">Source audio</span>
+                    <span id="audio-title" class="pair-title">Add the recording</span>
+                    <span id="audio-meta" class="pair-meta">WAV, FLAC, OGG, MP3 · {{ max_audio_mb }} MB</span>
+                  </span>
+                  <span id="audio-action" class="pair-action">Browse</span>
+                </label>
+                <button type="button" id="audio-clear" class="pair-clear" aria-label="Remove source audio" title="Remove source audio" hidden>
+                  <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>
+                </button>
+              </div>
+
+              <div id="midi-row" class="pair-row" data-slot="midi">
+                <input id="midi-file" class="sr-only" name="midi" type="file"
+                       accept=".mid,.midi,audio/midi,audio/x-midi">
+                <label id="midi-drop" class="pair-hit" for="midi-file">
+                  <span class="pair-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><path d="M8 17V6l8-1.5V15"/><circle cx="5.5" cy="17.5" r="2.5"/><circle cx="13.5" cy="15.5" r="2.5"/></svg>
+                  </span>
+                  <span class="pair-copy">
+                    <span class="pair-kicker">MIDI transcription</span>
+                    <span id="midi-title" class="pair-title">Add the MIDI</span>
+                    <span id="midi-meta" class="pair-meta">.mid or .midi · {{ max_midi_mb }} MB</span>
+                  </span>
+                  <span id="midi-action" class="pair-action">Browse</span>
+                </label>
+                <button type="button" id="midi-clear" class="pair-clear" aria-label="Remove MIDI transcription" title="Remove MIDI transcription" hidden>
+                  <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>
+                </button>
+              </div>
             </div>
+
+            <p class="pair-note">Both files must come from the same solo-guitar take. The MIDI should be quantized to 1/16 and carry the performance’s tempo.</p>
 
             <button type="submit" id="convert-button" class="button button-primary" disabled>
               <span class="button-spinner" aria-hidden="true"></span>
@@ -71,13 +93,15 @@
               Cancel
             </button>
             <p id="form-status" class="form-status" role="status" aria-live="polite"></p>
-          </form>
+            </form>
+          </details>
         </section>
 
         <section id="session-panel" class="rail-section session-section" aria-labelledby="session-title" hidden>
           <div class="section-heading compact">
             <h2 id="session-title">This take</h2>
             <p id="session-file" class="session-file"></p>
+            <p id="session-source" class="session-source"></p>
           </div>
 
           <dl class="facts">
@@ -90,12 +114,12 @@
               <dd id="fact-notes">—</dd>
             </div>
             <div class="fact">
-              <dt>Max fret</dt>
-              <dd id="fact-max">—</dd>
+              <dt>Dead notes</dt>
+              <dd id="fact-dead">—</dd>
             </div>
             <div class="fact">
-              <dt>Tones dropped</dt>
-              <dd id="fact-dropped">—</dd>
+              <dt>Hammers / pulls</dt>
+              <dd id="fact-hp">—</dd>
             </div>
           </dl>
 
@@ -110,6 +134,18 @@
                 <dt>High frets</dt>
                 <dd id="fact-high">—</dd>
               </div>
+              <div class="fact">
+                <dt>Max fret</dt>
+                <dd id="fact-max">—</dd>
+              </div>
+              <div class="fact">
+                <dt>Tones dropped</dt>
+                <dd id="fact-dropped">—</dd>
+              </div>
+              <div class="fact">
+                <dt>Audio match</dt>
+                <dd id="fact-match">—</dd>
+              </div>
             </dl>
           </details>
 
@@ -121,6 +157,7 @@
               </a>
               <a id="download-midi" class="export-link" href="#" download>MIDI</a>
               <a id="download-tab" class="export-link" href="#" download>Text tab</a>
+              <a id="download-audio" class="export-link" href="#" download hidden>Recording</a>
             </div>
             <a id="download-report" class="export-link" href="#" download>Conversion report</a>
             <p id="export-note" class="fine-print" hidden></p>
@@ -134,42 +171,54 @@
       <section class="score-stage" aria-label="Tab and playback" aria-busy="false">
         <div id="empty-state" class="state empty-state">
           <div class="empty-visual" aria-hidden="true">
-            <svg viewBox="0 0 340 260">
-              <g class="empty-strings">
-                <path d="M28 62H312M28 86H312M28 110H312M28 134H312M28 158H312M28 182H312" />
+            <svg viewBox="0 0 420 280">
+              <g class="empty-sources">
+                <rect x="2" y="62" width="112" height="62" rx="2" />
+                <text x="14" y="80" class="source-label">AUDIO</text>
+                <path class="source-wave" d="M12 96h8l4-10 6 24 6-30 5 20 6-12 7 10h9" />
+                <rect x="2" y="156" width="112" height="62" rx="2" />
+                <text x="14" y="174" class="source-label">MIDI</text>
+                <path class="source-note" d="M37 201v-23l20-4v23" />
+                <ellipse cx="33" cy="201" rx="5" ry="3.5" />
+                <ellipse cx="53" cy="197" rx="5" ry="3.5" />
               </g>
-              <g class="empty-bars">
-                <path d="M28 50v144M150 50v144M238 50v144M312 50v144" />
+              <g class="empty-connectors">
+                <path d="M116 93c20 0 20 39 36 39" />
+                <path d="M116 187c20 0 20-39 36-39" />
+                <circle cx="152" cy="132" r="2.4" />
               </g>
-              <rect class="empty-highlight" x="150" y="52" width="88" height="140" rx="2" />
-              <path class="empty-cursor" d="M196 52v140" />
-              <g class="empty-numbers">
-                <text x="52" y="68">0</text>
-                <text x="74" y="92">2</text>
-                <text x="96" y="116">3</text>
-                <text x="118" y="140">5</text>
-                <text x="166" y="68">3</text>
-                <text x="188" y="92">2</text>
-                <text x="210" y="116">0</text>
-                <text x="256" y="140">2</text>
-                <text x="278" y="164">3</text>
-                <text x="300" y="188">0</text>
-              </g>
-              <g class="empty-ticks">
-                <path d="M28 50v-5M150 50v-5M238 50v-5M312 50v-5" />
-                <text x="28" y="38">1</text>
-                <text x="150" y="38">2</text>
-                <text x="238" y="38">3</text>
+              <g class="empty-tab">
+                <path class="tab-strings" d="M160 72H408M160 96H408M160 120H408M160 144H408M160 168H408M160 192H408" />
+                <path class="tab-bars" d="M160 60v144M244 60v144M326 60v144M408 60v144" />
+                <rect class="empty-highlight" x="244" y="62" width="82" height="140" rx="2" />
+                <path class="empty-cursor" d="M285 62v140" />
+                <g class="empty-numbers">
+                  <text x="180" y="78">0</text>
+                  <text x="204" y="102">2</text>
+                  <text x="226" y="126">3</text>
+                  <text x="258" y="78">3</text>
+                  <text x="280" y="102">2</text>
+                  <text x="302" y="126">0</text>
+                  <text x="342" y="150">2</text>
+                  <text x="364" y="174">3</text>
+                  <text x="386" y="198">0</text>
+                </g>
+                <g class="empty-ticks">
+                  <path d="M160 60v-5M244 60v-5M326 60v-5M408 60v-5" />
+                  <text x="160" y="48">1</text>
+                  <text x="244" y="48">2</text>
+                  <text x="326" y="48">3</text>
+                </g>
               </g>
             </svg>
           </div>
           <div class="empty-copy">
-            <h1>Turn a MIDI into a tab you can hear.</h1>
-            <p class="empty-lede">Tabula chooses the capo, finds the strings, writes Guitar Pro tablature, and plays it back with the current measure in view.</p>
-            <p class="fine-print">Nylon guitar <span class="fine-sep">·</span> original tempo map <span class="fine-sep">·</span> processed on this machine, not uploaded to a cloud service</p>
+            <h1>Turn a take into a tab you can hear.</h1>
+            <p class="empty-lede">Upload the recording and its MIDI transcription. Tabula aligns the attacks, places dead notes and articulations, chooses a capo, and writes a Guitar Pro tab with the performance’s own tempo.</p>
+            <p class="fine-print">Nylon guitar <span class="fine-sep">·</span> source tempo map <span class="fine-sep">·</span> both files stay on this machine</p>
 
             <section id="recent-takes" class="recent-takes" hidden>
-              <h3>Recent takes</h3>
+              <h2>Recent takes</h2>
               <div id="recent-list" class="recent-list"></div>
               <p class="fine-print">Stored in your browser only. Takes older than a day are cleared by the server.</p>
             </section>
@@ -184,20 +233,26 @@
             <span class="working-line"></span>
             <span class="working-line"></span>
             <span class="working-line"></span>
-            <span class="working-note"></span>
+            <span class="working-scan"></span>
+            <span class="working-note note-1"></span>
+            <span class="working-note note-2"></span>
+            <span class="working-note note-3"></span>
+            <span class="working-note note-4"></span>
+            <span class="working-note note-5"></span>
+            <span class="working-note note-6"></span>
           </div>
-          <h2>Finding the fingering.</h2>
-          <p>Reading the performance, choosing a capo and writing the tab. The first run can take a minute.</p>
+          <h2>Reading the take.</h2>
+          <p>Matching the recording to its MIDI, placing dead notes, choosing a capo, and writing the tab. This can take a minute on the first run.</p>
         </div>
 
         <div id="error-state" class="state error-state" hidden>
-          <h2>That one didn’t make it.</h2>
-          <p id="error-message" class="error-message"></p>
+          <h2>That take didn’t make it.</h2>
+          <p id="error-message" class="error-message" role="alert"></p>
           <details id="error-details" class="error-details">
             <summary>Converter output</summary>
             <pre id="error-log"></pre>
           </details>
-          <button type="button" id="retry-button" class="button button-quiet">Try another MIDI</button>
+          <button type="button" id="retry-button" class="button button-quiet">Try another take</button>
         </div>
 
         <div id="score-view" class="score-view" hidden>
@@ -214,7 +269,7 @@
                 <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M9 5l5 5-5 5"/></svg>
               </button>
               <button type="button" id="loop-button" class="toolbar-button toolbar-toggle" aria-label="Loop current bar" aria-pressed="false">
-                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 15a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2zM14 5a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></svg>
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 8V6a2 2 0 0 1 2-2h8M16 12v2a2 2 0 0 1-2 2H6"/><path d="M12 2l2 2-2 2M8 18l-2-2 2-2"/></svg>
               </button>
               <button type="button" id="follow-button" class="toolbar-button toolbar-toggle" aria-label="Follow playhead" aria-pressed="true" title="Auto-scroll to the current measure while playing">
                 <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M14 8l3 3-3 3M8 13h8M8 7h8"/></svg>
@@ -232,7 +287,7 @@
               </select>
 
               <button type="button" id="mute-button" class="toolbar-button toolbar-toggle" aria-label="Mute" aria-pressed="false" title="Mute/unmute">
-                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15 10a5 5 0 0 1-5 5H9a7 7 0 0 0 7-7zM5 5h2a3 3 0 0 1 3 3v2H5z"/><path d="M12 12l6-6"/></svg>
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 8h3l4-3v10l-4-3H4z"/><path d="M14 8a3 3 0 0 1 0 4M16 6a6 6 0 0 1 0 8"/></svg>
               </button>
               <div class="volume-wrap">
                 <input id="volume-slider" type="range" min="0" max="1" step="0.05" value="1" aria-label="Volume">
@@ -265,7 +320,7 @@
     </main>
 
     <footer class="site-footer">
-      <p>Tabula <span class="footer-sep">·</span> a local MIDI-to-tab workbench.</p>
+      <p>Tabula <span class="footer-sep">·</span> a local audio-to-tab workbench.</p>
       <p>
         Rendered and played by
         <a href="https://www.alphatab.net/" target="_blank" rel="noreferrer">alphaTab</a>.

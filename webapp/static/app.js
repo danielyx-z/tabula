@@ -6,16 +6,22 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   const byId = (id) => document.getElementById(id);
 
   const form = byId("upload-form");
+  const uploadDetails = byId("upload-details");
+  const audioInput = byId("audio-file");
   const midiInput = byId("midi-file");
-  const dropZone = byId("drop-zone");
-  const dropTitle = byId("drop-title");
-  const dropHint = byId("drop-hint");
-  const selectedFile = byId("selected-file");
-  const selectedName = byId("selected-name");
-  const selectedSize = byId("selected-size");
-  const clearFileButton = byId("clear-file");
+  const audioRow = byId("audio-row");
+  const midiRow = byId("midi-row");
+  const audioTitle = byId("audio-title");
+  const midiTitle = byId("midi-title");
+  const audioMeta = byId("audio-meta");
+  const midiMeta = byId("midi-meta");
+  const audioAction = byId("audio-action");
+  const midiAction = byId("midi-action");
+  const audioClear = byId("audio-clear");
+  const midiClear = byId("midi-clear");
   const convertButton = byId("convert-button");
   const convertLabel = byId("convert-label");
+  const cancelButton = byId("cancel-button");
   const formStatus = byId("form-status");
 
   const emptyState = byId("empty-state");
@@ -47,29 +53,40 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   const speedSelect = byId("speed-select");
   const muteButton = byId("mute-button");
   const volumeSlider = byId("volume-slider");
-  const cancelButton = byId("cancel-button");
 
   const sessionPanel = byId("session-panel");
   const sessionFile = byId("session-file");
+  const sessionSource = byId("session-source");
   const factCapo = byId("fact-capo");
   const factNotes = byId("fact-notes");
+  const factDead = byId("fact-dead");
+  const factHp = byId("fact-hp");
   const factOpen = byId("fact-open");
   const factMax = byId("fact-max");
   const factHigh = byId("fact-high");
   const factDropped = byId("fact-dropped");
+  const factMatch = byId("fact-match");
   const downloadGp5 = byId("download-gp5");
   const downloadMidi = byId("download-midi");
   const downloadTab = byId("download-tab");
+  const downloadAudio = byId("download-audio");
   const downloadReport = byId("download-report");
   const exportNote = byId("export-note");
 
   const serverDot = byId("server-dot");
   const serverLabel = byId("server-label");
   const startOverButton = byId("start-over-button");
+  const recentSection = byId("recent-takes");
   const recentList = byId("recent-list");
 
-  const MAX_MB = Number(form.dataset.maxMb) || 32;
+  const MAX_AUDIO_MB = Number(form.dataset.maxAudioMb) || 96;
+  const MAX_MIDI_MB = Number(form.dataset.maxMidiMb) || 8;
+  const MAX_AUDIO_BYTES = MAX_AUDIO_MB * 1024 * 1024;
+  const MAX_MIDI_BYTES = MAX_MIDI_MB * 1024 * 1024;
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+  const AUDIO_NAME = /\.(wav|flac|ogg|oga|mp3|m4a|aac|aif|aiff|opus|wma)$/i;
+  const MIDI_NAME = /\.(mid|midi)$/i;
 
   const LayoutMode = AlphaTab && AlphaTab.LayoutMode;
   const ScrollMode = AlphaTab && AlphaTab.ScrollMode;
@@ -77,11 +94,11 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     ? AlphaTab.PlayerMode || (AlphaTab.synth && AlphaTab.synth.PlayerMode)
     : null;
 
-  let currentFile = null;
-  let lastFileName = "";
   let busy = false;
   let serverReady = false;
   let abortController = null;
+  let lastConverted = false;
+  let lastFileName = "";
 
   let api = null;
   let score = null;
@@ -97,16 +114,49 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   let seeking = false;
   let isPlaying = false;
 
-  // Persisted practice preferences
-  let playbackSpeed = Number(localStorage.getItem("tabula:playbackSpeed")) || 1;
+  // Persisted practice preferences. The old volume key defaulted to 0 because
+  // Number(null) is 0, which muted the synth on every first visit.
+  let playbackSpeed = Number(localStorage.getItem("tabula:playbackSpeed"));
   if (!Number.isFinite(playbackSpeed) || playbackSpeed <= 0) playbackSpeed = 1;
-  let masterVolume = Number(localStorage.getItem("tabula:masterVolume"));
-  if (!Number.isFinite(masterVolume) || masterVolume < 0 || masterVolume > 1) masterVolume = 1;
+  const storedVolume = localStorage.getItem("tabula:masterVolume.v2");
+  let masterVolume = storedVolume === null ? 1 : Number(storedVolume);
+  if (!Number.isFinite(masterVolume) || masterVolume < 0 || masterVolume > 1) {
+    masterVolume = 1;
+  }
   let isMuted = localStorage.getItem("tabula:isMuted") === "1";
   let followEnabled = localStorage.getItem("tabula:followEnabled") !== "0"; // on by default
   let loopEnabled = localStorage.getItem("tabula:loopEnabled") === "1";
 
   const MAX_RECENT = 5;
+
+  const slots = {
+    audio: {
+      kind: "audio",
+      input: audioInput,
+      row: audioRow,
+      title: audioTitle,
+      meta: audioMeta,
+      action: audioAction,
+      clear: audioClear,
+      file: null,
+      defaultTitle: "Add the recording",
+      defaultMeta: `WAV, FLAC, OGG, MP3 · ${MAX_AUDIO_MB} MB`,
+      defaultAction: "Browse",
+    },
+    midi: {
+      kind: "midi",
+      input: midiInput,
+      row: midiRow,
+      title: midiTitle,
+      meta: midiMeta,
+      action: midiAction,
+      clear: midiClear,
+      file: null,
+      defaultTitle: "Add the MIDI",
+      defaultMeta: `.mid or .midi · ${MAX_MIDI_MB} MB`,
+      defaultAction: "Browse",
+    },
+  };
 
   function formatTime(milliseconds) {
     if (!Number.isFinite(milliseconds) || milliseconds <= 0) {
@@ -147,8 +197,13 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
       .replace(/"/g, "&quot;");
   }
 
-  function setStatus(message) {
+  function setStatus(message, kind = "error") {
     formStatus.textContent = message || "";
+    if (message) {
+      formStatus.dataset.kind = kind;
+    } else {
+      delete formStatus.dataset.kind;
+    }
   }
 
   function setPlayerStatus(message) {
@@ -160,95 +215,147 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     loadingState.hidden = name !== "loading";
     errorState.hidden = name !== "error";
     scoreView.hidden = name !== "score";
+    uploadDetails.open = name !== "score";
+    if (name !== "score") {
+      sessionPanel.hidden = true;
+    }
     scoreStage.setAttribute("aria-busy", name === "loading" ? "true" : "false");
     scoreStage.dataset.state = name;
+  }
+
+  function fileKind(file) {
+    const name = file && file.name ? file.name : "";
+    if (MIDI_NAME.test(name)) return "midi";
+    if (AUDIO_NAME.test(name)) return "audio";
+    if (file && typeof file.type === "string" && file.type.startsWith("audio/")) {
+      return file.type === "audio/midi" || file.type === "audio/x-midi" ? "midi" : "audio";
+    }
+    return null;
+  }
+
+  function validateFile(kind, file) {
+    const label = kind === "audio" ? "recording" : "MIDI transcription";
+    const maxBytes = kind === "audio" ? MAX_AUDIO_BYTES : MAX_MIDI_BYTES;
+    const maxMb = kind === "audio" ? MAX_AUDIO_MB : MAX_MIDI_MB;
+    const pattern = kind === "audio" ? AUDIO_NAME : MIDI_NAME;
+    if (!pattern.test(file.name || "")) {
+      return kind === "audio"
+        ? "Choose an audio recording (WAV, FLAC, OGG, MP3, M4A)."
+        : "Choose a .mid or .midi file for the transcription.";
+    }
+    if (!file.size) {
+      return "That file is empty.";
+    }
+    if (file.size > maxBytes) {
+      return `That ${label} is larger than ${maxMb} MB.`;
+    }
+    return "";
+  }
+
+  function setSlot(kind, file) {
+    const slot = slots[kind];
+    const problem = validateFile(kind, file);
+    if (problem) {
+      setStatus(problem);
+      return false;
+    }
+
+    slot.file = file;
+    slot.row.classList.add("has-file");
+    slot.title.textContent = file.name;
+    slot.title.title = file.name;
+    slot.meta.textContent = `${formatBytes(file.size)} · ready`;
+    slot.action.textContent = "Replace";
+    slot.clear.hidden = false;
+    setStatus("");
+    if (!errorState.hidden && !scoreReady) {
+      setState("empty");
+    }
+    updateConvertAvailability();
+    return true;
+  }
+
+  function resetSlot(kind) {
+    const slot = slots[kind];
+    slot.file = null;
+    slot.input.value = "";
+    slot.row.classList.remove("has-file", "is-dragging");
+    slot.title.textContent = slot.defaultTitle;
+    slot.title.removeAttribute("title");
+    slot.meta.textContent = slot.defaultMeta;
+    slot.action.textContent = slot.defaultAction;
+    slot.clear.hidden = true;
+  }
+
+  function clearSlot(kind) {
+    if (busy) return;
+    resetSlot(kind);
+    setStatus("");
+    updateConvertAvailability();
+    if (!scoreReady && errorState.hidden === false) {
+      setState("empty");
+    }
+  }
+
+  function updateConvertAvailability() {
+    const pairReady = Boolean(slots.audio.file && slots.midi.file);
+    convertButton.disabled = busy || !serverReady || !pairReady;
+    convertLabel.textContent = busy
+      ? "Making tab"
+      : lastConverted && pairReady
+        ? "Convert again"
+        : "Make tab";
+  }
+
+  function setBusy(value) {
+    busy = value;
+    convertButton.classList.toggle("is-loading", value);
+    audioInput.disabled = value;
+    midiInput.disabled = value;
+    audioClear.disabled = value;
+    midiClear.disabled = value;
+    cancelButton.disabled = !value;
+    cancelButton.hidden = !value;
+    form.setAttribute("aria-busy", value ? "true" : "false");
+    audioRow.setAttribute("aria-disabled", value ? "true" : "false");
+    midiRow.setAttribute("aria-disabled", value ? "true" : "false");
+    if (value) {
+      audioRow.classList.remove("is-dragging");
+      midiRow.classList.remove("is-dragging");
+      abortController = new AbortController();
+    } else {
+      abortController = null;
+    }
+    updateConvertAvailability();
+    updatePlayAvailability();
+  }
+
+  function chooseFiles(files, fallbackKind = null) {
+    if (busy) return;
+    const list = Array.from(files || []);
+    if (!list.length) return;
+
+    let accepted = 0;
+    for (const file of list) {
+      const kind = fileKind(file) || (list.length === 1 ? fallbackKind : null);
+      if (!kind) {
+        setStatus(`“${file.name}” is not a MIDI or audio file.`);
+        continue;
+      }
+      if (setSlot(kind, file)) accepted += 1;
+    }
+    if (accepted && slots.audio.file && slots.midi.file) {
+      setStatus("");
+    }
   }
 
   function setServerState(ok) {
     serverReady = Boolean(ok);
     serverDot.dataset.state = ok ? "ok" : "down";
     serverLabel.textContent = ok ? "local server" : "unavailable";
-    if (!busy) {
-      convertButton.disabled = !currentFile || !serverReady;
-    }
+    updateConvertAvailability();
     if (!ok) {
-      setStatus("The server isn't responding. Is the Tabula workbench running?");
-    }
-  }
-
-  function setBusy(value) {
-    busy = value;
-    convertButton.classList.toggle("is-loading", value);
-    convertLabel.textContent = value ? "Making tab" : "Make tab";
-    convertButton.disabled = value || !currentFile || !serverReady;
-    midiInput.disabled = value;
-    clearFileButton.disabled = value;
-    cancelButton.disabled = !value;
-    form.setAttribute("aria-busy", value ? "true" : "false");
-    dropZone.setAttribute("aria-disabled", value ? "true" : "false");
-    if (value) {
-      dropZone.classList.remove("is-dragging");
-      abortController = new AbortController();
-    } else {
-      abortController = null;
-    }
-    updatePlayAvailability();
-  }
-
-  function chooseFile(file) {
-    if (!file || busy) {
-      return;
-    }
-    const name = file.name || "upload.mid";
-    if (!/\.(mid|midi)$/i.test(name)) {
-      setStatus("Choose a .mid or .midi file.");
-      return;
-    }
-    if (file.size === 0) {
-      setStatus("That file is empty.");
-      return;
-    }
-    if (file.size > MAX_MB * 1024 * 1024) {
-      setStatus(`That file is larger than ${MAX_MB} MB.`);
-      return;
-    }
-
-    currentFile = file;
-    setStatus("");
-    selectedName.textContent = name;
-    selectedName.title = name;
-    selectedSize.textContent = formatBytes(file.size);
-    selectedFile.hidden = false;
-    dropTitle.textContent = "Replace the MIDI";
-    dropHint.textContent = `drop another file, or browse · ${MAX_MB} MB max`;
-    dropZone.classList.add("has-file");
-    convertButton.disabled = !serverReady;
-    convertLabel.textContent = lastConverted ? "Convert again" : "Make tab";
-
-    if (!errorState.hidden) {
-      setState("empty");
-    }
-  }
-
-  let lastConverted = false;
-
-  function clearFile() {
-    if (busy) {
-      return;
-    }
-    currentFile = null;
-    midiInput.value = "";
-    selectedFile.hidden = true;
-    selectedName.textContent = "";
-    selectedName.title = "";
-    selectedSize.textContent = "";
-    dropTitle.textContent = "Drop a MIDI here";
-    dropHint.textContent = `or browse · ${MAX_MB} MB max`;
-    dropZone.classList.remove("has-file");
-    convertButton.disabled = true;
-    setStatus("");
-    if (!errorState.hidden) {
-      setState("empty");
+      setStatus("The server isn’t responding. Is the Tabula workbench running?");
     }
   }
 
@@ -321,7 +428,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     try {
       api.player.playbackSpeed = playbackSpeed;
     } catch (error) {
-      // Some builds clamp or ignore; ignore gracefully.
+      // Some builds clamp or ignore; keep the control responsive.
     }
     speedSelect.value = String(playbackSpeed);
     try { localStorage.setItem("tabula:playbackSpeed", String(playbackSpeed)); } catch {}
@@ -332,14 +439,14 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     try {
       api.player.masterVolume = isMuted ? 0 : masterVolume;
     } catch (error) {
-      // ignore
+      // ignore a player that has not finished attaching yet
     }
-    volumeSlider.disabled = isMuted;
-    volumeSlider.value = isMuted ? 0 : masterVolume;
+    volumeSlider.disabled = !api.isReadyForPlayback || isMuted;
+    volumeSlider.value = String(isMuted ? 0 : masterVolume);
     muteButton.setAttribute("aria-pressed", isMuted ? "true" : "false");
     muteButton.classList.toggle("is-muted", isMuted);
     try {
-      localStorage.setItem("tabula:masterVolume", String(masterVolume));
+      localStorage.setItem("tabula:masterVolume.v2", String(masterVolume));
       localStorage.setItem("tabula:isMuted", isMuted ? "1" : "0");
     } catch {}
   }
@@ -391,6 +498,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
         scale: 0.98,
       },
       player: {
+        enablePlayer: true,
         playerMode: PlayerMode ? PlayerMode.EnabledSynthesizer : 2,
         soundFont: "/static/alphatab/soundfont/sonivox.sf2",
         scrollElement: alphaTabEl,
@@ -399,8 +507,6 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
         enableAnimatedBeatCursor: true,
         enableElementHighlighting: false,
         enableUserInteraction: true,
-        playbackRangeStartTime: 0,
-        playbackRangeEndTime: lastEndTick > 0 ? lastEndTick : 0,
       },
     };
 
@@ -435,25 +541,35 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
     api.soundFontLoaded.on(() => {
       updatePlayAvailability();
+      applyVolume();
     });
 
-    api.playerStateChanged.on(() => {
+    if (api.soundFontLoadFailed && api.soundFontLoadFailed.on) {
+      api.soundFontLoadFailed.on(() => {
+        audioProblem = "The guitar sound could not load; the tab is still viewable.";
+        updatePlayAvailability();
+      });
+    }
+
+    api.playerStateChanged.on((args) => {
+      setPlaying(Boolean(args && args.state === 1));
       updatePlayAvailability();
     });
 
     api.playerFinished.on(() => {
       setPlaying(false);
       if (loopEnabled && bars.length && currentBar >= 0) {
-        // Restart the current bar from its start tick.
         const bar = bars[currentBar];
         const startTick = bar.start;
-        try { api.tickPosition = startTick; } catch {}
-        lastTick = startTick;
-        currentTimeEl.textContent = formatTime((startTick / Math.max(1, lastEndTick)) * lastEndTime);
-        if (!isPlaying) {
-          try { api.play(); } catch {}
+        try {
+          api.tickPosition = startTick;
+          api.play();
           setPlaying(true);
-        }
+        } catch {}
+        lastTick = startTick;
+        currentTimeEl.textContent = formatTime(
+          (startTick / Math.max(1, lastEndTick)) * lastEndTime
+        );
       }
     });
 
@@ -475,7 +591,9 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
       if (!seeking) {
         currentTimeEl.textContent = formatTime(currentTime);
         if (lastEndTick > 0) {
-          seek.value = String(Math.max(0, Math.min(1000, Math.round((tick / lastEndTick) * 1000))));
+          seek.value = String(
+            Math.max(0, Math.min(1000, Math.round((tick / lastEndTick) * 1000)))
+          );
         }
       }
       updateMeasure(tick, false, followEnabled);
@@ -488,9 +606,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
         return;
       }
       audioProblem = "Audio is unavailable; the tab is still viewable.";
-      playButton.disabled = true;
-      seek.disabled = true;
-      setPlayerStatus(audioProblem);
+      updatePlayAvailability();
     });
   }
 
@@ -564,11 +680,18 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
   }
 
+  function finiteNumber(value) {
+    if (value === null || value === undefined || value === "") return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
   // ---------- Recent takes (localStorage) ----------
 
   function getRecent() {
     try {
-      return JSON.parse(localStorage.getItem("tabula:recent") || "[]");
+      const parsed = JSON.parse(localStorage.getItem("tabula:recent") || "[]");
+      return Array.isArray(parsed) ? parsed : [];
     } catch {
       return [];
     }
@@ -584,32 +707,32 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
   function renderRecent() {
     const arr = getRecent();
+    recentSection.hidden = arr.length === 0;
     recentList.hidden = arr.length === 0;
     recentList.innerHTML = arr
-      .map(
-        (r) =>
-          `<button type="button" class="recent-item" data-id="${escapeHtml(
-            r.id
-          )}" title="${escapeHtml(r.name)}" aria-label="Open ${escapeHtml(r.name)}">
-            <span class="recent-name">${escapeHtml(r.name)}</span>
-            <span class="recent-meta">${r.notes} notes · ${formatTime(
-            (r.duration || 0) * 1000
-          )}</span>
-          </button>`
-      )
+      .map((entry) => {
+        const dead = Number(entry.dead_notes) || 0;
+        const detail = [`${entry.notes || 0} notes`];
+        if (dead > 0) detail.push(`${dead} dead`);
+        return `<button type="button" class="recent-item" data-id="${escapeHtml(
+          entry.id
+        )}" title="${escapeHtml(entry.name)}" aria-label="Open ${escapeHtml(entry.name)}">
+            <span class="recent-name">${escapeHtml(entry.name)}</span>
+            <span class="recent-meta">${escapeHtml(detail.join(" · "))}</span>
+          </button>`;
+      })
       .join("");
-    recentList.querySelectorAll(".recent-item").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const id = btn.dataset.id;
-        const entry = getRecent().find((r) => r.id === id);
-        if (!entry) return;
-        restoreRecent(entry);
+    recentList.querySelectorAll(".recent-item").forEach((button) => {
+      button.addEventListener("click", () => {
+        const id = button.dataset.id;
+        const entry = getRecent().find((item) => item.id === id);
+        if (entry) restoreRecent(entry);
       });
     });
   }
 
   function addRecent(entry) {
-    let arr = getRecent().filter((r) => r.id !== entry.id);
+    const arr = getRecent().filter((item) => item.id !== entry.id);
     arr.unshift(entry);
     setRecent(arr);
     renderRecent();
@@ -617,17 +740,28 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
   function restoreRecent(entry) {
     if (busy) return;
+    if (!entry.urls || !entry.urls.gp5) {
+      showError("That take is no longer available.", "The saved job has no tab file.");
+      return;
+    }
+    const summary = {
+      notes: Number(entry.notes) || 0,
+      capo: Number(entry.capo) || 0,
+      open_notes: Number(entry.open_notes) || 0,
+      high_notes: Number(entry.high_notes) || 0,
+      dropped: Number(entry.dropped) || 0,
+      dead_notes: Number(entry.dead_notes) || 0,
+      hp: Number(entry.hp) || 0,
+      match_rate: entry.match_rate,
+      offset_sec: entry.offset_sec,
+      exported: { duration: Number(entry.duration) || 0, skipped: 0 },
+    };
     const payload = {
-      urls: entry.urls,
-      summary: {
-        notes: entry.notes || 0,
-        capo: entry.capo || 0,
-        open_notes: entry.open_notes || 0,
-        high_notes: entry.high_notes || 0,
-        dropped: entry.dropped || 0,
-        exported: { duration: entry.duration || 0, skipped: 0 },
-      },
+      id: entry.id,
       title: entry.name,
+      files: entry.files || {},
+      urls: entry.urls,
+      summary,
       elapsed: 0,
     };
     lastFileName = entry.name;
@@ -635,6 +769,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     populateSession(payload, entry.name);
     setState("score");
     loadScore(payload);
+    updateConvertAvailability();
   }
 
   // ---------- End recent takes ----------
@@ -642,23 +777,48 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   function populateSession(payload, fileName) {
     const summary = payload.summary || {};
     const exported = summary.exported || {};
+    const files = payload.files || {};
     const notes = Number(summary.notes) || 0;
     const openNotes = Number(summary.open_notes) || 0;
     const highNotes = Number(summary.high_notes) || 0;
+    const deadNotes = Number(summary.dead_notes) || 0;
+    const hpCount = Number(summary.hp) || 0;
     const dropped = Number(summary.dropped) || 0;
     const capo = Number(summary.capo) || 0;
 
-    sessionFile.textContent = fileName || payload.title || "Uploaded MIDI";
-    sessionFile.title = sessionFile.textContent;
+    const title = payload.title || fileName || "Take";
+    sessionFile.textContent = title;
+    sessionFile.title = title;
+    const sourceNames = [files.audio, files.midi].filter(Boolean);
+    sessionSource.textContent = sourceNames.join("  +  ");
+    sessionSource.title = sessionSource.textContent;
+    sessionSource.hidden = sourceNames.length === 0;
 
     setFact(factCapo, capo > 0 ? `Fret ${capo}` : "None");
     setFact(factNotes, notes ? notes.toLocaleString() : "—");
+    const matchRate = finiteNumber(summary.match_rate);
+    const hasAlignment = matchRate !== null;
+    setFact(
+      factDead,
+      hasAlignment ? deadNotes.toLocaleString() : "—",
+      hasAlignment
+        ? "Percussive dead notes inserted from the recording."
+        : "Only available for audio + MIDI takes."
+    );
+    setFact(
+      factHp,
+      hasAlignment ? hpCount.toLocaleString() : "—",
+      hasAlignment
+        ? "Hammer-ons and pull-offs inferred between notes on the same string."
+        : "Only available for audio + MIDI takes."
+    );
     setFact(
       factOpen,
       notes ? `${openNotes.toLocaleString()} · ${percent(summary.open_rate, openNotes, notes)}` : "—",
       "Notes played on open strings after the capo."
     );
-    setFact(factMax, Number.isFinite(Number(summary.max_fret)) ? String(summary.max_fret) : "—");
+    const maxFret = finiteNumber(summary.max_fret);
+    setFact(factMax, maxFret === null ? "—" : String(maxFret));
     setFact(
       factHigh,
       notes ? `${highNotes.toLocaleString()} · ${percent(summary.high_rate, highNotes, notes)}` : "—",
@@ -671,6 +831,17 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
         ? "Inner chord tones removed to keep the voicing playable."
         : "No chord tones were dropped."
     );
+    if (hasAlignment) {
+      const offset = Number(summary.offset_sec);
+      const offsetText = Number.isFinite(offset) ? ` · offset ${offset >= 0 ? "+" : ""}${offset.toFixed(3)}s` : "";
+      setFact(
+        factMatch,
+        `${(Math.max(0, Math.min(1, matchRate)) * 100).toFixed(1)}%`,
+        `Audio onsets matched to MIDI notes${offsetText}.`
+      );
+    } else {
+      setFact(factMatch, "—", "Only available for audio + MIDI takes.");
+    }
 
     const duration = Number(exported.duration);
     lastEndTime = Number.isFinite(duration) && duration > 0 ? duration * 1000 : 0;
@@ -678,7 +849,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     currentTimeEl.textContent = "0:00";
     seek.value = "0";
 
-    const slug = slugify(fileName || payload.title || "tabula");
+    const slug = slugify(title || "tabula");
     downloadGp5.href = payload.urls.gp5;
     downloadGp5.setAttribute("download", `${slug}.gp5`);
     downloadMidi.href = payload.urls.midi;
@@ -687,12 +858,28 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     downloadTab.setAttribute("download", `${slug}_tab.txt`);
     downloadReport.href = payload.urls.report;
     downloadReport.setAttribute("download", `${slug}_report.json`);
+    if (payload.urls.audio) {
+      downloadAudio.href = payload.urls.audio;
+      downloadAudio.setAttribute("download", `${slug}_recording.wav`);
+      downloadAudio.hidden = false;
+    } else {
+      downloadAudio.hidden = true;
+      downloadAudio.removeAttribute("href");
+    }
 
     const notesOut = [];
     const skipped = Number(exported.skipped) || 0;
     if (skipped > 0) {
       notesOut.push(
         `${skipped} note${skipped === 1 ? "" : "s"} could not be placed in the Guitar Pro file; the text tab is complete.`
+      );
+    }
+    if (deadNotes > 0) {
+      notesOut.push(`${deadNotes} dead note${deadNotes === 1 ? "" : "s"} added.`);
+    }
+    if (hpCount > 0) {
+      notesOut.push(
+        `${hpCount} hammer-on/pull-off${hpCount === 1 ? "" : "s"} inferred.`
       );
     }
     const elapsed = Number(payload.elapsed);
@@ -720,26 +907,31 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
       }
     }
     setPlaying(false);
-    sessionPanel.hidden = true;
-    setBusy(true);
 
     currentBar = -1;
     lastTick = 0;
     lastEndTick = 0;
-    lastEndTime = 0;
+    const duration = Number((payload.summary && payload.summary.exported || {}).duration);
+    lastEndTime = Number.isFinite(duration) && duration > 0 ? duration * 1000 : 0;
     audioProblem = "";
     barReadout.textContent = "Bar —";
-    setPlaying(false);
+    totalTimeEl.textContent = formatTime(lastEndTime);
+    currentTimeEl.textContent = "0:00";
+    seek.value = "0";
     updatePlayAvailability();
     scoreLoading.hidden = false;
     setPlayerStatus("Laying out the tab…");
+
+    if (!api) {
+      showError("The tab renderer is not ready.", "alphaTab has not initialized.");
+      return;
+    }
 
     let loaded = false;
     try {
       loaded = api.load(payload.urls.gp5);
     } catch (error) {
       showError("The tab could not be opened.", error && error.message ? error.message : String(error));
-      setBusy(false);
       return;
     }
     if (!loaded) {
@@ -747,35 +939,41 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
         "The tab could not be opened.",
         "alphaTab refused to load the generated Guitar Pro file."
       );
-      setBusy(false);
     }
   }
 
   function handleConverted(payload) {
-    const fileName = lastFileName || (currentFile && currentFile.name) || "";
+    const fileName = payload.title || lastFileName || "";
+    lastFileName = fileName;
     populateSession(payload, fileName);
     setState("score");
     loadScore(payload);
     lastConverted = true;
+    updateConvertAvailability();
 
-    // Remember the take for recent-takes restore.
     const summary = payload.summary || {};
     const exported = summary.exported || {};
     addRecent({
-      id: payload.job_id || slugify(fileName),
-      name: fileName || payload.title || "tabula",
+      id: payload.id || slugify(fileName),
+      name: fileName || "tabula",
       date: Date.now(),
       duration: Number(exported.duration) || 0,
       notes: Number(summary.notes) || 0,
       capo: Number(summary.capo) || 0,
       open_notes: Number(summary.open_notes) || 0,
       high_notes: Number(summary.high_notes) || 0,
+      dead_notes: Number(summary.dead_notes) || 0,
+      hp: Number(summary.hp) || 0,
+      match_rate: summary.match_rate,
+      offset_sec: summary.offset_sec,
       dropped: Number(summary.dropped) || 0,
+      files: payload.files || {},
       urls: {
         gp5: payload.urls.gp5,
         midi: payload.urls.midi,
         tab: payload.urls.tab,
         report: payload.urls.report,
+        audio: payload.urls.audio,
       },
     });
 
@@ -790,11 +988,15 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   }
 
   async function convertFile() {
-    if (!currentFile || busy || !serverReady) {
+    if (busy || !serverReady) {
+      return;
+    }
+    if (!slots.audio.file || !slots.midi.file) {
+      setStatus("Add the recording and its MIDI transcription first.");
       return;
     }
 
-    lastFileName = currentFile.name;
+    lastFileName = slots.audio.file.name.replace(/\.[^.]+$/, "") || slots.midi.file.name;
     setStatus("");
     if (api) {
       try {
@@ -804,12 +1006,12 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
       }
     }
     setPlaying(false);
-    sessionPanel.hidden = true;
     setState("loading");
     setBusy(true);
 
     const body = new FormData();
-    body.append("file", currentFile, currentFile.name);
+    body.append("audio", slots.audio.file, slots.audio.file.name);
+    body.append("midi", slots.midi.file, slots.midi.file.name);
 
     const signal = abortController && abortController.signal;
 
@@ -845,7 +1047,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
       handleConverted(data);
     } catch (error) {
       if (error.name === "AbortError") {
-        setStatus("Conversion cancelled.");
+        setStatus("Conversion cancelled.", "info");
         setState("empty");
         return;
       }
@@ -892,29 +1094,32 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
       } catch {}
     }
     setPlaying(false);
-    currentFile = null;
-    midiInput.value = "";
-    selectedFile.hidden = true;
-    selectedName.textContent = "";
-    selectedSize.textContent = "";
-    dropTitle.textContent = "Drop a MIDI here";
-    dropHint.textContent = `or browse · ${MAX_MB} MB max`;
-    dropZone.classList.remove("has-file");
-    convertButton.disabled = true;
-    convertLabel.textContent = "Make tab";
-    lastConverted = false;
+    resetSlot("audio");
+    resetSlot("midi");
     setStatus("");
+    lastConverted = false;
+    lastFileName = "";
+    scoreReady = false;
+    audioProblem = "";
+    score = null;
+    bars = [];
+    currentBar = -1;
+    lastTick = 0;
+    lastEndTick = 0;
+    lastEndTime = 0;
     setState("empty");
+    updateConvertAvailability();
   }
 
   function seekBySeconds(delta) {
-    if (!api || !scoreReady || !lastEndTick) return;
+    if (!api || !scoreReady || !lastEndTick || !lastEndTime) return;
     seeking = true;
-    const fraction = Number(seek.value) / 1000;
-    const newTick = Math.round(((fraction * lastEndTick + delta) / lastEndTick) * 1000);
-    seek.value = String(Math.max(0, Math.min(1000, newTick)));
-    const tick = Math.round((Number(seek.value) / 1000) * lastEndTick);
-    currentTimeEl.textContent = formatTime((tick / Math.max(1, lastEndTick)) * lastEndTime);
+    const now = (lastTick / Math.max(1, lastEndTick)) * lastEndTime;
+    const targetMs = Math.max(0, Math.min(lastEndTime, now + delta * 1000));
+    const section = Math.max(0, Math.min(1000, Math.round((targetMs / lastEndTime) * 1000)));
+    seek.value = String(section);
+    const tick = Math.round((section / 1000) * lastEndTick);
+    currentTimeEl.textContent = formatTime(targetMs);
     updateMeasure(tick, true);
     window.setTimeout(() => {
       if (!seeking) return;
@@ -948,62 +1153,134 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     return false;
   }
 
+  async function loadJobFromUrl(jobParam, params) {
+    const jobId = jobParam;
+    try {
+      const reportRes = await fetch(`/api/jobs/${jobId}/report.json`, {
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+      });
+      if (!reportRes.ok) {
+        throw new Error(`The job report returned HTTP ${reportRes.status}.`);
+      }
+      const report = await reportRes.json();
+      const files = report.files || {};
+      const summary = report.summary || {
+        capo: Number(report.capo) || 0,
+        notes: Number(report.final_notes) || 0,
+        open_notes: 0,
+        high_notes: 0,
+        dropped: Array.isArray(report.dropped_chord_tones) ? report.dropped_chord_tones.length : 0,
+        dead_notes: 0,
+        hp: 0,
+        exported: report.exported || {},
+      };
+      const title = files.title || report.title || `Take ${jobId.slice(0, 8)}`;
+      const payload = {
+        id: jobId,
+        title,
+        files,
+        elapsed: 0,
+        summary,
+        urls: {
+          gp5: `/api/jobs/${jobId}/score.gp5`,
+          midi: `/api/jobs/${jobId}/final.mid`,
+          tab: `/api/jobs/${jobId}/final_tab.txt`,
+          report: `/api/jobs/${jobId}/report.json`,
+        },
+      };
+      if (files.audio) {
+        payload.urls.audio = `/api/jobs/${jobId}/source.wav`;
+      }
+
+      lastFileName = title;
+      lastConverted = true;
+      populateSession(payload, title);
+      setState("score");
+      loadScore(payload);
+      updateConvertAvailability();
+
+      const playParam = params.get("play");
+      const seekParam = params.get("seek");
+      if (playParam === "1") {
+        const ready = window.setInterval(() => {
+          if (api && scoreReady && api.isReadyForPlayback) {
+            window.clearInterval(ready);
+            if (seekParam) {
+              const fraction = Math.max(0, Math.min(1, Number(seekParam)));
+              seek.value = String(Math.round(fraction * 1000));
+              const tick = Math.round(fraction * lastEndTick);
+              currentTimeEl.textContent = formatTime(fraction * lastEndTime);
+              updateMeasure(tick, true);
+            }
+            applyPlaybackSpeed();
+            applyVolume();
+            api.play();
+            setPlaying(true);
+          }
+        }, 200);
+      }
+    } catch (error) {
+      showError(
+        "That take could not be loaded.",
+        error && error.message ? error.message : String(error)
+      );
+    }
+  }
+
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     convertFile();
   });
 
+  audioInput.addEventListener("change", () => {
+    chooseFiles(audioInput.files, "audio");
+    audioInput.value = "";
+  });
+
   midiInput.addEventListener("change", () => {
-    const file = midiInput.files && midiInput.files[0];
-    if (file) {
-      chooseFile(file);
-    }
+    chooseFiles(midiInput.files, "midi");
     midiInput.value = "";
   });
 
-  clearFileButton.addEventListener("click", clearFile);
+  audioClear.addEventListener("click", () => clearSlot("audio"));
+  midiClear.addEventListener("click", () => clearSlot("midi"));
 
-  ["dragenter", "dragover"].forEach((type) => {
-    dropZone.addEventListener(type, (event) => {
+  Object.values(slots).forEach((slot) => {
+    ["dragenter", "dragover"].forEach((type) => {
+      slot.row.addEventListener(type, (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!busy) {
+          slot.row.classList.add("is-dragging");
+        }
+      });
+    });
+    ["dragleave", "dragend"].forEach((type) => {
+      slot.row.addEventListener(type, (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        slot.row.classList.remove("is-dragging");
+      });
+    });
+    slot.row.addEventListener("drop", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      if (!busy) {
-        dropZone.classList.add("is-dragging");
-      }
+      slot.row.classList.remove("is-dragging");
+      if (busy) return;
+      chooseFiles(event.dataTransfer && event.dataTransfer.files, slot.kind);
     });
-  });
-
-  ["dragleave", "dragend"].forEach((type) => {
-    dropZone.addEventListener(type, (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      dropZone.classList.remove("is-dragging");
-    });
-  });
-
-  dropZone.addEventListener("drop", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    dropZone.classList.remove("is-dragging");
-    if (busy) {
-      return;
-    }
-    const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
-    if (file) {
-      chooseFile(file);
-    }
   });
 
   window.addEventListener("dragover", (event) => event.preventDefault());
   window.addEventListener("drop", (event) => event.preventDefault());
 
   retryButton.addEventListener("click", () => {
-    setState("empty");
-    midiInput.click();
+    startOver();
+    audioInput.click();
   });
 
   startOverButton.addEventListener("click", startOver);
-
   cancelButton.addEventListener("click", cancelConversion);
 
   playButton.addEventListener("click", () => {
@@ -1016,15 +1293,20 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     }
     if (isPlaying) {
       api.pause();
-      setPlaying(false);
       return;
     }
     if (lastEndTick > 0 && lastTick >= lastEndTick - 1) {
       api.tickPosition = bars.length ? bars[0].start : 0;
     }
     applyPlaybackSpeed();
-    api.play();
-    setPlaying(true);
+    applyVolume();
+    try {
+      api.play();
+      setPlaying(true);
+      setPlayerStatus("");
+    } catch (error) {
+      setPlayerStatus("Playback could not start.");
+    }
   });
 
   prevBarButton.addEventListener("click", () => goToBar(-1));
@@ -1044,6 +1326,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     isMuted = false;
     masterVolume = Number(volumeSlider.value);
     applyVolume();
+    updatePlayAvailability();
   });
 
   seek.addEventListener("input", () => {
@@ -1082,7 +1365,11 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   });
 
   window.addEventListener("keydown", (event) => {
-    if (isInteractiveInput(document.activeElement)) return;
+    const active = document.activeElement;
+    const nativeSpace = event.key === " "
+      && active
+      && (active.tagName === "BUTTON" || active.tagName === "A" || active.tagName === "SUMMARY");
+    if (nativeSpace || isInteractiveInput(active)) return;
     const key = event.key.toLowerCase();
     switch (key) {
       case " ":
@@ -1124,78 +1411,18 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     }
   });
 
+  setFollow(followEnabled);
+  setLoop(loopEnabled);
+  initAlphaTab();
+  checkHealth();
+  renderRecent();
+
   const params = new URLSearchParams(location.search);
   const jobParam = params.get("job");
   if (jobParam) {
     setState("loading");
-    loadJobFromUrl(jobParam, params).catch((error) => {
-      showError("Could not load job.", String(error));
-      setState("empty");
-    });
+    loadJobFromUrl(jobParam, params);
   } else {
     setState("empty");
   }
-  initAlphaTab();
-  checkHealth();
-  renderRecent();
 })();
-
-async function loadJobFromUrl(jobParam, params) {
-  try {
-    const reportRes = await fetch(`/api/jobs/${jobId}/report.json`);
-    const report = reportRes.ok ? await reportRes.json() : {};
-    const summary = report.summary || {};
-    const exported = summary.exported || {};
-    const duration = Number(exported.duration) || 0;
-    const notes = Number(summary.notes) || 0;
-
-    const payload = {
-      job_id: jobId,
-      title: `Job ${jobId.slice(0, 8)}`,
-      elapsed: 0,
-      summary: {
-        notes,
-        capo: Number(summary.capo) || 0,
-        open_notes: Number(summary.open_notes) || 0,
-        high_notes: Number(summary.high_notes) || 0,
-        dropped: Number(summary.dropped) || 0,
-        exported: { duration, skipped: Number(exported.skipped) || 0 },
-      },
-      urls: {
-        gp5: `/api/jobs/${jobId}/score.gp5`,
-        midi: `/api/jobs/${jobId}/upload.mid`,
-        tab: `/api/jobs/${jobId}/final_tab.txt`,
-        report: `/api/jobs/${jobId}/report.json`,
-      },
-    };
-
-    lastFileName = payload.title;
-    lastConverted = true;
-    populateSession(payload, payload.title);
-    setState("score");
-    loadScore(payload);
-
-    const playParam = params.get("play");
-    const seekParam = params.get("seek");
-    if (playParam === "1") {
-      const ready = setInterval(() => {
-        if (api && scoreReady && api.isReadyForPlayback) {
-          clearInterval(ready);
-          if (seekParam) {
-            const frac = Math.max(0, Math.min(1, Number(seekParam)));
-            seek.value = String(Math.round(frac * 1000));
-            const tick = Math.round(frac * lastEndTick);
-            currentTimeEl.textContent = formatTime(frac * lastEndTime);
-            updateMeasure(tick, true);
-          }
-          applyPlaybackSpeed();
-          api.play();
-          setPlaying(true);
-        }
-      }, 200);
-    }
-  } catch (error) {
-    showError("Could not load job.", String(error));
-    setState("empty");
-  }
-}
