@@ -15,6 +15,8 @@ New to the project? Read:
 
 * [`docs/FORMATS.md`](docs/FORMATS.md) — every input/output format.
 * [`docs/STITCHING.md`](docs/STITCHING.md) — audio dead notes and articulations on top of MIDI-to-tab.
+* [`docs/LABELING.md`](docs/LABELING.md) — browser labeler for dead notes, bass flicks, and body percussion.
+* [`docs/EVENT_MODEL.md`](docs/EVENT_MODEL.md) — optional tiny XGBoost event model.
 * [`docs/DATA_FORMAT.md`](docs/DATA_FORMAT.md) — the training data contract.
 * [`docs/VERIFICATION.md`](docs/VERIFICATION.md) — what was tested and what
   still fails.
@@ -93,6 +95,7 @@ On the machine that has the checkpoint and vocabulary:
 ```
 
 Open <http://127.0.0.1:8000>, upload a `.mid`/`.midi`, and wait for the score.
+The labeler lives at <http://127.0.0.1:8000/label>.
 A conversion takes roughly 20–30 s on the 3070. Job files live under
 `webapp/jobs/<id>/` (`upload.mid`, `score.gp5`, `final.mid`,
 `final_tab.txt`, `report.json`); that directory is local data and is ignored

@@ -88,7 +88,10 @@ After editing `articulations.json`, rerun only the last stage:
 2. Detect percussive onsets on the percussive stem.
 3. Measure spectral flatness, centroid, bandwidth, ZCR, RMS, HPSS harmonic
    ratio, and `pyin` voiced probability around each onset.
-4. Convert onsets to PPQ-960 ticks via the MIDI tempo map.
+4. Convert onsets to PPQ-960 ticks via the MIDI tempo map.  The pipeline's
+   internal PPQ is 960; `final.mid` may keep another resolution (commonly 480).
+   `tick_to_seconds` scales by `pm.resolution` and interpolates fractional
+   MIDI ticks, so no song or file is assumed to be at 480 or 960 PPQ.
 5. Match each onset to a MIDI note onset within half a grid cell (default).
    The pre-reconciliation audio class, confidence, and strength are preserved
    on the matched event (`audio_class`, `audio_confidence`,
@@ -204,6 +207,30 @@ model-only rules.  Every candidate, accepted or rejected, is written to
 `hp_review.json` with its metrics and rejection reason.  Disable inference
 entirely with `--no-auto-hp`.
 
+## Optional event model
+
+The hand-built non-note score remains the default.  A tiny XGBoost model can be
+trained from browser-labeller sessions and enabled explicitly:
+
+```bash
+python scripts/stitch_tab.py \
+  --audio take.wav \
+  --midi take.mid \
+  --out-dir out/take \
+  --event-model data/models/events
+```
+
+The model has independent heads for `dead_string`, `bass_flick`, and
+`body_percussion` (plus an auxiliary `pitched` head).  Dead-string predictions
+can replace a matched note; bass flicks and body percussion are additive and
+place an `x` on the lowest free string without deleting the melody note.  Body
+percussion is written as a dead note with a staccato dot (`x.`).  Outputs:
+
+* `event_model_predictions.json` — per-onset head probabilities,
+* `event_model_review.json` — near-threshold candidates.
+
+See [LABELING.md](LABELING.md) and [EVENT_MODEL.md](EVENT_MODEL.md).
+
 ## Manual overlay
 
 `articulations.json` is tick-based:
@@ -264,6 +291,7 @@ The exporter is a feature-aware copy of the web app exporter.  It writes:
 * capo and standard tuning,
 * nylon guitar program 24,
 * `NoteType.dead` for `x`,
+* `NoteEffect.staccato` for body-percussion `x.` events,
 * `NoteEffect.hammer`, `slides`, `vibrato`, and `bend`.
 
 A voice cannot sound two notes on one string at once.  If `final.json` contains

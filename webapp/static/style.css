@@ -205,6 +205,18 @@ a:hover {
   white-space: nowrap;
 }
 
+.topbar-link {
+  margin-right: 10px;
+  color: var(--accent-ink);
+  font-weight: 600;
+  text-decoration: none;
+  text-underline-offset: 3px;
+}
+
+.topbar-link:hover {
+  text-decoration: underline;
+}
+
 .server-dot {
   width: 7px;
   height: 7px;

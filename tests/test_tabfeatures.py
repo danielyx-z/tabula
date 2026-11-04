@@ -37,6 +37,7 @@ from tabfeatures.ticks import (  # noqa: E402
     parse_grid,
     seconds_to_tick,
     snap_tick,
+    tick_to_seconds,
 )
 from webapp.gp5 import build_gp5 as build_legacy_gp5  # noqa: E402
 
@@ -76,6 +77,13 @@ def test_seconds_to_tick_uses_tempo_map(tmp_path: Path) -> None:
     assert seconds_to_tick(pm, 0.0) == 0
     # 120 BPM: one quarter note is 0.5 s = 960 ticks at PPQ 960.
     assert seconds_to_tick(pm, 0.5) == 960
+
+
+@pytest.mark.parametrize("resolution", [480, 960, 1024])
+def test_tick_conversion_uses_midi_resolution(resolution: int) -> None:
+    pm = pretty_midi.PrettyMIDI(resolution=resolution, initial_tempo=120.0)
+    assert seconds_to_tick(pm, 0.5) == 960
+    assert tick_to_seconds(pm, 960) == pytest.approx(0.5)
 
 
 def test_dead_notes_use_next_free_low_string() -> None:

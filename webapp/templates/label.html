@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Tabula — label audio</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2320231e'/%3E%3Cpath d='M7 9h18M7 13h18M7 17h18M7 21h18M7 25h18' stroke='%23f3eee3' stroke-width='1.2' opacity='.65'/%3E%3Ccircle cx='13' cy='17' r='2.6' fill='%23c2663d'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='labeler.css') }}">
+</head>
+<body class="labeler-page">
+  <div class="labeler-shell">
+    <header class="labeler-topbar">
+      <a class="wordmark" href="/" aria-label="Tabula, home">
+        <svg class="wordmark-mark" viewBox="0 0 30 34" aria-hidden="true">
+          <path d="M4 7h22M4 11h22M4 15h22M4 19h22M4 23h22M4 27h22" />
+          <circle cx="12" cy="19" r="2.4" />
+          <path class="stem" d="M14 19V9" />
+        </svg>
+        <span>tabula</span>
+      </a>
+      <div class="labeler-topbar-right">
+        <span class="labeler-kicker">event labels</span>
+        <a class="topbar-link" href="/">back to tab builder</a>
+      </div>
+    </header>
+
+    <main class="labeler-main">
+      <section id="label-setup" class="labeler-panel labeler-setup">
+        <p class="labeler-eyebrow">training data</p>
+        <h1>Label the attacks.</h1>
+        <p class="labeler-lede">
+          Pick an audio file. It is split into short onset windows, then you
+          listen once and press one key. Labels stay on this machine.
+        </p>
+
+        <form id="label-upload-form" class="labeler-upload">
+          <label class="labeler-drop" for="label-audio-file">
+            <span class="labeler-drop-title" id="label-file-title">Choose audio</span>
+            <span class="labeler-drop-meta">WAV, FLAC, OGG, MP3 · up to {{ max_audio_mb }} MB</span>
+            <input id="label-audio-file" type="file" accept="audio/*,.wav,.flac,.ogg,.oga,.mp3,.m4a,.aac,.aif,.aiff,.opus">
+          </label>
+          <button type="submit" id="label-upload-button" class="button button-primary" disabled>
+            <span id="label-upload-label">Split and label</span>
+          </button>
+          <p id="label-status" class="form-status" role="status" aria-live="polite"></p>
+        </form>
+
+        <div id="label-recent" class="labeler-recent" hidden>
+          <p class="labeler-eyebrow">resume</p>
+          <div id="label-recent-list" class="labeler-recent-list"></div>
+        </div>
+      </section>
+
+      <section id="label-session" class="labeler-panel labeler-session" hidden>
+        <div class="labeler-session-head">
+          <div>
+            <p class="labeler-eyebrow">now labeling</p>
+            <h2 id="label-session-name">—</h2>
+          </div>
+          <div class="labeler-session-actions">
+            <a id="label-download" class="export-link" href="#" download>Export labels</a>
+            <a class="export-link" href="/label">New session</a>
+          </div>
+        </div>
+
+        <div class="labeler-progress" aria-live="polite">
+          <span id="label-progress-text">0 / 0</span>
+          <span id="label-time-text">—</span>
+        </div>
+        <div class="labeler-progress-track" aria-hidden="true">
+          <span id="label-progress-bar"></span>
+        </div>
+
+        <audio id="label-audio" preload="auto"></audio>
+
+        <div class="labeler-now">
+          <p class="labeler-now-label">Onset</p>
+          <p id="label-now-time" class="labeler-now-time">—</p>
+          <p id="label-now-note" class="labeler-now-note">Press a number to label.</p>
+        </div>
+
+        <div class="labeler-keys" role="group" aria-label="Event labels">
+          <button type="button" class="labeler-key" data-label="pitched">
+            <span class="labeler-keycap">1</span>
+            <span>Pitched</span>
+          </button>
+          <button type="button" class="labeler-key" data-label="dead_string">
+            <span class="labeler-keycap">2</span>
+            <span>Dead string</span>
+          </button>
+          <button type="button" class="labeler-key" data-label="bass_flick">
+            <span class="labeler-keycap">3</span>
+            <span>Bass flick</span>
+          </button>
+          <button type="button" class="labeler-key" data-label="body_percussion">
+            <span class="labeler-keycap">4</span>
+            <span>Body percussion</span>
+          </button>
+        </div>
+
+        <div class="labeler-controls">
+          <button type="button" id="label-replay" class="button button-quiet">Replay <kbd>space</kbd></button>
+          <button type="button" id="label-skip" class="button button-quiet">Skip <kbd>s</kbd></button>
+          <button type="button" id="label-undo" class="button button-quiet">Undo <kbd>u</kbd></button>
+        </div>
+
+        <p class="labeler-hint">
+          For a flick plus melody, press <strong>3</strong>. For body percussion
+          plus melody, press <strong>4</strong>. The melody note stays in the tab.
+        </p>
+        <p id="label-session-status" class="form-status" role="status" aria-live="polite"></p>
+      </section>
+    </main>
+  </div>
+
+  <script src="{{ url_for('static', filename='labeler.js') }}"></script>
+</body>
+</html>

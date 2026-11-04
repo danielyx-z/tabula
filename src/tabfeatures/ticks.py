@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 PPQ = 960
@@ -54,9 +55,21 @@ def seconds_to_tick(pm: Any, seconds: float) -> int:
 
 
 def tick_to_seconds(pm: Any, tick: int) -> float:
-    """Convert PPQ-960 ticks back to seconds using the MIDI tempo map."""
+    """Convert PPQ-960 ticks back to seconds using the MIDI tempo map.
+
+    ``final.mid`` keeps the MIDI file's own resolution (commonly 480 PPQ),
+    while the pipeline stores times at PPQ 960.  A PPQ-960 tick can therefore
+    fall halfway between two MIDI-file ticks; interpolate instead of rounding
+    so H/P and dead-note timing stays sample-accurate.
+    """
     file_tick = float(tick) * pm.resolution / PPQ
-    return float(pm.tick_to_time(file_tick))
+    lower = int(math.floor(file_tick))
+    fraction = file_tick - lower
+    seconds = float(pm.tick_to_time(lower))
+    if fraction <= 1e-12:
+        return seconds
+    next_seconds = float(pm.tick_to_time(lower + 1))
+    return seconds + fraction * (next_seconds - seconds)
 
 
 def snap_tick(tick: int | float, grid: int) -> int:

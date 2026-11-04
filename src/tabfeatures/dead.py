@@ -196,13 +196,17 @@ def merge_dead_notes(
     *groups: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Merge dead-note groups, keeping the highest-confidence entry per slot."""
+    def priority(note: dict[str, Any]) -> tuple[int, float]:
+        # A body-percussion marker is more specific than a plain dead note;
+        # keep its staccato dot when two detectors hit the same slot.
+        kind_priority = 1 if note.get("kind") == "body_percussion" else 0
+        return kind_priority, float(note.get("confidence", 0.0) or 0.0)
+
     merged: dict[tuple[int, int], dict[str, Any]] = {}
     for group in groups:
         for note in group:
             key = (int(note["t"]), int(note["s"]))
             previous = merged.get(key)
-            if previous is None or float(note.get("confidence", 0.0) or 0.0) > float(
-                previous.get("confidence", 0.0) or 0.0
-            ):
+            if previous is None or priority(note) > priority(previous):
                 merged[key] = note
     return [merged[key] for key in sorted(merged)]

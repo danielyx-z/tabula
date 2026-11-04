@@ -1,0 +1,340 @@
+.labeler-page {
+  overflow: auto;
+}
+
+.labeler-shell {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.labeler-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 22px clamp(20px, 4vw, 52px);
+  border-bottom: 1px solid var(--line);
+  background: rgba(246, 241, 232, 0.86);
+  backdrop-filter: blur(10px);
+}
+
+.labeler-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 13px;
+}
+
+.labeler-kicker,
+.labeler-eyebrow {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.labeler-main {
+  width: min(920px, 100%);
+  margin: 0 auto;
+  padding: clamp(28px, 5vw, 64px) clamp(20px, 4vw, 36px) 80px;
+}
+
+.labeler-panel {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sheet);
+  padding: clamp(24px, 4vw, 44px);
+}
+
+.labeler-setup h1 {
+  margin: 8px 0 10px;
+  font-family: var(--font-serif);
+  font-size: clamp(38px, 7vw, 64px);
+  font-weight: 400;
+  letter-spacing: -0.03em;
+  line-height: 0.98;
+}
+
+.labeler-lede {
+  max-width: 620px;
+  margin: 0 0 30px;
+  color: var(--ink-soft);
+  font-size: 16px;
+}
+
+.labeler-upload {
+  display: grid;
+  gap: 14px;
+  max-width: 620px;
+}
+
+.labeler-drop {
+  display: grid;
+  gap: 4px;
+  padding: 24px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+  background: var(--canvas);
+  cursor: pointer;
+}
+
+.labeler-drop:hover {
+  border-color: var(--accent);
+}
+
+.labeler-drop input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.labeler-drop-title {
+  font-weight: 700;
+}
+
+.labeler-drop-meta {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.labeler-session-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.labeler-session h2 {
+  margin: 6px 0 0;
+  font-family: var(--font-serif);
+  font-size: clamp(28px, 4vw, 44px);
+  font-weight: 400;
+  letter-spacing: -0.02em;
+}
+
+.labeler-progress {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 26px;
+  color: var(--muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.labeler-progress-track {
+  height: 6px;
+  margin-top: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--canvas-deep);
+}
+
+.labeler-progress-track span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 180ms ease;
+}
+
+.labeler-now {
+  display: grid;
+  place-items: center;
+  gap: 2px;
+  margin: 30px 0 24px;
+  padding: 28px 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(244, 227, 207, 0.35), transparent 70%),
+    var(--canvas);
+  text-align: center;
+}
+
+.labeler-now-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.labeler-now-time {
+  margin: 2px 0;
+  font-family: var(--font-serif);
+  font-size: clamp(54px, 10vw, 88px);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.labeler-now-note {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+
+.labeler-keys {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.labeler-key {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 92px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink);
+  background: var(--surface);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.labeler-key:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  transform: translateY(-1px);
+}
+
+.labeler-key:active {
+  transform: translateY(1px);
+}
+
+.labeler-keycap {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  color: var(--surface);
+  background: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.labeler-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.labeler-controls kbd,
+.labeler-hint kbd {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--muted);
+  background: var(--canvas);
+  font-size: 11px;
+}
+
+.labeler-hint {
+  margin: 22px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.labeler-session .form-status {
+  margin-top: 12px;
+}
+
+.labeler-session .form-status.is-error,
+.labeler-upload .form-status.is-error {
+  color: var(--red);
+}
+
+#label-audio {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  .labeler-topbar {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .labeler-topbar-right {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .labeler-keys {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .labeler-session-head {
+    flex-direction: column;
+  }
+}
+
+.labeler-recent {
+  margin-top: 34px;
+  padding-top: 22px;
+  border-top: 1px solid var(--line);
+}
+
+.labeler-recent-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.labeler-recent-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  background: var(--canvas);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.labeler-recent-item:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.labeler-recent-name {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.labeler-recent-progress {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.labeler-session-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}

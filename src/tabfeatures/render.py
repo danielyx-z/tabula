@@ -145,7 +145,15 @@ def render_tab_with_features(
         )
 
     for dead_note in sorted(dead, key=lambda d: (int(d["t"]), int(d["s"]))):
-        write_cell(int(dead_note["s"]), int(dead_note["t"]), "x")
+        is_body = bool(
+            dead_note.get("staccato")
+            or dead_note.get("kind") == "body_percussion"
+        )
+        write_cell(
+            int(dead_note["s"]),
+            int(dead_note["t"]),
+            "x." if is_body else "x",
+        )
 
     label_width = 3
     bars_per_system = max(
@@ -169,6 +177,8 @@ def render_tab_with_features(
     legend: list[str] = []
     if dead:
         legend.append(f"Dead notes: {len(dead)} (x)")
+    if any(d.get("staccato") or d.get("kind") == "body_percussion" for d in dead):
+        legend.append("x. = body percussion")
     if any(feature.get("hp") for feature in features.values()):
         legend.append("h = hammer-on, p = pull-off")
     if any(feature.get("slide") for feature in features.values()):

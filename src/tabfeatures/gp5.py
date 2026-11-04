@@ -297,6 +297,10 @@ def build_gp5(
                 "s": string,
                 "f": 0,
                 "kind": "dead",
+                "staccato": bool(
+                    raw.get("staccato")
+                    or raw.get("kind") == "body_percussion"
+                ),
             }
         )
         dead_count += 1
@@ -410,14 +414,15 @@ def build_gp5(
                         if record["kind"] == "dead":
                             if is_tie:
                                 continue
-                            beat.notes.append(
-                                gp.Note(
-                                    beat,
-                                    value=0,
-                                    string=7 - record["s"],
-                                    type=gp.NoteType.dead,
-                                )
+                            gp_note = gp.Note(
+                                beat,
+                                value=0,
+                                string=7 - record["s"],
+                                type=gp.NoteType.dead,
                             )
+                            if record.get("staccato"):
+                                gp_note.effect.staccato = True
+                            beat.notes.append(gp_note)
                             total_notes += 1
                             continue
 

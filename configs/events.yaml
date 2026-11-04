@@ -1,0 +1,18 @@
+# Event model configuration.
+#
+# The model is intentionally optional: the existing heuristic pipeline remains
+# the default until a model has been trained on labelled sessions.
+event_model:
+  path: data/models/events
+  thresholds:
+    dead_string: 0.60
+    bass_flick: 0.60
+    body_percussion: 0.60
+    pitched: 0.50
+  review_margin: 0.15
+  feature_window:
+    before_s: 0.03
+    after_s: 0.35
+  body_percussion:
+    string_policy: lowest_free
+    staccato: true
