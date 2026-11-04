@@ -122,7 +122,8 @@ and reports `event_model` statistics in `pipeline_report.json`.
 - `bass_flick`: never drops the melody note; adds `x` on the lowest free string.
 - `body_percussion`: adds `x` on the lowest free string with a staccato dot;
   never drops the melody note.
-- If no string is free, the event is skipped and counted.
+- If no string is free, the event is written to `event_model_review.json`
+  with `reason = "no_free_string"` and counted as skipped.
 - Thresholds default to `0.60` for dead/flick/body and `0.50` for pitched.
   Values between `threshold - 0.15` and the threshold are written to review.
 

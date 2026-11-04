@@ -184,6 +184,17 @@ def apply_event_predictions(
             occupied = _occupied(result, dead_notes, grid_ticks)
             string = _lowest_free(occupied, tick, grid_ticks)
             if string is None:
+                review.append(
+                    {
+                        "tick": tick,
+                        "time": prediction.get("time"),
+                        "heads": prediction.get("heads"),
+                        "reason": "no_free_string",
+                        "kind": (
+                            "body_percussion" if is_body else "bass_flick"
+                        ),
+                    }
+                )
                 skipped += 1
                 continue
             kind = "body_percussion" if is_body else "dead"
@@ -237,6 +248,15 @@ def apply_event_predictions(
                     else _lowest_free(occupied, tick, grid_ticks)
                 )
                 if string is None:
+                    review.append(
+                        {
+                            "tick": tick,
+                            "time": prediction.get("time"),
+                            "heads": prediction.get("heads"),
+                            "reason": "no_free_string",
+                            "kind": "dead_string",
+                        }
+                    )
                     skipped += 1
                     continue
                 dead_notes.append(
@@ -264,6 +284,15 @@ def apply_event_predictions(
                 occupied = _occupied(result, dead_notes, grid_ticks)
                 string = _lowest_free(occupied, tick, grid_ticks)
                 if string is None:
+                    review.append(
+                        {
+                            "tick": tick,
+                            "time": prediction.get("time"),
+                            "heads": prediction.get("heads"),
+                            "reason": "no_free_string",
+                            "kind": "dead_string",
+                        }
+                    )
                     skipped += 1
                     continue
                 dead_notes.append(

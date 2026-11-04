@@ -127,6 +127,31 @@ def test_body_percussion_uses_lowest_free_string_and_staccato() -> None:
     assert stats["additive"] == 1
 
 
+def test_body_percussion_with_no_free_string_goes_to_review() -> None:
+    notes = [
+        {"t": 0, "dur": 480, "pitch": pitch, "s": string, "f": 0}
+        for string, pitch in enumerate((40, 45, 50, 55, 59, 64), start=1)
+    ]
+    _result, dead, review, stats = apply_event_predictions(
+        notes,
+        [
+            _prediction(
+                {
+                    "pitched": 0.1,
+                    "dead_string": 0.1,
+                    "bass_flick": 0.1,
+                    "body_percussion": 0.9,
+                }
+            )
+        ],
+        grid_ticks=240,
+    )
+    assert dead == []
+    assert review[0]["reason"] == "no_free_string"
+    assert review[0]["kind"] == "body_percussion"
+    assert stats["skipped"] == 1
+
+
 def test_dead_string_can_replace_matched_note() -> None:
     notes = [{"t": 0, "dur": 480, "pitch": 64, "s": 3, "f": 0}]
     result, dead, _review, stats = apply_event_predictions(
