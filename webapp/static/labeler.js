@@ -8,6 +8,10 @@
     "4": "body_percussion",
   };
 
+  const PLAY_BEFORE_S = 0.08;
+  const PLAY_AFTER_S = 0.30;
+  const PLAY_GUARD_S = 0.005;
+
   const els = {
     setup: document.getElementById("label-setup"),
     session: document.getElementById("label-session"),
@@ -131,8 +135,18 @@
     if (!candidate) return;
     stopPlayback();
     try {
-      els.audio.currentTime = Number(candidate.start_s) || 0;
-      state.stopAt = Number(candidate.end_s) || els.audio.duration || 0;
+      const onset = Number(candidate.onset_s) || 0;
+      const next = state.session.candidates[state.index + 1] || null;
+      const duration = Number(state.session.duration)
+        || Number(els.audio.duration)
+        || 0;
+      let stopAt = onset + PLAY_AFTER_S;
+      if (next) {
+        stopAt = Math.min(stopAt, Number(next.onset_s) - PLAY_GUARD_S);
+      }
+      if (duration) stopAt = Math.min(stopAt, duration);
+      els.audio.currentTime = Math.max(0, onset - PLAY_BEFORE_S);
+      state.stopAt = Math.max(onset + 0.01, stopAt);
       state.playing = true;
       await els.audio.play();
       state.raf = requestAnimationFrame(tickPlayback);
