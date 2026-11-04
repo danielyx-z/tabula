@@ -28,6 +28,7 @@
     download: document.getElementById("label-download"),
     replay: document.getElementById("label-replay"),
     skip: document.getElementById("label-skip"),
+    pitchedRun: document.getElementById("label-pitched-run"),
     undo: document.getElementById("label-undo"),
     keys: Array.from(document.querySelectorAll(".labeler-key")),
     recent: document.getElementById("label-recent"),
@@ -163,7 +164,7 @@
     const existing = state.labels[state.index];
     els.nowNote.textContent = existing
       ? `Already labeled: ${existing.label.replaceAll("_", " ")}`
-      : "Press 1, 2, 3, or 4.";
+      : "Press 1–4, or Shift+1 for a pitched run.";
   }
 
   function renderRecent(rows) {
@@ -221,10 +222,14 @@
     if (state.index >= 0) playCurrent();
   }
 
-  function advance() {
-    state.index = nextUnlabeled(state.index + 1);
+  function moveTo(start) {
+    state.index = nextUnlabeled(start);
     render();
     if (state.index >= 0) playCurrent();
+  }
+
+  function advance() {
+    moveTo(state.index + 1);
   }
 
   async function saveLabel(label) {
@@ -249,6 +254,35 @@
     }
   }
 
+  async function savePitchedRun() {
+    if (state.busy || !state.session || state.index < 0) return;
+    state.busy = true;
+    setSessionStatus("");
+    try {
+      const payload = await api(
+        `/api/label/sessions/${state.session.session_id}/pitched-run`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            start_index: state.index,
+            max_count: 8,
+            max_gap_s: 0.25,
+          }),
+        },
+      );
+      state.session = payload;
+      state.labels = labelMap(payload.labels);
+      const indices = Array.isArray(payload.indices) ? payload.indices : [];
+      const lastIndex = indices.length ? Number(indices[indices.length - 1]) : state.index;
+      setSessionStatus(`Labeled ${indices.length || 1} normal attack(s) as pitched.`);
+      moveTo(lastIndex + 1);
+    } catch (error) {
+      setSessionStatus(error.message, true);
+    } finally {
+      state.busy = false;
+    }
+  }
+
   async function undo() {
     if (state.busy || !state.session) return;
     state.busy = true;
@@ -259,7 +293,11 @@
       );
       state.session = payload;
       state.labels = labelMap(payload.labels);
-      const removedIndex = payload.removed ? Number(payload.removed.index) : -1;
+      const removed = payload.removed || null;
+      const indices = removed && Array.isArray(removed.indices) ? removed.indices : [];
+      const removedIndex = indices.length
+        ? Number(indices[0])
+        : (removed ? Number(removed.index) : -1);
       state.index = removedIndex >= 0 ? removedIndex : nextUnlabeled(0);
       render();
       if (state.index >= 0) playCurrent();
@@ -304,16 +342,20 @@
   els.replay.addEventListener("click", playCurrent);
   els.skip.addEventListener("click", () => {
     if (!state.session || state.index < 0) return;
-    state.index = nextUnlabeled(state.index + 1);
-    render();
-    if (state.index >= 0) playCurrent();
+    moveTo(state.index + 1);
   });
+  els.pitchedRun.addEventListener("click", savePitchedRun);
   els.undo.addEventListener("click", undo);
 
   document.addEventListener("keydown", (event) => {
     if (event.repeat || !state.session) return;
     const tag = (event.target && event.target.tagName) || "";
     if (["INPUT", "TEXTAREA", "SELECT"].includes(tag)) return;
+    if (event.shiftKey && (event.code === "Digit1" || event.key === "!")) {
+      event.preventDefault();
+      savePitchedRun();
+      return;
+    }
     if (event.key in KEY_LABEL) {
       event.preventDefault();
       saveLabel(KEY_LABEL[event.key]);

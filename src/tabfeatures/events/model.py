@@ -30,7 +30,7 @@ class EventModel:
     feature_names: tuple[str, ...] = FEATURE_NAMES
     thresholds: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_THRESHOLDS))
     feature_window: dict[str, float] = field(
-        default_factory=lambda: {"before_s": 0.03, "after_s": 0.35}
+        default_factory=lambda: {"before_s": 0.02, "after_s": 0.30}
     )
     review_margin: float = 0.15
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -100,6 +100,10 @@ def load_event_model(path: str | Path | None) -> EventModel | None:
         booster.load_model(str(model_path))
         heads[str(head)] = booster
     feature_names = tuple(metadata.get("feature_names") or FEATURE_NAMES)
+    if feature_names != FEATURE_NAMES:
+        raise ValueError(
+            "event model feature schema does not match this code; retrain the model"
+        )
     thresholds = {
         **DEFAULT_THRESHOLDS,
         **{
@@ -108,8 +112,8 @@ def load_event_model(path: str | Path | None) -> EventModel | None:
         },
     }
     feature_window = {
-        "before_s": 0.03,
-        "after_s": 0.35,
+        "before_s": 0.02,
+        "after_s": 0.30,
         **{
             str(key): float(value)
             for key, value in (metadata.get("feature_window") or {}).items()
@@ -197,8 +201,8 @@ def train_event_model(
         heads=heads,
         thresholds={**DEFAULT_THRESHOLDS, **(thresholds or {})},
         feature_window={
-            "before_s": 0.03,
-            "after_s": 0.35,
+            "before_s": 0.02,
+            "after_s": 0.30,
             **(feature_window or {}),
         },
         review_margin=float(review_margin),

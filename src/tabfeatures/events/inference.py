@@ -5,23 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .features import extract_event_features, load_audio
+from .features import analysis_after, extract_event_features, load_audio
 from .model import EventModel
-
-
-def _event_pitch_string(event: dict[str, Any]) -> tuple[int | None, int | None]:
-    matched = event.get("matched_note") or {}
-    pitch = matched.get("pitch", event.get("pitch"))
-    string = event.get("s", event.get("string"))
-    try:
-        pitch_value = int(pitch) if pitch is not None else None
-    except (TypeError, ValueError):
-        pitch_value = None
-    try:
-        string_value = int(string) if string is not None else None
-    except (TypeError, ValueError):
-        string_value = None
-    return pitch_value, string_value
 
 
 def predict_events(
@@ -33,46 +18,69 @@ def predict_events(
     before_s: float | None = None,
     after_s: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Score every aligned onset in ``events``."""
+    """Score every aligned onset in ``events``.
+
+    Each feature window stops before the next onset.  Fast passages therefore
+    get shorter windows instead of overlapping the following note.
+    """
     y, actual_sr = load_audio(audio_path, sr=sr)
-    predictions: list[dict[str, Any]] = []
-    for event in events:
+    max_after = (
+        float(after_s)
+        if after_s is not None
+        else float(model.feature_window.get("after_s", 0.30))
+    )
+    window_before = (
+        float(before_s)
+        if before_s is not None
+        else float(model.feature_window.get("before_s", 0.02))
+    )
+
+    ordered: list[tuple[float, int, dict[str, Any]]] = []
+    for position, event in enumerate(events):
         try:
             onset_s = float(event.get("time", 0.0))
         except (TypeError, ValueError):
             continue
-        pitch, string = _event_pitch_string(event)
+        ordered.append((onset_s, position, event))
+    ordered.sort(key=lambda item: (item[0], item[1]))
+
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for order_index, (onset_s, position, event) in enumerate(ordered):
+        next_onset = (
+            ordered[order_index + 1][0]
+            if order_index + 1 < len(ordered)
+            else None
+        )
         features = extract_event_features(
             y,
             actual_sr,
             onset_s,
-            pitch=pitch,
-            string=string,
-            before_s=(
-                float(before_s)
-                if before_s is not None
-                else float(model.feature_window.get("before_s", 0.03))
-            ),
-            after_s=(
-                float(after_s)
-                if after_s is not None
-                else float(model.feature_window.get("after_s", 0.35))
+            before_s=window_before,
+            after_s=analysis_after(
+                onset_s,
+                next_onset,
+                max_after_s=max_after,
             ),
         )
         heads = model.predict(features)
-        predictions.append(
-            {
-                "index": event.get("index"),
-                "time": round(onset_s, 6),
-                "tick": event.get("tick"),
-                "matched": bool(event.get("matched")),
-                "matched_note": event.get("matched_note"),
-                "pitch": pitch,
-                "string": string,
-                "heads": {key: round(float(value), 6) for key, value in heads.items()},
-            }
+        scored.append(
+            (
+                position,
+                {
+                    "index": event.get("index"),
+                    "time": round(onset_s, 6),
+                    "tick": event.get("tick"),
+                    "matched": bool(event.get("matched")),
+                    "matched_note": event.get("matched_note"),
+                    "heads": {
+                        key: round(float(value), 6)
+                        for key, value in heads.items()
+                    },
+                },
+            )
         )
-    return predictions
+    scored.sort(key=lambda item: item[0])
+    return [prediction for _, prediction in scored]
 
 
 def _slot(tick: int, grid_ticks: int) -> int:

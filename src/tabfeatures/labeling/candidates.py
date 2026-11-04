@@ -45,8 +45,8 @@ def detect_candidates(
     hop_length: int = 512,
     delta: float = 0.05,
     wait: int = 2,
-    before: float = 0.15,
-    after: float = 0.40,
+    before: float = 0.08,
+    after: float = 0.30,
     min_gap_s: float = 0.06,
 ) -> dict[str, Any]:
     """Return onset candidates with playback windows.

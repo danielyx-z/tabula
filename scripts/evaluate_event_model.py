@@ -15,7 +15,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from tabfeatures.events.features import extract_event_features, load_audio  # noqa: E402
+from tabfeatures.events.features import (  # noqa: E402
+    analysis_after,
+    extract_event_features,
+    load_audio,
+)
 from tabfeatures.events.model import load_event_model  # noqa: E402
 from tabfeatures.events.schema import HEADS  # noqa: E402
 from tabfeatures.labeling.store import (  # noqa: E402
@@ -41,15 +45,25 @@ def _rows(
         if not 0 <= int(index) < len(candidates):
             continue
         candidate = candidates[int(index)]
+        onset_s = float(candidate.get("onset_s", 0.0))
+        next_onset = (
+            float(candidates[int(index) + 1].get("onset_s", 0.0))
+            if int(index) + 1 < len(candidates)
+            else None
+        )
         rows.append(
             {
                 "label": str(record.get("label")),
                 "features": extract_event_features(
                     y,
                     sr,
-                    float(candidate.get("onset_s", 0.0)),
-                    before_s=float(feature_window.get("before_s", 0.03)),
-                    after_s=float(feature_window.get("after_s", 0.35)),
+                    onset_s,
+                    before_s=float(feature_window.get("before_s", 0.02)),
+                    after_s=analysis_after(
+                        onset_s,
+                        next_onset,
+                        max_after_s=float(feature_window.get("after_s", 0.30)),
+                    ),
                 ),
             }
         )

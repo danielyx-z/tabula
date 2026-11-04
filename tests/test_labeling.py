@@ -64,8 +64,45 @@ def test_store_append_undo_and_export(tmp_path: Path, monkeypatch: pytest.Monkey
     assert latest[1]["label"] == "body_percussion"
     removed = store.undo_label(session_id)
     assert removed is not None and removed["index"] == 1
+    assert removed["count"] == 1
     assert store.state(session_id)["labeled"] == 1
     assert "bass_flick" in store.export_labels(session_id)
+    store.remove_session(session_id)
+
+
+def test_store_pitched_run_is_one_undo_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(store, "LABEL_ROOT", tmp_path / "labels")
+    session_id = store.new_session_id()
+    store.ensure_session(session_id)
+    store.write_candidates(
+        session_id,
+        {
+            "sr": 22050,
+            "duration": 2.0,
+            "candidates": [
+                {"index": 0, "onset_s": 0.10, "start_s": 0.0, "end_s": 0.35},
+                {"index": 1, "onset_s": 0.25, "start_s": 0.1, "end_s": 0.50},
+                {"index": 2, "onset_s": 0.40, "start_s": 0.2, "end_s": 0.70},
+                {"index": 3, "onset_s": 1.50, "start_s": 1.4, "end_s": 1.8},
+            ],
+        },
+    )
+    store.write_meta(session_id, {"original_name": "run.wav"})
+    result = store.append_pitched_run(
+        session_id,
+        start_index=0,
+        max_count=8,
+        max_gap_s=0.25,
+    )
+    assert result["indices"] == [0, 1, 2]
+    assert store.state(session_id)["labeled"] == 3
+    removed = store.undo_label(session_id)
+    assert removed is not None
+    assert removed["indices"] == [0, 1, 2]
+    assert store.state(session_id)["labeled"] == 0
     store.remove_session(session_id)
 
 
@@ -110,6 +147,18 @@ def test_flask_label_session_round_trip(
     undo_response = client.post(f"/api/label/sessions/{session_id}/undo", json={})
     assert undo_response.status_code == 200
     assert undo_response.get_json()["labeled"] == 0
+
+    run_response = client.post(
+        f"/api/label/sessions/{session_id}/pitched-run",
+        json={"start_index": 0, "max_count": 8, "max_gap_s": 1.0},
+    )
+    assert run_response.status_code == 200, run_response.get_json()
+    run_payload = run_response.get_json()
+    assert run_payload["indices"] == list(range(payload["total"]))
+    assert run_payload["labeled"] == payload["total"]
+    run_undo = client.post(f"/api/label/sessions/{session_id}/undo", json={})
+    assert run_undo.status_code == 200
+    assert run_undo.get_json()["labeled"] == 0
 
     invalid = client.post(
         f"/api/label/sessions/{session_id}/labels",

@@ -32,13 +32,42 @@ FEATURE_NAMES: tuple[str, ...] = (
     "f0_hz",
     "voiced_prob",
     "f0_std",
-    "pitch_support",
     "decay_db",
     "attack_strength",
     "spectral_flux",
-    "pitch",
-    "string",
 )
+
+DEFAULT_BEFORE_S = 0.02
+DEFAULT_AFTER_S = 0.30
+MIN_ANALYSIS_S = 0.01
+GUARD_S = 0.02
+MIN_DECAY_S = 0.20
+MIN_F0_S = 0.06
+
+
+def analysis_after(
+    onset_s: float,
+    next_onset_s: float | None,
+    *,
+    max_after_s: float = DEFAULT_AFTER_S,
+    guard_s: float = GUARD_S,
+    min_after_s: float = MIN_ANALYSIS_S,
+) -> float:
+    """Return the usable tail length for one onset.
+
+    The window stops before the next detected attack.  In fast passages this
+    deliberately produces a short window instead of letting the next note
+    dominate the features.
+    """
+    if next_onset_s is None:
+        return float(max_after_s)
+    gap = float(next_onset_s) - float(onset_s)
+    if gap <= 0:
+        return float(min_after_s)
+    return max(
+        float(min_after_s),
+        min(float(max_after_s), gap - float(guard_s)),
+    )
 
 
 def load_audio(path: str | Path, *, sr: int = 22050) -> tuple[np.ndarray, int]:
@@ -61,8 +90,8 @@ def _window(
     sr: int,
     onset_s: float,
     *,
-    before: float = 0.03,
-    after: float = 0.35,
+    before: float = DEFAULT_BEFORE_S,
+    after: float = DEFAULT_AFTER_S,
 ) -> np.ndarray:
     start = max(0, int(round((float(onset_s) - float(before)) * sr)))
     end = min(len(y), int(round((float(onset_s) + float(after)) * sr)))
@@ -82,15 +111,26 @@ def _band_ratios(seg: np.ndarray, sr: int) -> tuple[float, float, float, float]:
     low = float(np.sum(power[(freqs >= 60.0) & (freqs <= 250.0)]))
     mid = float(np.sum(power[(freqs > 250.0) & (freqs <= 1200.0)]))
     high = float(np.sum(power[(freqs > 1200.0) & (freqs <= 5000.0)]))
-    flux = float(np.mean(np.abs(np.diff(stft, axis=1)))) if stft.shape[1] > 1 else 0.0
+    flux = (
+        float(np.mean(np.abs(np.diff(stft, axis=1))))
+        if stft.shape[1] > 1
+        else 0.0
+    )
     return low / total, mid / total, high / total, flux
 
 
 def _hpss_ratio(seg: np.ndarray) -> tuple[float, float]:
-    if len(seg) < 512:
+    if len(seg) < 256:
         return float("nan"), float("nan")
     try:
-        harmonic, percussive = librosa.effects.hpss(seg, kernel_size=31)
+        n_fft = min(2048, 2 ** int(np.floor(np.log2(len(seg)))))
+        n_fft = max(256, n_fft)
+        harmonic, percussive = librosa.effects.hpss(
+            seg,
+            kernel_size=31,
+            n_fft=n_fft,
+            hop_length=max(64, n_fft // 4),
+        )
         eh = float(np.sum(np.asarray(harmonic, dtype=np.float64) ** 2))
         ep = float(np.sum(np.asarray(percussive, dtype=np.float64) ** 2))
         total = eh + ep + 1e-12
@@ -111,7 +151,7 @@ def _low_hpss_ratio(seg: np.ndarray, sr: int) -> tuple[float, float]:
 
 
 def _f0_features(seg: np.ndarray, sr: int) -> tuple[float, float, float]:
-    if len(seg) < 256:
+    if len(seg) < int(MIN_F0_S * sr):
         return float("nan"), float("nan"), float("nan")
     frame_length = 2048
     while frame_length > len(seg) and frame_length > 256:
@@ -139,47 +179,19 @@ def _f0_features(seg: np.ndarray, sr: int) -> tuple[float, float, float]:
     return float(np.median(valid)), voiced, float(np.std(valid))
 
 
-def _pitch_support(seg: np.ndarray, sr: int, pitch: int | None) -> float:
-    if pitch is None or len(seg) < 256:
-        return float("nan")
-    n_fft = 2048
-    if len(seg) < n_fft:
-        n_fft = max(256, 2 ** int(np.floor(np.log2(max(256, len(seg))))))
-    stft = np.abs(librosa.stft(seg, n_fft=n_fft, hop_length=max(64, n_fft // 4)))
-    freqs = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
-    band = (freqs >= 50.0) & (freqs <= 5000.0)
-    total = float(np.mean(np.sum(stft[band, :], axis=0))) if np.any(band) else 0.0
-    if total <= 1e-9:
-        return 0.0
-    f0 = 440.0 * (2.0 ** ((float(pitch) - 69.0) / 12.0))
-    peaks: list[float] = []
-    for harmonic in range(1, 7):
-        center = f0 * harmonic
-        if center > 5000.0:
-            break
-        low = center * (2.0 ** (-1.0 / 12.0))
-        high = center * (2.0 ** (1.0 / 12.0))
-        bins = (freqs >= low) & (freqs <= high)
-        if np.any(bins):
-            peaks.append(float(np.mean(np.max(stft[bins, :], axis=0))))
-    return float(sum(peaks) / (total + 1e-9))
-
-
 def extract_event_features(
     y: np.ndarray,
     sr: int,
     onset_s: float,
     *,
-    pitch: int | None = None,
-    string: int | None = None,
-    before_s: float = 0.03,
-    after_s: float = 0.35,
+    before_s: float = DEFAULT_BEFORE_S,
+    after_s: float = DEFAULT_AFTER_S,
 ) -> dict[str, float]:
     """Measure one onset window.
 
-    ``pitch`` and ``string`` are optional.  The browser-labeller data does not
-    have them, while the stitcher can pass the matched MIDI note and tab string.
-    Missing values become ``NaN``; XGBoost handles them natively.
+    ``after_s`` should normally come from :func:`analysis_after` so the window
+    never runs into the next detected attack.  Missing values become ``NaN``;
+    XGBoost handles them natively.
     """
     seg = _window(y, sr, onset_s, before=before_s, after=after_s)
     if not len(seg):
@@ -190,20 +202,28 @@ def extract_event_features(
     flatness = float(np.mean(librosa.feature.spectral_flatness(y=seg)))
     centroid = float(np.mean(librosa.feature.spectral_centroid(y=seg, sr=sr)))
     bandwidth = float(np.mean(librosa.feature.spectral_bandwidth(y=seg, sr=sr)))
-    rolloff = float(np.mean(librosa.feature.spectral_rolloff(y=seg, sr=sr, roll_percent=0.85)))
+    rolloff = float(
+        np.mean(librosa.feature.spectral_rolloff(y=seg, sr=sr, roll_percent=0.85))
+    )
     zcr = float(np.mean(librosa.feature.zero_crossing_rate(seg)))
     low, mid, high, flux = _band_ratios(seg, sr)
     harmonic, percussive = _hpss_ratio(seg)
     low_harmonic, low_percussive = _low_hpss_ratio(seg, sr)
     f0, voiced, f0_std = _f0_features(seg, sr)
-    support = _pitch_support(seg, sr, pitch)
 
-    frame = max(1, int(0.02 * sr))
-    early_end = min(len(seg), max(frame, int(0.08 * sr)))
-    late_start = min(len(seg) - 1, int(0.18 * sr))
-    early = float(np.sqrt(np.mean(np.square(seg[:early_end], dtype=np.float64)) + 1e-12))
-    late = float(np.sqrt(np.mean(np.square(seg[late_start:], dtype=np.float64)) + 1e-12))
-    decay_db = 20.0 * np.log10((late + 1e-9) / (early + 1e-9))
+    if len(seg) >= int(MIN_DECAY_S * sr):
+        frame = max(1, int(0.02 * sr))
+        early_end = min(len(seg), max(frame, int(0.08 * sr)))
+        late_start = min(len(seg) - 1, int(0.18 * sr))
+        early = float(
+            np.sqrt(np.mean(np.square(seg[:early_end], dtype=np.float64)) + 1e-12)
+        )
+        late = float(
+            np.sqrt(np.mean(np.square(seg[late_start:], dtype=np.float64)) + 1e-12)
+        )
+        decay_db = 20.0 * np.log10((late + 1e-9) / (early + 1e-9))
+    else:
+        decay_db = float("nan")
     try:
         onset_strength = float(
             np.max(librosa.onset.onset_strength(y=seg, sr=sr, hop_length=128))
@@ -230,12 +250,9 @@ def extract_event_features(
         "f0_hz": f0,
         "voiced_prob": voiced,
         "f0_std": f0_std,
-        "pitch_support": support,
         "decay_db": _safe(decay_db),
         "attack_strength": _safe(onset_strength),
         "spectral_flux": _safe(flux),
-        "pitch": _safe(pitch),
-        "string": _safe(string),
     }
 
 

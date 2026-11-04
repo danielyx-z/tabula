@@ -26,6 +26,7 @@ if str(_EARLY_REPO / "src") not in sys.path:
     sys.path.insert(0, str(_EARLY_REPO / "src"))
 from tabfeatures.labeling import (  # noqa: E402
     append_label,
+    append_pitched_run,
     detect_candidates,
     ensure_session,
     export_labels,
@@ -336,6 +337,22 @@ def label_append(session_id: str):
     except (TypeError, ValueError) as exc:
         return _error(str(exc) or "The label could not be saved.", 400)
     return jsonify({"label": record, **label_state(session_id)})
+
+
+@app.post("/api/label/sessions/<session_id>/pitched-run")
+def label_pitched_run(session_id: str):
+    _label_session_or_404(session_id)
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = append_pitched_run(
+            session_id,
+            start_index=int(payload.get("start_index")),
+            max_count=int(payload.get("max_count", 8)),
+            max_gap_s=float(payload.get("max_gap_s", 0.25)),
+        )
+    except (TypeError, ValueError) as exc:
+        return _error(str(exc) or "The pitched run could not be saved.", 400)
+    return jsonify({**result, **label_state(session_id)})
 
 
 @app.post("/api/label/sessions/<session_id>/undo")

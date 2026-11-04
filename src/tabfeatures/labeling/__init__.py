@@ -4,6 +4,8 @@ from .candidates import detect_candidates
 from .schema import LABEL_TO_KEY, LABELS, KEY_TO_LABEL, label_heads, normalize_label
 from .store import (
     append_label,
+    append_labels,
+    append_pitched_run,
     ensure_session,
     export_labels,
     latest_labels,
@@ -34,6 +36,8 @@ __all__ = [
     "write_candidates",
     "read_candidates",
     "append_label",
+    "append_labels",
+    "append_pitched_run",
     "undo_label",
     "latest_labels",
     "export_labels",

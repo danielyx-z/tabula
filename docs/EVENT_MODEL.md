@@ -37,6 +37,13 @@ body_percussion
 The heads are independent because a pitched note and a percussive hit may
 coexist.  See [LABELING.md](LABELING.md) for the browser workflow.
 
+Aim for enough positives per rare head rather than an even four-way split.
+Roughly 30–50 real positives per rare head is a minimum; 100+ is better.  Keep
+a few normal `pitched` negatives for every rare positive, sample normal attacks
+across each recording, and never split one recording between train and test.
+The trainers use per-head class weighting, so a large `pitched` majority is
+fine as long as the rare heads are represented.
+
 ## Features
 
 `src/tabfeatures/events/features.py` extracts:
@@ -45,11 +52,16 @@ coexist.  See [LABELING.md](LABELING.md) for the browser workflow.
 - HPSS harmonic / percussive ratios, including a low-passed HPSS view,
 - spectral flatness, centroid, bandwidth, rolloff, ZCR,
 - f0 median, voiced probability, f0 spread,
-- expected-pitch harmonic support when a MIDI pitch is available,
-- attack/decay and spectral flux,
-- optional pitch and string context.
+- attack/decay and spectral flux.
 
-Missing pitch/string values are `NaN`; XGBoost handles them natively.
+The feature set is audio-only.  It deliberately does not include MIDI pitch,
+string number, or expected-pitch support, because the browser labeller cannot
+provide them reliably and that would create train/serve skew.
+
+Each feature window ends before the next detected onset.  In fast passages the
+window gets shorter rather than including the following note.  Features that
+need more tail (`decay_db`, `f0_hz`, `voiced_prob`, `f0_std`) are `NaN` when the
+window is too short; XGBoost handles missing values natively.
 
 ## Training
 

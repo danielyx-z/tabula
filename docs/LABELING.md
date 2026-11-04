@@ -19,8 +19,10 @@ directory is cleaned automatically.
 1. Open `http://127.0.0.1:8000/label`.
 2. Choose an audio file.
 3. The server detects onsets, merges detections closer than 60 ms, and creates
-   one playback window per onset.
-4. Listen to the window and press:
+   one short playback window per onset.  The window stops before the next
+   detected attack, so a fast run is heard as separate attacks rather than one
+   overlapping phrase.
+4. Listen to the target attack and press:
 
 ```text
 1 = pitched
@@ -29,11 +31,26 @@ directory is cleaned automatically.
 4 = body_percussion
 ```
 
-`space` replays, `s` skips, and `u` undoes the last label.  The browser saves
-after every keypress.
+`space` replays, `s` skips, and `u` undoes the last label or pitched run.  The
+browser saves after every keypress.
+
+Label **one attack**, not a phrase.  If several strings are struck together,
+that is still one event.  A second attack later in the clip is a separate
+sample.  Do not merge a rapid run into one multi-note label: the model is an
+onset classifier, and a multi-note label would be ambiguous.
+
+`Shift+1` labels the current onset and the following contiguous attacks as
+`pitched` until a gap over 250 ms, an already-labelled onset, or eight
+candidates.  Use it only when the whole short run is clearly normal pitched
+notes.  Undo removes the entire run.
 
 A bass flick plus melody is labelled `3`; the melody note is kept by the note
 validator, not replaced by this label.  Body percussion plus melody is `4`.
+
+You do not need to label every normal note in a long rapid passage.  Label all
+suspected dead/flick/body events and a sample of normal attacks across each
+recording.  More recordings are more useful than an exact four-way class
+split.
 
 ## Labels
 
@@ -54,14 +71,15 @@ body_percussion  <- label 4
 
 ## Label format
 
-`labels.jsonl` contains one record per keypress:
+`labels.jsonl` contains one record per labelled onset:
 
 ```json
-{"session_id":"abc123","index":12,"onset_s":3.42,"label":"bass_flick","updated_at":"2026-11-04T04:10:34+00:00"}
+{"session_id":"abc123","index":12,"onset_s":3.42,"label":"bass_flick","group_id":"d4c0...","updated_at":"2026-11-04T04:10:34+00:00"}
 ```
 
-Only the onset is stored.  The playback and feature window is derived from the
-candidate record, so `ending_s` is not a human label.
+A pitched run writes one record per onset with the same `group_id`; Undo removes
+the whole group.  Only the onset is stored.  The playback and feature windows
+are derived from the candidate record, so `ending_s` is not a human label.
 
 ## Export
 

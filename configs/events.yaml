@@ -11,8 +11,8 @@ event_model:
     pitched: 0.50
   review_margin: 0.15
   feature_window:
-    before_s: 0.03
-    after_s: 0.35
+    before_s: 0.02
+    after_s: 0.30
   body_percussion:
     string_policy: lowest_free
     staccato: true

@@ -15,8 +15,10 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from tabfeatures.events.features import (  # noqa: E402
     FEATURE_NAMES,
+    analysis_after,
     extract_event_features,
 )
+from tabfeatures.events import inference  # noqa: E402
 from tabfeatures.events.inference import apply_event_predictions  # noqa: E402
 from tabfeatures.dead import merge_dead_notes  # noqa: E402
 from tabfeatures.events.config import load_events_config  # noqa: E402
@@ -35,7 +37,7 @@ def _tone(sr: int = 22050) -> tuple[np.ndarray, int]:
 def test_event_config_loads_defaults() -> None:
     config = load_events_config()
     assert config["thresholds"]["body_percussion"] == 0.60
-    assert config["feature_window"]["after_s"] == 0.35
+    assert config["feature_window"]["after_s"] == 0.30
 
 
 def test_label_heads_are_additive_for_flicks() -> None:
@@ -53,14 +55,72 @@ def test_label_heads_are_additive_for_flicks() -> None:
     }
 
 
-def test_features_have_stable_schema_and_pitch_context() -> None:
+def test_features_have_stable_audio_only_schema() -> None:
     y, sr = _tone()
-    features = extract_event_features(y, sr, 0.05, pitch=45, string=1)
+    features = extract_event_features(y, sr, 0.05)
     assert set(features) == set(FEATURE_NAMES)
+    assert "pitch" not in features
+    assert "string" not in features
+    assert "pitch_support" not in features
     assert features["low_ratio"] > 0.5
     assert features["f0_hz"] == pytest.approx(110.0, rel=0.03)
-    assert features["pitch"] == 45
-    assert features["string"] == 1
+
+
+def test_analysis_window_stops_before_next_onset() -> None:
+    assert analysis_after(1.0, None) == pytest.approx(0.30)
+    assert analysis_after(1.0, 1.5) == pytest.approx(0.30)
+    assert analysis_after(1.0, 1.08) == pytest.approx(0.06)
+    assert analysis_after(1.0, 1.021) == pytest.approx(0.01)
+
+
+def test_inference_trims_each_window_at_next_onset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[tuple[float, float, float]] = []
+
+    monkeypatch.setattr(
+        inference,
+        "load_audio",
+        lambda _path, sr=22050: (np.zeros(sr * 3, dtype=np.float32), sr),
+    )
+
+    def fake_extract(_y, _sr, onset_s, *, before_s, after_s):
+        captured.append((onset_s, before_s, after_s))
+        return {}
+
+    monkeypatch.setattr(inference, "extract_event_features", fake_extract)
+
+    class FakeModel:
+        feature_window = {"before_s": 0.02, "after_s": 0.30}
+
+        @staticmethod
+        def predict(_features):
+            return {}
+
+    result = inference.predict_events(
+        "unused.wav",
+        [{"time": 1.0}, {"time": 1.08}, {"time": 2.0}],
+        FakeModel(),
+    )
+    assert len(result) == 3
+    assert captured == [
+        (1.0, 0.02, pytest.approx(0.06)),
+        (1.08, 0.02, pytest.approx(0.30)),
+        (2.0, 0.02, pytest.approx(0.30)),
+    ]
+
+
+def test_fast_window_keeps_early_features_and_drops_late_ones() -> None:
+    y, sr = _tone()
+    features = extract_event_features(
+        y,
+        sr,
+        0.05,
+        after_s=analysis_after(0.05, 0.09),
+    )
+    assert np.isfinite(features["rms_db"])
+    assert np.isnan(features["decay_db"])
+    assert np.isnan(features["f0_hz"])
 
 
 def _prediction(heads: dict[str, float], **extra: object) -> dict[str, object]:
@@ -253,7 +313,7 @@ def test_tiny_model_trains_and_predicts(tmp_path: Path) -> None:
     }
     model = load_event_model(tmp_path / "model")
     assert model is not None
-    assert model.feature_window == {"before_s": 0.03, "after_s": 0.35}
+    assert model.feature_window == {"before_s": 0.02, "after_s": 0.30}
     scores = model.predict(rows[0]["features"])
     assert set(scores) == {
         "pitched",

@@ -19,7 +19,11 @@ from tabfeatures.events.config import (  # noqa: E402
     load_events_config,
     resolve_config_path,
 )
-from tabfeatures.events.features import extract_event_features, load_audio  # noqa: E402
+from tabfeatures.events.features import (  # noqa: E402
+    analysis_after,
+    extract_event_features,
+    load_audio,
+)
 from tabfeatures.events.model import MODEL_DIR, train_event_model  # noqa: E402
 from tabfeatures.events.schema import HEADS  # noqa: E402
 from tabfeatures.labeling.store import (  # noqa: E402
@@ -48,12 +52,22 @@ def _rows_for_session(
         if not 0 <= int(index) < len(candidates):
             continue
         candidate = candidates[int(index)]
+        onset_s = float(candidate.get("onset_s", 0.0))
+        next_onset = (
+            float(candidates[int(index) + 1].get("onset_s", 0.0))
+            if int(index) + 1 < len(candidates)
+            else None
+        )
         features = extract_event_features(
             y,
             sr,
-            float(candidate.get("onset_s", 0.0)),
-            before_s=float(feature_window.get("before_s", 0.03)),
-            after_s=float(feature_window.get("after_s", 0.35)),
+            onset_s,
+            before_s=float(feature_window.get("before_s", 0.02)),
+            after_s=analysis_after(
+                onset_s,
+                next_onset,
+                max_after_s=float(feature_window.get("after_s", 0.30)),
+            ),
         )
         rows.append(
             {
@@ -140,8 +154,8 @@ def main(argv: list[str] | None = None) -> int:
         else Path(str(config.get("path", MODEL_DIR)))
     )
     feature_window = {
-        "before_s": 0.03,
-        "after_s": 0.35,
+        "before_s": 0.02,
+        "after_s": 0.30,
         **(config.get("feature_window") or {}),
     }
 

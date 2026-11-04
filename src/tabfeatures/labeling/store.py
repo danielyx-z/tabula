@@ -146,43 +146,123 @@ def latest_labels(session_id: str) -> dict[int, dict[str, Any]]:
     return latest
 
 
+def append_labels(
+    session_id: str,
+    *,
+    indices: list[int],
+    label: str,
+) -> list[dict[str, Any]]:
+    """Append one label record per index as a single undoable group."""
+    candidates = read_candidates(session_id).get("candidates", [])
+    canonical = normalize_label(label)
+    ordered = [int(index) for index in indices]
+    if not ordered:
+        raise ValueError("at least one label index is required")
+    if len(set(ordered)) != len(ordered):
+        raise ValueError("label indices must be unique")
+    for index in ordered:
+        if not 0 <= index < len(candidates):
+            raise ValueError("label index is outside the candidate range")
+
+    group_id = uuid.uuid4().hex
+    updated_at = _utc_now()
+    records = [
+        {
+            "session_id": session_id,
+            "index": index,
+            "onset_s": float(candidates[index].get("onset_s", 0.0)),
+            "label": canonical,
+            "group_id": group_id,
+            "updated_at": updated_at,
+        }
+        for index in ordered
+    ]
+    path = session_dir(session_id) / LABELS_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return records
+
+
 def append_label(
     session_id: str,
     *,
     index: int,
     label: str,
 ) -> dict[str, Any]:
+    return append_labels(session_id, indices=[index], label=label)[0]
+
+
+def append_pitched_run(
+    session_id: str,
+    *,
+    start_index: int,
+    max_count: int = 8,
+    max_gap_s: float = 0.25,
+) -> dict[str, Any]:
+    """Label a short contiguous run of clearly normal notes as ``pitched``.
+
+    The run stops at a gap, at an already labelled candidate, or at
+    ``max_count``.  It is stored as one group so Undo removes the whole run.
+    """
     candidates = read_candidates(session_id).get("candidates", [])
-    if not 0 <= int(index) < len(candidates):
+    start = int(start_index)
+    if not 0 <= start < len(candidates):
         raise ValueError("label index is outside the candidate range")
-    canonical = normalize_label(label)
-    candidate = candidates[int(index)]
-    record = {
-        "session_id": session_id,
-        "index": int(index),
-        "onset_s": float(candidate.get("onset_s", 0.0)),
-        "label": canonical,
-        "updated_at": _utc_now(),
+    limit = max(1, min(16, int(max_count)))
+    gap_limit = max(0.0, float(max_gap_s))
+    latest = latest_labels(session_id)
+
+    indices: list[int] = []
+    previous_onset: float | None = None
+    for index in range(start, min(len(candidates), start + limit)):
+        if index != start and index in latest:
+            break
+        onset_s = float(candidates[index].get("onset_s", 0.0))
+        if (
+            previous_onset is not None
+            and onset_s - previous_onset > gap_limit
+        ):
+            break
+        indices.append(index)
+        previous_onset = onset_s
+
+    records = append_labels(session_id, indices=indices, label="pitched")
+    return {
+        "group_id": records[0]["group_id"] if records else None,
+        "records": records,
+        "indices": indices,
     }
-    path = session_dir(session_id) / LABELS_NAME
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-    return record
 
 
 def undo_label(session_id: str) -> dict[str, Any] | None:
-    """Remove and return the last saved label, if any."""
+    """Remove and return the last saved label group, if any."""
     path = session_dir(session_id) / LABELS_NAME
     records = _read_label_lines(session_id)
     if not records:
         return None
-    removed = records.pop()
+    group_id = records[-1].get("group_id")
+    removed: list[dict[str, Any]] = []
+    while records and (
+        records[-1].get("group_id") == group_id
+        if group_id is not None
+        else len(removed) == 0
+    ):
+        removed.append(records.pop())
+    removed.reverse()
     remaining = "".join(
         json.dumps(record, ensure_ascii=False) + "\n" for record in records
     )
     _atomic_write(path, remaining)
-    return removed
+    indices = [int(record["index"]) for record in removed if "index" in record]
+    return {
+        "records": removed,
+        "indices": indices,
+        "count": len(removed),
+        "index": indices[0] if indices else None,
+        "group_id": group_id,
+    }
 
 
 def export_labels(session_id: str) -> str:
