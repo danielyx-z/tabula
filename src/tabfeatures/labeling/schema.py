@@ -32,13 +32,13 @@ def normalize_label(value: object) -> str:
 def label_heads(label: str) -> dict[str, int]:
     """Expand one human label into the binary heads used by the model.
 
-    A bass flick is also a dead-string event, so it is positive for both
-    ``dead_string`` and ``bass_flick``.  A body tap is not a string event.
+    ``dead_string`` and ``bass_flick`` are kept as separate human labels for
+    provenance, but they train one merged ``dead_note`` head.  A body tap is
+    not a string event.
     """
     label = normalize_label(label)
     return {
         "pitched": int(label == "pitched"),
-        "dead_string": int(label in {"dead_string", "bass_flick"}),
-        "bass_flick": int(label == "bass_flick"),
+        "dead_note": int(label in {"dead_string", "bass_flick"}),
         "body_percussion": int(label == "body_percussion"),
     }

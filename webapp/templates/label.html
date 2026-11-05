@@ -88,11 +88,11 @@
           </button>
           <button type="button" class="labeler-key" data-label="dead_string">
             <span class="labeler-keycap">2</span>
-            <span>Dead string</span>
+            <span>Dead / flick</span>
           </button>
           <button type="button" class="labeler-key" data-label="bass_flick">
             <span class="labeler-keycap">3</span>
-            <span>Bass flick</span>
+            <span>Dead / flick (bass)</span>
           </button>
           <button type="button" class="labeler-key" data-label="body_percussion">
             <span class="labeler-keycap">4</span>
@@ -108,10 +108,12 @@
         </div>
 
         <p class="labeler-hint">
-          For a flick plus melody, press <strong>3</strong>. For body percussion
-          plus melody, press <strong>4</strong>. The melody note stays in the tab.
-          Use <strong>Shift+1</strong> only when a short run is entirely normal
-          pitched notes; Undo removes the whole run.
+          Both <strong>2</strong> and <strong>3</strong> train the same
+          dead/flick detector. The model only adds an <strong>x</strong> and
+          keeps any melody note already detected. For body percussion plus
+          melody, press <strong>4</strong>. Use <strong>Shift+1</strong> only
+          when a short run is entirely normal pitched notes; Undo removes the
+          whole run.
         </p>
         <p id="label-session-status" class="form-status" role="status" aria-live="polite"></p>
       </section>

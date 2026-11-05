@@ -91,6 +91,12 @@ def load_event_model(path: str | Path | None) -> EventModel | None:
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     if not isinstance(metadata, dict):
         raise ValueError("event model metadata must be an object")
+    unknown_heads = sorted(set(metadata.get("heads", [])) - set(HEADS))
+    if unknown_heads:
+        raise ValueError(
+            "event model has incompatible heads "
+            f"{unknown_heads}; retrain the model"
+        )
     heads: dict[str, Any] = {}
     for head in metadata.get("heads", []):
         model_path = target / f"{head}.json"

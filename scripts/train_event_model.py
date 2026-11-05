@@ -27,7 +27,7 @@ from tabfeatures.events.features import (  # noqa: E402
     load_audio,
 )
 from tabfeatures.events.model import MODEL_DIR, train_event_model  # noqa: E402
-from tabfeatures.events.schema import HEADS  # noqa: E402
+from tabfeatures.events.schema import HEADS, label_heads  # noqa: E402
 from tabfeatures.labeling.store import (  # noqa: E402
     LABEL_ROOT,
     latest_labels,
@@ -117,13 +117,7 @@ def _metrics(rows: list[dict[str, Any]], model) -> dict[str, Any]:
             ]
         )
         y = np.asarray(
-            [
-                1 if (
-                    row["label"] == head
-                    or (head == "dead_string" and row["label"] == "bass_flick")
-                ) else 0
-                for row in rows
-            ],
+            [label_heads(str(row["label"]))[head] for row in rows],
             dtype=np.float32,
         )
         probs = np.asarray(

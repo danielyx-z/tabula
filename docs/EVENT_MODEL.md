@@ -29,20 +29,21 @@ hundred to a few thousand labelled onsets.
 
 ```text
 pitched
-dead_string
-bass_flick
+dead_note        <- dead_string and bass_flick labels
 body_percussion
 ```
 
 The heads are independent because a pitched note and a percussive hit may
-coexist.  See [LABELING.md](LABELING.md) for the browser workflow.
+coexist.  Dead strings and bass flicks are merged into one additive `dead_note`
+head; the labeler still records which human label was used.  See
+[LABELING.md](LABELING.md) for the browser workflow.
 
-Aim for enough positives per rare head rather than an even four-way split.
-Roughly 30–50 real positives per rare head is a minimum; 100+ is better.  Keep
-a few normal `pitched` negatives for every rare positive, sample normal attacks
-across each recording, and never split one recording between train and test.
-The trainers use per-head class weighting, so a large `pitched` majority is
-fine as long as the rare heads are represented.
+Aim for enough positives per rare head rather than an even split.  Roughly
+30–50 real positives per rare head is a minimum; 100+ is better.  Keep a few
+normal `pitched` negatives for every rare positive, sample normal attacks across
+each recording, and never split one recording between train and test.  The
+trainers use per-head class weighting, so a large `pitched` majority is fine as
+long as the rare heads are represented.
 
 ## Features
 
@@ -88,8 +89,7 @@ The output is written to `data/models/events/`:
 ```text
 metadata.json
 pitched.json
-dead_string.json
-bass_flick.json
+dead_note.json
 body_percussion.json
 ```
 
@@ -138,9 +138,8 @@ and reports `event_model` statistics in `pipeline_report.json`.
 
 ## Safety behavior
 
-- `dead_string`: if a matched MIDI note has weak `pitched` confidence, the note
-  is dropped and replaced with `x` on its original/nearby string.
-- `bass_flick`: never drops the melody note; adds `x` on the lowest free string.
+- `dead_note`: merges dead-string and bass-flick labels.  It never drops a
+  melody note; it adds `x` on the lowest free string.
 - `body_percussion`: adds `x` on the lowest free string with a staccato dot;
   never drops the melody note.
 - If no string is free, the event is written to `event_model_review.json`

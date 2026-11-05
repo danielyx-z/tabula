@@ -48,13 +48,14 @@ onset classifier, and a multi-note label would be ambiguous.
 candidates.  Use it only when the whole short run is clearly normal pitched
 notes.  Undo removes the entire run.
 
-A bass flick plus melody is labelled `3`; the melody note is kept by the note
-validator, not replaced by this label.  Body percussion plus melody is `4`.
+Dead strings and bass flicks are separate human labels (`2` and `3`) but train
+one merged `dead_note` model head.  Both are additive: the detected melody note
+stays and an `x` is added on the lowest free string.  Body percussion plus
+melody is `4` and uses the same additive placement with a staccato dot.
 
 You do not need to label every normal note in a long rapid passage.  Label all
 suspected dead/flick/body events and a sample of normal attacks across each
-recording.  More recordings are more useful than an exact four-way class
-split.
+recording.  More recordings are more useful than an exact class split.
 
 ## Labels
 
@@ -68,8 +69,7 @@ The model expands these into binary heads:
 
 ```text
 pitched          <- label 1
-dead_string      <- labels 2 and 3
-bass_flick       <- label 3
+dead_note        <- labels 2 and 3 (merged)
 body_percussion  <- label 4
 ```
 

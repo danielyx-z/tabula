@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -42,18 +43,26 @@ def test_event_config_loads_defaults() -> None:
     assert config["feature_window"]["after_s"] == 0.30
 
 
-def test_label_heads_are_additive_for_flicks() -> None:
+def test_label_heads_merge_dead_and_flick() -> None:
     assert label_heads("pitched") == {
         "pitched": 1,
-        "dead_string": 0,
-        "bass_flick": 0,
+        "dead_note": 0,
+        "body_percussion": 0,
+    }
+    assert label_heads("dead_string") == {
+        "pitched": 0,
+        "dead_note": 1,
         "body_percussion": 0,
     }
     assert label_heads("bass_flick") == {
         "pitched": 0,
-        "dead_string": 1,
-        "bass_flick": 1,
+        "dead_note": 1,
         "body_percussion": 0,
+    }
+    assert label_heads("body_percussion") == {
+        "pitched": 0,
+        "dead_note": 0,
+        "body_percussion": 1,
     }
 
 
@@ -172,7 +181,7 @@ def _prediction(heads: dict[str, float], **extra: object) -> dict[str, object]:
     }
 
 
-def test_bass_flick_adds_x_without_dropping_melody() -> None:
+def test_dead_note_adds_x_without_dropping_melody() -> None:
     notes = [{"t": 0, "dur": 480, "pitch": 64, "s": 3, "f": 0}]
     result, dead, review, stats = apply_event_predictions(
         notes,
@@ -180,8 +189,7 @@ def test_bass_flick_adds_x_without_dropping_melody() -> None:
             _prediction(
                 {
                     "pitched": 0.2,
-                    "dead_string": 0.1,
-                    "bass_flick": 0.9,
+                    "dead_note": 0.9,
                     "body_percussion": 0.1,
                 }
             )
@@ -208,8 +216,7 @@ def test_body_percussion_uses_lowest_free_string_and_staccato() -> None:
             _prediction(
                 {
                     "pitched": 0.6,
-                    "dead_string": 0.1,
-                    "bass_flick": 0.1,
+                    "dead_note": 0.1,
                     "body_percussion": 0.9,
                 }
             )
@@ -235,8 +242,7 @@ def test_body_percussion_with_no_free_string_goes_to_review() -> None:
             _prediction(
                 {
                     "pitched": 0.1,
-                    "dead_string": 0.1,
-                    "bass_flick": 0.1,
+                    "dead_note": 0.1,
                     "body_percussion": 0.9,
                 }
             )
@@ -249,7 +255,7 @@ def test_body_percussion_with_no_free_string_goes_to_review() -> None:
     assert stats["skipped"] == 1
 
 
-def test_dead_string_can_replace_matched_note() -> None:
+def test_dead_note_never_drops_matched_note() -> None:
     notes = [{"t": 0, "dur": 480, "pitch": 64, "s": 3, "f": 0}]
     result, dead, _review, stats = apply_event_predictions(
         notes,
@@ -257,18 +263,19 @@ def test_dead_string_can_replace_matched_note() -> None:
             _prediction(
                 {
                     "pitched": 0.1,
-                    "dead_string": 0.9,
-                    "bass_flick": 0.1,
+                    "dead_note": 0.9,
                     "body_percussion": 0.1,
                 }
             )
         ],
         grid_ticks=240,
     )
-    assert result[0]["_drop"] is True
+    assert not result[0].get("_drop")
     assert len(dead) == 1
-    assert dead[0]["s"] == 3
-    assert stats["converted"] == 1
+    assert dead[0]["s"] == 1
+    assert dead[0]["source"] == "event_model_dead_note"
+    assert stats["additive"] == 1
+    assert stats["converted"] == 0
 
 
 def test_merge_keeps_body_percussion_marker() -> None:
@@ -320,6 +327,22 @@ def test_body_percussion_gp5_round_trip(tmp_path: Path) -> None:
     assert notes[0].effect.staccato is True
 
 
+def test_old_separate_head_model_is_rejected(tmp_path: Path) -> None:
+    from tabfeatures.events.model import load_event_model
+
+    (tmp_path / "metadata.json").write_text(
+        json.dumps(
+            {
+                "heads": ["bass_flick"],
+                "feature_names": list(FEATURE_NAMES),
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="incompatible heads"):
+        load_event_model(tmp_path)
+
+
 def test_tiny_model_trains_and_predicts(tmp_path: Path) -> None:
     pytest.importorskip("xgboost")
     from tabfeatures.events.model import load_event_model, train_event_model
@@ -344,8 +367,7 @@ def test_tiny_model_trains_and_predicts(tmp_path: Path) -> None:
     )
     assert set(payload["heads"]) == {
         "pitched",
-        "dead_string",
-        "bass_flick",
+        "dead_note",
         "body_percussion",
     }
     model = load_event_model(tmp_path / "model")
@@ -354,8 +376,7 @@ def test_tiny_model_trains_and_predicts(tmp_path: Path) -> None:
     scores = model.predict(rows[0]["features"])
     assert set(scores) == {
         "pitched",
-        "dead_string",
-        "bass_flick",
+        "dead_note",
         "body_percussion",
     }
     assert all(0.0 <= value <= 1.0 for value in scores.values())

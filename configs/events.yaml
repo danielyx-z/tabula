@@ -5,8 +5,8 @@
 event_model:
   path: data/models/events
   thresholds:
-    dead_string: 0.60
-    bass_flick: 0.60
+    # dead_string and bass_flick labels train this one merged head.
+    dead_note: 0.60
     body_percussion: 0.60
     pitched: 0.50
   review_margin: 0.15

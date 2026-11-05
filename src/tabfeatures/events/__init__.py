@@ -1,4 +1,4 @@
-"""Tiny event model for dead notes, bass flicks, and body percussion."""
+"""Tiny event model for dead/flick notes and body percussion."""
 
 from .config import load_events_config
 from .features import FEATURE_NAMES, extract_event_features, feature_vector

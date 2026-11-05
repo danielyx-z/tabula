@@ -135,12 +135,11 @@ def apply_event_predictions(
     thresholds: dict[str, float] | None = None,
     review_margin: float = 0.15,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
-    """Add model-detected dead/percussive events without deleting melody notes.
+    """Add model-detected dead/flick/percussive events without deleting notes.
 
-    A matched note is only dropped for a plain ``dead_string`` prediction when
-    the model is not also confident that it is pitched.  Flicks and body
-    percussion are additive: the melody note stays and the ``X`` goes on the
-    lowest free string.
+    ``dead_string`` and ``bass_flick`` share one ``dead_note`` head.  That head
+    is additive: the melody note stays and the ``X`` goes on the lowest free
+    string.  Body percussion is additive in the same way, with a staccato dot.
     """
     from .schema import DEFAULT_THRESHOLDS
 
@@ -148,7 +147,6 @@ def apply_event_predictions(
     result = [dict(note) for note in notes]
     dead_notes: list[dict[str, Any]] = []
     review: list[dict[str, Any]] = []
-    converted = 0
     additive = 0
     skipped = 0
 
@@ -173,21 +171,21 @@ def apply_event_predictions(
             for key, value in (prediction.get("heads") or {}).items()
         }
         body = heads.get("body_percussion", 0.0)
-        flick = heads.get("bass_flick", 0.0)
-        dead = heads.get("dead_string", 0.0)
-        pitched = heads.get("pitched", 0.0)
-        score = max(body, flick, dead)
-        if score < max(0.0, float(limits["dead_string"]) - float(review_margin)):
+        dead = heads.get("dead_note", 0.0)
+        score = max(body, dead)
+        if score < max(
+            0.0,
+            min(
+                float(limits["dead_note"]),
+                float(limits["body_percussion"]),
+            )
+            - float(review_margin),
+        ):
             continue
 
         is_body = body >= float(limits["body_percussion"])
-        is_flick = flick >= float(limits["bass_flick"])
-        is_dead = dead >= float(limits["dead_string"])
-        if score < max(
-            float(limits["dead_string"]),
-            float(limits["bass_flick"]),
-            float(limits["body_percussion"]),
-        ):
+        is_dead = dead >= float(limits["dead_note"])
+        if not is_body and not is_dead:
             review.append(
                 {
                     "tick": tick,
@@ -198,142 +196,50 @@ def apply_event_predictions(
             )
             continue
 
-        matched = bool(prediction.get("matched"))
-        matched_note = prediction.get("matched_note") or {}
-        if is_body or is_flick:
-            occupied = _occupied(result, dead_notes, grid_ticks)
-            string = _lowest_free(occupied, tick, grid_ticks)
-            if string is None:
-                review.append(
-                    {
-                        "tick": tick,
-                        "time": prediction.get("time"),
-                        "heads": prediction.get("heads"),
-                        "reason": "no_free_string",
-                        "kind": (
-                            "body_percussion" if is_body else "bass_flick"
-                        ),
-                    }
-                )
-                skipped += 1
-                continue
-            kind = "body_percussion" if is_body else "dead"
-            dead_notes.append(
+        occupied = _occupied(result, dead_notes, grid_ticks)
+        string = _lowest_free(occupied, tick, grid_ticks)
+        if string is None:
+            review.append(
                 {
-                    "t": tick,
-                    "dur": int(grid_ticks),
-                    "s": int(string),
-                    "f": 0,
-                    "kind": kind,
-                    "staccato": bool(is_body),
-                    "source": (
-                        "event_model_body_percussion"
-                        if is_body
-                        else "event_model_bass_flick"
-                    ),
-                    "confidence": round(float(body if is_body else flick), 6),
+                    "tick": tick,
+                    "time": prediction.get("time"),
+                    "heads": prediction.get("heads"),
+                    "reason": "no_free_string",
+                    "kind": "body_percussion" if is_body else "dead_note",
                 }
             )
-            additive += 1
+            skipped += 1
             continue
+        dead_notes.append(
+            {
+                "t": tick,
+                "dur": int(grid_ticks),
+                "s": int(string),
+                "f": 0,
+                "kind": "body_percussion" if is_body else "dead",
+                "staccato": bool(is_body),
+                "source": (
+                    "event_model_body_percussion"
+                    if is_body
+                    else "event_model_dead_note"
+                ),
+                "confidence": round(float(body if is_body else dead), 6),
+            }
+        )
+        additive += 1
 
-        if is_dead:
-            if matched and pitched < 0.50:
-                # Drop the MIDI note that the model says is a dead-string hit.
-                target_string = prediction.get("string")
-                target_pitch = matched_note.get("pitch")
-                dropped = False
-                for note in result:
-                    if int(note.get("t", -1)) != tick or note.get("_drop"):
-                        continue
-                    if (
-                        target_string is not None
-                        and int(note.get("s", -1)) != int(target_string)
-                    ):
-                        continue
-                    if (
-                        target_pitch is not None
-                        and int(note.get("pitch", -1)) != int(target_pitch)
-                    ):
-                        continue
-                    note["_drop"] = True
-                    target_string = int(note.get("s", -1))
-                    dropped = True
-                    break
-                occupied = _occupied(result, dead_notes, grid_ticks)
-                string = (
-                    int(target_string)
-                    if target_string is not None
-                    and (_slot(tick, grid_ticks), int(target_string)) not in occupied
-                    else _lowest_free(occupied, tick, grid_ticks)
-                )
-                if string is None:
-                    review.append(
-                        {
-                            "tick": tick,
-                            "time": prediction.get("time"),
-                            "heads": prediction.get("heads"),
-                            "reason": "no_free_string",
-                            "kind": "dead_string",
-                        }
-                    )
-                    skipped += 1
-                    continue
-                dead_notes.append(
-                    {
-                        "t": tick,
-                        "dur": int(grid_ticks),
-                        "s": int(string),
-                        "f": 0,
-                        "kind": "dead",
-                        "source": (
-                            "event_model_dead_string"
-                            if dropped
-                            else "event_model_dead_string_additive"
-                        ),
-                        "confidence": round(float(dead), 6),
-                    }
-                )
-                if dropped:
-                    converted += 1
-                else:
-                    additive += 1
-            else:
-                # No matched note, or the model still hears a real pitch:
-                # preserve the note and do not invent a same-string X.
-                occupied = _occupied(result, dead_notes, grid_ticks)
-                string = _lowest_free(occupied, tick, grid_ticks)
-                if string is None:
-                    review.append(
-                        {
-                            "tick": tick,
-                            "time": prediction.get("time"),
-                            "heads": prediction.get("heads"),
-                            "reason": "no_free_string",
-                            "kind": "dead_string",
-                        }
-                    )
-                    skipped += 1
-                    continue
-                dead_notes.append(
-                    {
-                        "t": tick,
-                        "dur": int(grid_ticks),
-                        "s": int(string),
-                        "f": 0,
-                        "kind": "dead",
-                        "source": "event_model_dead_string",
-                        "confidence": round(float(dead), 6),
-                    }
-                )
-                additive += 1
-
-    review.sort(key=lambda item: float(item.get("heads", {}).get("dead_string", 0.0)), reverse=True)
+    review.sort(
+        key=lambda item: max(
+            float(item.get("heads", {}).get("dead_note", 0.0)),
+            float(item.get("heads", {}).get("body_percussion", 0.0)),
+        ),
+        reverse=True,
+    )
     stats = {
         "enabled": True,
         "predictions": len(predictions),
         "dead_notes": len(dead_notes),
-        "converted": converted,
+        "converted": 0,
         "additive": additive,
         "reviewed": len(review),
         "skipped": skipped,
