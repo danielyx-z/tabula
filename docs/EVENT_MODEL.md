@@ -58,10 +58,11 @@ The feature set is audio-only.  It deliberately does not include MIDI pitch,
 string number, or expected-pitch support, because the browser labeller cannot
 provide them reliably and that would create train/serve skew.
 
-Each feature window ends before the next detected onset.  In fast passages the
-window gets shorter rather than including the following note.  Features that
-need more tail (`decay_db`, `f0_hz`, `voiced_prob`, `f0_std`) are `NaN` when the
-window is too short; XGBoost handles missing values natively.
+Each feature window ends before the next detected onset and starts after the
+previous one.  In fast passages the window gets shorter rather than including a
+neighbouring attack.  Features that need more tail (`decay_db`, `f0_hz`,
+`voiced_prob`, `f0_std`) are `NaN` when the window is too short; XGBoost
+handles missing values natively.
 
 ## Training
 
@@ -71,9 +72,16 @@ Label sessions first, then:
 .venv/bin/python scripts/train_event_model.py
 ```
 
-The training defaults (thresholds, review margin, and feature window) come from
-`configs/events.yaml` and are copied into the trained model metadata.  Change
-the output directory with `--out-dir`; change the config with `--config`.
+The training defaults (thresholds, review margin, feature window, and pitched
+dedupe distance) come from `configs/events.yaml` and are copied into the
+trained model metadata.  Change the output directory with `--out-dir`; change
+the config with `--config`.
+
+Repeated melody lines produce many near-identical `pitched` rows.  Training
+therefore drops pitched onsets that are very close to an earlier pitched onset
+from the same recording after feature standardization.  The default distance
+is `1.5`; `--pitched-dedupe-distance 0` disables it.  Rare-event rows are never
+deduplicated, and the stored labels are not changed.
 The output is written to `data/models/events/`:
 
 ```text

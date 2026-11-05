@@ -140,6 +140,7 @@ def train_event_model(
     thresholds: dict[str, float] | None = None,
     feature_window: dict[str, float] | None = None,
     review_margin: float = 0.15,
+    extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Train one tiny booster per head from ``{"features", "label"}`` rows."""
     import xgboost as xgb
@@ -215,6 +216,7 @@ def train_event_model(
                 "learning_rate": float(learning_rate),
                 "seed": int(seed),
             },
+            **(extra_metadata or {}),
         },
     )
     payload = model.save(out_dir)

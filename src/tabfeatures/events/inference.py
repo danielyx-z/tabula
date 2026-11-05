@@ -5,7 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .features import analysis_after, extract_event_features, load_audio
+from .features import (
+    analysis_after,
+    analysis_before,
+    extract_event_features,
+    load_audio,
+)
 from .model import EventModel
 
 
@@ -51,11 +56,18 @@ def predict_events(
             if order_index + 1 < len(ordered)
             else None
         )
+        previous_onset = (
+            ordered[order_index - 1][0] if order_index > 0 else None
+        )
         features = extract_event_features(
             y,
             actual_sr,
             onset_s,
-            before_s=window_before,
+            before_s=analysis_before(
+                onset_s,
+                previous_onset,
+                max_before_s=window_before,
+            ),
             after_s=analysis_after(
                 onset_s,
                 next_onset,

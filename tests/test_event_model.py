@@ -16,12 +16,14 @@ sys.path.insert(0, str(ROOT / "src"))
 from tabfeatures.events.features import (  # noqa: E402
     FEATURE_NAMES,
     analysis_after,
+    analysis_before,
     extract_event_features,
 )
 from tabfeatures.events import inference  # noqa: E402
 from tabfeatures.events.inference import apply_event_predictions  # noqa: E402
 from tabfeatures.dead import merge_dead_notes  # noqa: E402
 from tabfeatures.events.config import load_events_config  # noqa: E402
+from tabfeatures.events.dedupe import dedupe_pitched_rows  # noqa: E402
 from tabfeatures.events.schema import label_heads  # noqa: E402
 from tabfeatures.gp5 import build_gp5  # noqa: E402
 
@@ -73,6 +75,37 @@ def test_analysis_window_stops_before_next_onset() -> None:
     assert analysis_after(1.0, 1.021) == pytest.approx(0.01)
 
 
+def test_analysis_window_starts_after_previous_onset() -> None:
+    assert analysis_before(1.0, None) == pytest.approx(0.02)
+    assert analysis_before(1.0, 0.8) == pytest.approx(0.02)
+    assert analysis_before(1.0, 0.97) == pytest.approx(0.01)
+    assert analysis_before(1.0, 0.99) == pytest.approx(0.005)
+
+
+def _features_at(base: float) -> dict[str, float]:
+    return {
+        name: base + index * 0.01
+        for index, name in enumerate(FEATURE_NAMES)
+    }
+
+
+def test_pitched_dedupe_is_per_session_and_keeps_rare_rows() -> None:
+    rows = [
+        {"session_id": "a", "label": "pitched", "features": _features_at(1.0)},
+        {"session_id": "a", "label": "pitched", "features": _features_at(1.0)},
+        {"session_id": "a", "label": "pitched", "features": _features_at(9.0)},
+        {"session_id": "b", "label": "pitched", "features": _features_at(1.0)},
+        {"session_id": "a", "label": "dead_string", "features": _features_at(1.0)},
+    ]
+    result, summary = dedupe_pitched_rows(rows, distance=1.5)
+    labels = [row["label"] for row in result]
+    assert summary["pitched_before"] == 4
+    assert summary["pitched_after"] == 3
+    assert summary["dropped"] == 1
+    assert labels.count("pitched") == 3
+    assert labels.count("dead_string") == 1
+
+
 def test_inference_trims_each_window_at_next_onset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -99,14 +132,18 @@ def test_inference_trims_each_window_at_next_onset(
 
     result = inference.predict_events(
         "unused.wav",
-        [{"time": 1.0}, {"time": 1.08}, {"time": 2.0}],
+        [{"time": 1.0}, {"time": 1.03}, {"time": 1.08}, {"time": 2.0}],
         FakeModel(),
     )
-    assert len(result) == 3
-    assert captured == [
-        (1.0, 0.02, pytest.approx(0.06)),
-        (1.08, 0.02, pytest.approx(0.30)),
-        (2.0, 0.02, pytest.approx(0.30)),
+    assert len(result) == 4
+    assert [
+        (onset, pytest.approx(before), pytest.approx(after))
+        for onset, before, after in captured
+    ] == [
+        (1.0, pytest.approx(0.02), pytest.approx(0.01)),
+        (1.03, pytest.approx(0.01), pytest.approx(0.03)),
+        (1.08, pytest.approx(0.02), pytest.approx(0.30)),
+        (2.0, pytest.approx(0.02), pytest.approx(0.30)),
     ]
 
 

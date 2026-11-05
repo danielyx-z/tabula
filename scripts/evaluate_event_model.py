@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from tabfeatures.events.features import (  # noqa: E402
     analysis_after,
+    analysis_before,
     extract_event_features,
     load_audio,
 )
@@ -51,6 +52,11 @@ def _rows(
             if int(index) + 1 < len(candidates)
             else None
         )
+        previous_onset = (
+            float(candidates[int(index) - 1].get("onset_s", 0.0))
+            if int(index) > 0
+            else None
+        )
         rows.append(
             {
                 "label": str(record.get("label")),
@@ -58,7 +64,11 @@ def _rows(
                     y,
                     sr,
                     onset_s,
-                    before_s=float(feature_window.get("before_s", 0.02)),
+                    before_s=analysis_before(
+                        onset_s,
+                        previous_onset,
+                        max_before_s=float(feature_window.get("before_s", 0.02)),
+                    ),
                     after_s=analysis_after(
                         onset_s,
                         next_onset,

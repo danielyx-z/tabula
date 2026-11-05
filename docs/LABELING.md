@@ -22,8 +22,9 @@ directory is cleaned automatically.
    closer than 40 ms, and adds percussive onsets that do not overlap a detected
    note.  That gives one short window per attack: pitched notes stay aligned
    with the note, while dead strings, flicks, and body knocks still get
-   candidates.  The window stops before the next attack, so a fast run is heard
-   as separate attacks rather than one overlapping phrase.
+   candidates.  Playback uses a short lead-in, starts after the previous
+   attack, and stops before the next attack, so a fast run is heard as separate
+   attacks rather than one overlapping phrase.
 4. Listen to the target attack and press:
 
 ```text

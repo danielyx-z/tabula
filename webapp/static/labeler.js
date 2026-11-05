@@ -8,7 +8,7 @@
     "4": "body_percussion",
   };
 
-  const PLAY_BEFORE_S = 0.08;
+  const PLAY_BEFORE_S = 0.03;
   const PLAY_AFTER_S = 0.30;
   const PLAY_GUARD_S = 0.005;
 
@@ -136,6 +136,7 @@
     stopPlayback();
     try {
       const onset = Number(candidate.onset_s) || 0;
+      const previous = state.session.candidates[state.index - 1] || null;
       const next = state.session.candidates[state.index + 1] || null;
       const duration = Number(state.session.duration)
         || Number(els.audio.duration)
@@ -145,7 +146,12 @@
         stopAt = Math.min(stopAt, Number(next.onset_s) - PLAY_GUARD_S);
       }
       if (duration) stopAt = Math.min(stopAt, duration);
-      els.audio.currentTime = Math.max(0, onset - PLAY_BEFORE_S);
+      let startAt = Math.max(0, onset - PLAY_BEFORE_S);
+      if (previous) {
+        const afterPrevious = Number(previous.onset_s) + PLAY_GUARD_S;
+        if (afterPrevious < onset) startAt = Math.max(startAt, afterPrevious);
+      }
+      els.audio.currentTime = startAt;
       state.stopAt = Math.max(onset + 0.01, stopAt);
       state.playing = true;
       await els.audio.play();

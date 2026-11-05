@@ -19,8 +19,10 @@ from tabfeatures.events.config import (  # noqa: E402
     load_events_config,
     resolve_config_path,
 )
+from tabfeatures.events.dedupe import dedupe_pitched_rows  # noqa: E402
 from tabfeatures.events.features import (  # noqa: E402
     analysis_after,
+    analysis_before,
     extract_event_features,
     load_audio,
 )
@@ -58,11 +60,20 @@ def _rows_for_session(
             if int(index) + 1 < len(candidates)
             else None
         )
+        previous_onset = (
+            float(candidates[int(index) - 1].get("onset_s", 0.0))
+            if int(index) > 0
+            else None
+        )
         features = extract_event_features(
             y,
             sr,
             onset_s,
-            before_s=float(feature_window.get("before_s", 0.02)),
+            before_s=analysis_before(
+                onset_s,
+                previous_onset,
+                max_before_s=float(feature_window.get("before_s", 0.02)),
+            ),
             after_s=analysis_after(
                 onset_s,
                 next_onset,
@@ -141,6 +152,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-depth", type=int, default=3)
     parser.add_argument("--learning-rate", type=float, default=0.05)
     parser.add_argument(
+        "--pitched-dedupe-distance",
+        type=float,
+        default=None,
+        help=(
+            "drop near-identical pitched onsets within a recording; "
+            "0 disables (default: event config pitched_dedupe_distance)"
+        ),
+    )
+    parser.add_argument(
         "--holdout-session",
         action="append",
         default=[],
@@ -174,6 +194,22 @@ def main(argv: list[str] | None = None) -> int:
     if not rows:
         raise SystemExit("no labeled onsets found in the training sessions")
 
+    dedupe_distance = (
+        float(args.pitched_dedupe_distance)
+        if args.pitched_dedupe_distance is not None
+        else float(config.get("pitched_dedupe_distance", 1.5))
+    )
+    rows, dedupe_summary = dedupe_pitched_rows(
+        rows,
+        distance=dedupe_distance,
+    )
+    print(
+        "pitched dedupe: "
+        f"{dedupe_summary['pitched_before']} -> "
+        f"{dedupe_summary['pitched_after']} "
+        f"({dedupe_summary['dropped']} dropped, "
+        f"distance {dedupe_summary['distance']:.2f})"
+    )
     print(f"training rows: {len(rows)} from {len(train_sessions)} session(s)")
     payload = train_event_model(
         rows,
@@ -184,6 +220,7 @@ def main(argv: list[str] | None = None) -> int:
         thresholds=config.get("thresholds"),
         feature_window=feature_window,
         review_margin=float(config.get("review_margin", 0.15)),
+        extra_metadata={"pitched_dedupe": dedupe_summary},
     )
     print(json.dumps(payload, indent=2))
 

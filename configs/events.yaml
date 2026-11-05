@@ -10,6 +10,10 @@ event_model:
     body_percussion: 0.60
     pitched: 0.50
   review_margin: 0.15
+  # Optional training-only near-duplicate filter for the abundant pitched
+  # class.  Rows are compared after feature standardization, within one
+  # recording.  Set to 0 to keep every pitched onset.
+  pitched_dedupe_distance: 1.5
   feature_window:
     before_s: 0.02
     after_s: 0.30

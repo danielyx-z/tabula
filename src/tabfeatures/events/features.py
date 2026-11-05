@@ -70,6 +70,30 @@ def analysis_after(
     )
 
 
+def analysis_before(
+    onset_s: float,
+    previous_onset_s: float | None,
+    *,
+    max_before_s: float = DEFAULT_BEFORE_S,
+    guard_s: float = GUARD_S,
+    min_before_s: float = 0.005,
+) -> float:
+    """Return the usable lead-in length for one onset.
+
+    The window starts after the previous detected attack so the previous note's
+    attack does not leak into this sample.
+    """
+    if previous_onset_s is None:
+        return float(max_before_s)
+    gap = float(onset_s) - float(previous_onset_s)
+    if gap <= 0:
+        return float(min_before_s)
+    return max(
+        float(min_before_s),
+        min(float(max_before_s), gap - float(guard_s)),
+    )
+
+
 def load_audio(path: str | Path, *, sr: int = 22050) -> tuple[np.ndarray, int]:
     y, actual_sr = librosa.load(str(path), sr=sr, mono=True)
     return np.asarray(y, dtype=np.float32), int(actual_sr)

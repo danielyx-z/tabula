@@ -87,7 +87,7 @@ def build_candidates(
     onsets: list[float],
     duration_s: float,
     *,
-    before: float = 0.08,
+    before: float = 0.03,
     after: float = 0.30,
 ) -> list[dict[str, Any]]:
     """Build sorted playback windows from onset times."""
@@ -118,7 +118,7 @@ def detect_candidates(
     hop_length: int = 256,
     delta: float = 0.05,
     wait: int = 2,
-    before: float = 0.08,
+    before: float = 0.03,
     after: float = 0.30,
     min_gap_s: float = 0.06,
 ) -> dict[str, Any]:
