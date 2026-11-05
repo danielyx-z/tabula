@@ -26,11 +26,17 @@ def _click_wav(path: Path, times: list[float], *, sr: int = 22050) -> None:
     sf.write(path, y, sr)
 
 
-def test_candidates_are_split_and_bounded(tmp_path: Path) -> None:
+def test_candidates_are_split_and_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     audio = tmp_path / "clicks.wav"
     _click_wav(audio, [0.2, 0.7, 1.2])
+    monkeypatch.setattr(candidates, "_basic_pitch_onsets", lambda _path: [])
     result = candidates.detect_candidates(audio)
     rows = result["candidates"]
+    assert result["version"] == 2
+    assert result["detector"] == "percussive"
     assert 3 <= len(rows) <= 4
     for row in rows:
         assert row["start_s"] <= row["onset_s"] <= row["end_s"]
@@ -39,6 +45,32 @@ def test_candidates_are_split_and_bounded(tmp_path: Path) -> None:
         rows[i]["onset_s"] < rows[i + 1]["onset_s"]
         for i in range(len(rows) - 1)
     )
+
+
+def test_group_onsets_merges_chord_notes() -> None:
+    assert candidates._group_onsets([0.500, 0.488, 0.511, 0.685], merge_s=0.04) == [
+        0.488,
+        0.685,
+    ]
+
+
+def test_detection_keeps_basic_pitch_note_alignment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    audio = tmp_path / "clicks.wav"
+    _click_wav(audio, [0.2, 0.7, 1.2])
+    monkeypatch.setattr(
+        candidates,
+        "_basic_pitch_onsets",
+        lambda _path: [0.2, 0.7, 1.2],
+    )
+    result = candidates.detect_candidates(audio)
+    rows = result["candidates"]
+    assert result["detector"] == "basic_pitch+percussive"
+    onsets = [row["onset_s"] for row in rows]
+    for expected in (0.2, 0.7, 1.2):
+        assert any(abs(onset - expected) <= 0.003 for onset in onsets)
 
 
 def test_store_append_undo_and_export(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -18,10 +18,12 @@ directory is cleaned automatically.
 
 1. Open `http://127.0.0.1:8000/label`.
 2. Choose an audio file.
-3. The server detects onsets, merges detections closer than 60 ms, and creates
-   one short playback window per onset.  The window stops before the next
-   detected attack, so a fast run is heard as separate attacks rather than one
-   overlapping phrase.
+3. The server finds pitched note starts with basic-pitch, merges chord notes
+   closer than 40 ms, and adds percussive onsets that do not overlap a detected
+   note.  That gives one short window per attack: pitched notes stay aligned
+   with the note, while dead strings, flicks, and body knocks still get
+   candidates.  The window stops before the next attack, so a fast run is heard
+   as separate attacks rather than one overlapping phrase.
 4. Listen to the target attack and press:
 
 ```text
