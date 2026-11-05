@@ -8,7 +8,7 @@
     "4": "body_percussion",
   };
 
-  const PLAY_BEFORE_S = 0.03;
+  const PLAY_BEFORE_S = 0.01;
   const PLAY_AFTER_S = 0.30;
   const PLAY_GUARD_S = 0.005;
 
