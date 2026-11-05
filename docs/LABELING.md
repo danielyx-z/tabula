@@ -23,8 +23,9 @@ directory is cleaned automatically.
    note.  That gives one short window per attack: pitched notes stay aligned
    with the note, while dead strings, flicks, and body knocks still get
    candidates.  Playback uses a short lead-in, starts after the previous
-   attack, and stops before the next attack, so a fast run is heard as separate
-   attacks rather than one overlapping phrase.
+   attack, and stops 30 ms before the next attack.  The guard is wider than one
+   detection frame because a detected onset can lag the audible attack by
+   ~10–20 ms; without it the next attack's transient leaks into the clip.
 4. Listen to the target attack and press:
 
 ```text

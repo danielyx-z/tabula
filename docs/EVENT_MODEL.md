@@ -58,11 +58,12 @@ The feature set is audio-only.  It deliberately does not include MIDI pitch,
 string number, or expected-pitch support, because the browser labeller cannot
 provide them reliably and that would create train/serve skew.
 
-Each feature window ends before the next detected onset and starts after the
-previous one.  In fast passages the window gets shorter rather than including a
-neighbouring attack.  Features that need more tail (`decay_db`, `f0_hz`,
-`voiced_prob`, `f0_std`) are `NaN` when the window is too short; XGBoost
-handles missing values natively.
+Each feature window ends 30 ms before the next detected onset and starts after
+the previous one.  The guard covers the normal onset-detection lag, so a
+transient from the next attack is not folded into the current sample.  In fast
+passages the window gets shorter rather than including a neighbouring attack.
+Features that need more tail (`decay_db`, `f0_hz`, `voiced_prob`, `f0_std`) are
+`NaN` when the window is too short; XGBoost handles missing values natively.
 
 ## Training
 

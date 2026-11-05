@@ -47,6 +47,12 @@ def test_candidates_are_split_and_bounded(
     )
 
 
+def test_candidate_window_leaves_guard_before_next_attack() -> None:
+    rows = candidates.build_candidates([1.0, 1.2], 2.0)
+    assert rows[0]["end_s"] == pytest.approx(1.17)
+    assert rows[0]["end_s"] < rows[1]["onset_s"] - 0.02
+
+
 def test_group_onsets_merges_chord_notes() -> None:
     assert candidates._group_onsets([0.500, 0.488, 0.511, 0.685], merge_s=0.04) == [
         0.488,

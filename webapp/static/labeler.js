@@ -10,7 +10,8 @@
 
   const PLAY_BEFORE_S = 0.01;
   const PLAY_AFTER_S = 0.30;
-  const PLAY_GUARD_S = 0.005;
+  const PLAY_BEFORE_GUARD_S = 0.005;
+  const PLAY_AFTER_GUARD_S = 0.03;
 
   const els = {
     setup: document.getElementById("label-setup"),
@@ -143,12 +144,12 @@
         || 0;
       let stopAt = onset + PLAY_AFTER_S;
       if (next) {
-        stopAt = Math.min(stopAt, Number(next.onset_s) - PLAY_GUARD_S);
+        stopAt = Math.min(stopAt, Number(next.onset_s) - PLAY_AFTER_GUARD_S);
       }
       if (duration) stopAt = Math.min(stopAt, duration);
       let startAt = Math.max(0, onset - PLAY_BEFORE_S);
       if (previous) {
-        const afterPrevious = Number(previous.onset_s) + PLAY_GUARD_S;
+        const afterPrevious = Number(previous.onset_s) + PLAY_BEFORE_GUARD_S;
         if (afterPrevious < onset) startAt = Math.max(startAt, afterPrevious);
       }
       els.audio.currentTime = startAt;

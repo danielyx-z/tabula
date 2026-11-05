@@ -71,14 +71,14 @@ def test_features_have_stable_audio_only_schema() -> None:
 def test_analysis_window_stops_before_next_onset() -> None:
     assert analysis_after(1.0, None) == pytest.approx(0.30)
     assert analysis_after(1.0, 1.5) == pytest.approx(0.30)
-    assert analysis_after(1.0, 1.08) == pytest.approx(0.06)
+    assert analysis_after(1.0, 1.08) == pytest.approx(0.05)
     assert analysis_after(1.0, 1.021) == pytest.approx(0.01)
 
 
 def test_analysis_window_starts_after_previous_onset() -> None:
     assert analysis_before(1.0, None) == pytest.approx(0.02)
     assert analysis_before(1.0, 0.8) == pytest.approx(0.02)
-    assert analysis_before(1.0, 0.97) == pytest.approx(0.01)
+    assert analysis_before(1.0, 0.97) == pytest.approx(0.005)
     assert analysis_before(1.0, 0.99) == pytest.approx(0.005)
 
 
@@ -141,7 +141,7 @@ def test_inference_trims_each_window_at_next_onset(
         for onset, before, after in captured
     ] == [
         (1.0, pytest.approx(0.02), pytest.approx(0.01)),
-        (1.03, pytest.approx(0.01), pytest.approx(0.03)),
+        (1.03, pytest.approx(0.005), pytest.approx(0.02)),
         (1.08, pytest.approx(0.02), pytest.approx(0.30)),
         (2.0, pytest.approx(0.02), pytest.approx(0.30)),
     ]

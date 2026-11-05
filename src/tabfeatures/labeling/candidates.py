@@ -89,14 +89,22 @@ def build_candidates(
     *,
     before: float = 0.01,
     after: float = 0.30,
+    end_guard: float = 0.03,
 ) -> list[dict[str, Any]]:
-    """Build sorted playback windows from onset times."""
+    """Build sorted playback windows from onset times.
+
+    The end guard is intentionally wider than a single audio frame.  The next
+    detected onset can lag the audible attack by ~10–20 ms, so a 5 ms guard let
+    the start of the next attack leak into this sample.
+    """
     merged = sorted(float(value) for value in onsets)
     candidates: list[dict[str, Any]] = []
     for index, onset_s in enumerate(merged):
         next_onset = merged[index + 1] if index + 1 < len(merged) else duration_s
-        end_s = min(duration_s, onset_s + float(after), next_onset - 0.005)
+        end_s = min(duration_s, onset_s + float(after), next_onset - float(end_guard))
         start_s = max(0.0, onset_s - float(before))
+        if end_s <= start_s:
+            end_s = min(duration_s, next_onset - 0.001)
         if end_s <= start_s:
             end_s = min(duration_s, start_s + 0.1)
         candidates.append(
