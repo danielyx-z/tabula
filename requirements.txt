@@ -1,5 +1,7 @@
 numpy>=1.26,<3
+scipy>=1.11,<2
 PyYAML>=6,<7
+basic-pitch>=0.4,<1
 # Tested stack (fractal RTX 3070 and WATcloud RTX 3090). Install the
 # CUDA-enabled wheel first on the cluster:
 #   pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121

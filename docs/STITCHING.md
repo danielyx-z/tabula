@@ -75,7 +75,8 @@ After editing `articulations.json`, rerun only the last stage:
 | `percussion_events.json` | onsets after reconciliation (matched/unmatched, snapped ticks) |
 | `tabula/` | the job's own `final.json`, `final.mid`, `report.json`, logs |
 | `dead_notes.json` | inserted `x` notes, with ticks and confidence |
-| `non_note_review.json` | matched notes scored as possible non-notes, with audio features |
+| `non_note_review.json` | note decisions with presence, Basic Pitch, and event evidence |
+| `basic_pitch_notes.json` | independent Basic Pitch note events used as a second opinion |
 | `hp_review.json` | H/P candidates, accepted/rejected state, gaps, confidence |
 | `articulations.json` | editable manual overlay (created empty) |
 | `tab_with_features.txt` | ASCII tab with `x`, `h`, `p`, slide/bend/vibrato markers |
@@ -199,6 +200,35 @@ Existing jobs created before raw audio classes were preserved are backfilled
 from `audio_events.json` when Stage 3 is resumed.  Re-run `--stage audio`
 first if that raw file is also missing.
 
+## Note presence and Basic Pitch
+
+The event heuristic is the first pass, not the final word.  Stage 3 also builds
+a per-note harmonic-template fit for each chord/onset:
+
+- every note contributes a fundamental + overtone template,
+- the spectrum is fitted with all chord templates plus a broadband noise
+  template,
+- a note whose coefficient collapses is absent; a note that keeps a strong
+  coefficient is pitched.
+
+A nearby Basic Pitch note is an independent "pitched" vote.  Basic Pitch is
+used conservatively: a detected note is never converted to `x`, and a missing
+note in a repeated run is compared with the Basic Pitch-detected notes in that
+same run.  High strings decay quickly, so their presence threshold is stricter
+than the low strings.
+
+Evidence is used in three ways:
+
+1. **Revert false positives** — if Basic Pitch or strong harmonic presence says
+   the note is real, the old `x` is removed.
+2. **Recover missed dead notes in runs** — a missing note whose presence is
+   clearly below the Basic Pitch-detected notes in the same run becomes `x`.
+3. **Mixed chords** — a percussive chord with some sharply absent notes drops
+   only those strings and keeps the pitched notes.  A fully pitched percussive
+   chord is a slap strum and gets one `x` on the lowest free string.
+
+Basic Pitch output is written to `basic_pitch_notes.json` for inspection.
+
 ## H/P guard rails
 
 An inferred H/P requires all of the following:
@@ -273,6 +303,14 @@ entirely with `--no-auto-hp`.
   that look harmonic rather than percussive.
 * `--slap-min-pitch-support 0.12` — chord pitch support needed to keep a
   percussive chord and add an `x` beneath it instead of replacing notes.
+* `--basic-pitch` / `--no-basic-pitch` — enable or disable the independent
+  Basic Pitch note-presence vote (default: on).
+* `--presence-dead-threshold 0.65`,
+  `--presence-pitched-threshold 0.70`,
+  `--presence-run-ratio 0.90` — harmonic-presence thresholds for dead,
+  pitched, and repeated-run decisions.
+* `--basic-pitch-tolerance 0.10` — allowed Basic Pitch onset difference in
+  seconds.
 * `--no-non-note` — disable matched non-note conversion.
 * `--min-match-rate 0.5` — safety guard against mismatched audio/MIDI.
 * `--dead-strings lowest|nearest|all`.

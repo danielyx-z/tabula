@@ -38,7 +38,9 @@ from tabfeatures import (  # noqa: E402
     detect_audio_events,
     infer_hp,
     insert_dead_notes,
+    load_basic_pitch_notes,
     load_overlay,
+    NotePresenceAnalyzer,
     parse_grid,
     read_midi_notes,
     render_tab_with_features,
@@ -287,6 +289,21 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
         print("[stitch] measuring audio note evidence ...", flush=True)
         analysis = AudioAnalysis.load(args.audio, sr=args.sr)
 
+    tick_seconds = None
+    if analysis is not None or args.auto_hp:
+        pm, _ = read_midi_notes(timing_midi)
+        tick_seconds = lambda tick: tick_to_seconds(pm, tick)
+
+    presence = NotePresenceAnalyzer(analysis) if analysis is not None else None
+    basic_pitch_notes = None
+    if args.non_note and args.basic_pitch:
+        print("[stitch] running basic-pitch note presence ...", flush=True)
+        try:
+            basic_pitch_notes = load_basic_pitch_notes(args.audio)
+            _write_json(out / "basic_pitch_notes.json", basic_pitch_notes)
+        except Exception as exc:  # noqa: BLE001 - optional second opinion
+            print(f"[stitch] basic-pitch unavailable: {exc}", flush=True)
+
     non_note_dead: list[dict[str, Any]] = []
     non_note_review: list[dict[str, Any]] = []
     non_note_stats: dict[str, Any] = {"enabled": False}
@@ -301,10 +318,20 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
             unmatched_max_harmonic_ratio=args.non_note_unmatched_max_harmonic_ratio,
             review_confidence=args.non_note_review_confidence,
             slap_min_pitch_support=args.slap_min_pitch_support,
+            presence=presence,
+            basic_pitch_notes=basic_pitch_notes,
+            tick_seconds=tick_seconds,
+            offset_sec=float(alignment.get("applied_offset_sec", 0.0) or 0.0),
+            presence_dead_threshold=args.presence_dead_threshold,
+            presence_pitched_threshold=args.presence_pitched_threshold,
+            run_presence_ratio=args.presence_run_ratio,
+            basic_pitch_tolerance_s=args.basic_pitch_tolerance,
         )
         print(
             f"[stitch] non-note evidence: {non_note_stats.get('converted', 0)} replaced, "
             f"{non_note_stats.get('slap', 0)} slap markers, "
+            f"{non_note_stats.get('presence_run_added', 0)} run recoveries, "
+            f"{non_note_stats.get('presence_reverted', 0)} false positives reverted, "
             f"{non_note_stats.get('reviewed', 0)} in review",
             flush=True,
         )
@@ -315,15 +342,13 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
         strings=args.dead_strings,
         grid_ticks=grid_ticks,
         min_confidence=args.min_confidence,
-        skip_ticks=set(non_note_stats.get("used_event_ticks", [])),
+        skip_ticks=(
+            set(non_note_stats.get("used_event_ticks", []))
+            | set(non_note_stats.get("protected_ticks", []))
+        ),
     )
     dead_notes = merge_dead_notes(non_note_dead, dead_notes)
     final_notes = trim_notes_for_dead(final_notes, dead_notes)
-
-    tick_seconds = None
-    if analysis is not None and args.auto_hp:
-        pm, _ = read_midi_notes(timing_midi)
-        tick_seconds = lambda tick: tick_to_seconds(pm, tick)
 
     if args.auto_hp:
         features, hp_review = infer_hp(
@@ -488,6 +513,43 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.60,
         help="minimum score to convert a matched non-note to X (default: 0.60)",
+    )
+    parser.add_argument(
+        "--basic-pitch",
+        dest="basic_pitch",
+        action="store_true",
+        default=True,
+        help="use basic-pitch as a second opinion for note presence (default: on)",
+    )
+    parser.add_argument(
+        "--no-basic-pitch",
+        dest="basic_pitch",
+        action="store_false",
+        help="disable basic-pitch note presence",
+    )
+    parser.add_argument(
+        "--presence-dead-threshold",
+        type=float,
+        default=0.65,
+        help="presence at or below this is dead evidence (default: 0.65)",
+    )
+    parser.add_argument(
+        "--presence-pitched-threshold",
+        type=float,
+        default=0.70,
+        help="presence at or above this keeps a note pitched (default: 0.70)",
+    )
+    parser.add_argument(
+        "--presence-run-ratio",
+        type=float,
+        default=0.90,
+        help="run-relative presence ratio for missing Basic Pitch notes (default: 0.90)",
+    )
+    parser.add_argument(
+        "--basic-pitch-tolerance",
+        type=float,
+        default=0.10,
+        help="Basic Pitch onset tolerance in seconds (default: 0.10)",
     )
     parser.add_argument(
         "--non-note-unmatched-min-confidence",

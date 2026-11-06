@@ -18,7 +18,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from statistics import median
+from typing import Any, Callable
 
 from .dead import lowest_free_string
 from .evidence import (
@@ -28,6 +29,7 @@ from .evidence import (
     nearest_unmatched_event_for_note,
     non_note_score,
 )
+from .note_presence import basic_pitch_presence
 from .ticks import PPQ
 
 
@@ -118,6 +120,14 @@ def detect_non_notes(
     unmatched_max_harmonic_ratio: float = 0.70,
     review_confidence: float = 0.45,
     slap_min_pitch_support: float = 0.12,
+    presence: Any | None = None,
+    basic_pitch_notes: list[dict[str, Any]] | None = None,
+    tick_seconds: Callable[[int], float] | None = None,
+    offset_sec: float = 0.0,
+    presence_dead_threshold: float = 0.65,
+    presence_pitched_threshold: float = 0.70,
+    run_presence_ratio: float = 0.90,
+    basic_pitch_tolerance_s: float = 0.10,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     """Return notes with ``_drop`` markers, replacement/additive dead notes, and review.
 
@@ -137,6 +147,34 @@ def detect_non_notes(
         raise ValueError("review_confidence must be between 0 and 1")
     if slap_min_pitch_support < 0.0:
         raise ValueError("slap_min_pitch_support must be >= 0")
+    if presence_dead_threshold < 0.0 or presence_dead_threshold > 1.0:
+        raise ValueError("presence_dead_threshold must be between 0 and 1")
+    if presence_pitched_threshold < 0.0 or presence_pitched_threshold > 1.0:
+        raise ValueError("presence_pitched_threshold must be between 0 and 1")
+    if run_presence_ratio < 0.0:
+        raise ValueError("run_presence_ratio must be >= 0")
+
+    if presence is not None or basic_pitch_notes is not None:
+        return _detect_with_presence(
+            notes,
+            events,
+            analysis=analysis,
+            audio_path=audio_path,
+            presence=presence,
+            basic_pitch_notes=basic_pitch_notes,
+            grid_ticks=grid_ticks,
+            tick_seconds=tick_seconds,
+            offset_sec=offset_sec,
+            min_confidence=min_confidence,
+            unmatched_min_confidence=unmatched_min_confidence,
+            unmatched_max_harmonic_ratio=unmatched_max_harmonic_ratio,
+            review_confidence=review_confidence,
+            slap_min_pitch_support=slap_min_pitch_support,
+            presence_dead_threshold=presence_dead_threshold,
+            presence_pitched_threshold=presence_pitched_threshold,
+            run_presence_ratio=run_presence_ratio,
+            basic_pitch_tolerance_s=basic_pitch_tolerance_s,
+        )
 
     if analysis is None and audio_path is not None:
         analysis = AudioAnalysis.load(audio_path)
@@ -424,3 +462,382 @@ def detect_non_notes(
         "used_event_ticks": sorted(used_event_ticks),
     }
     return result, dead_notes, review, stats
+
+
+def _pick_group_event(events: list[dict[str, Any] | None]) -> dict[str, Any] | None:
+    available = [event for event in events if event is not None]
+    if not available:
+        return None
+    available.sort(
+        key=lambda event: (
+            bool(event.get("matched")),
+            float(event.get("audio_confidence", 0.0) or 0.0),
+            float(event.get("strength", 0.0) or 0.0),
+        )
+    )
+    return available[-1]
+
+
+def _event_review_event(event: dict[str, Any] | None) -> dict[str, Any]:
+    if event is not None:
+        return event
+    return {
+        "time": 0.0,
+        "class": "presence",
+        "audio_confidence": 0.0,
+        "strength": 0.0,
+        "harmonic_ratio": 0.0,
+        "voiced_prob": 0.0,
+    }
+
+
+def _detect_with_presence(
+    notes: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+    *,
+    analysis: AudioAnalysis | None,
+    audio_path: str | Path | None,
+    presence: Any | None,
+    basic_pitch_notes: list[dict[str, Any]] | None,
+    grid_ticks: int,
+    tick_seconds: Callable[[int], float] | None,
+    offset_sec: float,
+    min_confidence: float,
+    unmatched_min_confidence: float,
+    unmatched_max_harmonic_ratio: float,
+    review_confidence: float,
+    slap_min_pitch_support: float,
+    presence_dead_threshold: float,
+    presence_pitched_threshold: float,
+    run_presence_ratio: float,
+    basic_pitch_tolerance_s: float,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Run the event heuristic, then correct it with presence and Basic Pitch.
+
+    The event heuristic remains the recall-oriented first pass.  Presence and
+    Basic Pitch are used conservatively:
+
+    * a note detected by Basic Pitch is never converted to ``x``;
+    * a note with strong harmonic presence is never converted to ``x``;
+    * a missing note in a repeated run can be added when its presence is below
+      the run's Basic Pitch-detected notes;
+    * a mixed chord keeps its pitched notes and only drops the absent ones.
+    """
+    result, dead_notes, review, base_stats = detect_non_notes(
+        notes,
+        events,
+        analysis=analysis,
+        audio_path=audio_path,
+        grid_ticks=grid_ticks,
+        min_confidence=min_confidence,
+        unmatched_min_confidence=unmatched_min_confidence,
+        unmatched_max_harmonic_ratio=unmatched_max_harmonic_ratio,
+        review_confidence=review_confidence,
+        slap_min_pitch_support=slap_min_pitch_support,
+    )
+
+    by_slot: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for note in result:
+        by_slot[_slot(int(note["t"]), grid_ticks)].append(note)
+
+    event_by_key: dict[tuple[int, int], dict[str, Any] | None] = {}
+    event_score_by_key: dict[tuple[int, int], float] = {}
+    time_by_key: dict[tuple[int, int], float | None] = {}
+    used_event_ticks: set[int] = set(base_stats.get("used_event_ticks", []))
+    for note in result:
+        key = _key(note)
+        event = best_event_for_note(
+            note, events, grid_ticks=grid_ticks
+        ) or nearest_unmatched_event_for_note(
+            note, events, grid_ticks=grid_ticks
+        )
+        event_by_key[key] = event
+        if event is not None:
+            event_tick = int(event.get("tick", -1))
+            if event_tick >= 0:
+                used_event_ticks.add(event_tick)
+        # Use the MIDI note's own time for Basic Pitch and presence.  The
+        # matched onset can belong to an earlier chord tone in a strum.
+        if tick_seconds is not None:
+            time_by_key[key] = float(tick_seconds(int(note["t"]))) - float(offset_sec)
+        elif event is not None:
+            time_by_key[key] = float(event.get("time", 0.0) or 0.0)
+        else:
+            time_by_key[key] = None
+        if event is not None:
+            pitch_support = (
+                analysis.pitch_support(
+                    float(event.get("time", 0.0) or 0.0), int(note["pitch"])
+                )
+                if analysis is not None
+                else 0.5
+            )
+            event_score_by_key[key] = non_note_score(event, pitch_support)
+
+    slot_times: dict[int, float] = {}
+    for slot, group in by_slot.items():
+        times = [
+            time_by_key[_key(note)]
+            for note in group
+            if time_by_key.get(_key(note)) is not None
+        ]
+        if times:
+            slot_times[slot] = float(median(times))
+    sorted_slots = sorted(slot_times)
+
+    presence_scores: dict[tuple[int, int], dict[str, float]] = {}
+    if presence is not None:
+        for index, slot in enumerate(sorted_slots):
+            next_time = (
+                slot_times[sorted_slots[index + 1]]
+                if index + 1 < len(sorted_slots)
+                else None
+            )
+            presence_scores.update(
+                presence.group_scores(
+                    slot_times[slot],
+                    by_slot[slot],
+                    next_time_s=next_time,
+                    start=0.01,
+                    end=0.18,
+                )
+            )
+
+    bp_votes: dict[tuple[int, int], bool | None] = {}
+    for note in result:
+        key = _key(note)
+        bp_votes[key] = basic_pitch_presence(
+            time_by_key.get(key),
+            int(note["pitch"]),
+            basic_pitch_notes,
+            tolerance_s=basic_pitch_tolerance_s,
+        )
+
+    # Repeated-run context.  Basic Pitch is often reliable in runs: it detects
+    # the real notes and misses the muted ones.  Use its detected notes as the
+    # local reference for notes with no Basic Pitch event.
+    by_pitch: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
+    for note in result:
+        by_pitch[(int(note["s"]), int(note["pitch"]))].append(note)
+    run_ref: dict[tuple[int, int], float] = {}
+    for sequence in by_pitch.values():
+        sequence.sort(key=lambda note: int(note["t"]))
+        run: list[dict[str, Any]] = []
+        for note in sequence:
+            if run and int(note["t"]) - int(run[-1]["t"]) > 2 * int(grid_ticks):
+                _apply_run_ref(run, presence_scores, bp_votes, run_ref, run_presence_ratio)
+                run = []
+            run.append(note)
+        if run:
+            _apply_run_ref(run, presence_scores, bp_votes, run_ref, run_presence_ratio)
+
+    # 1. Revert false positives.  A Basic Pitch note or a strong harmonic
+    # template is enough to keep the MIDI note.
+    dead_by_key = {
+        (int(dead["t"]), int(dead["s"])): dead
+        for dead in dead_notes
+        if dead.get("source") != "audio_slap"
+    }
+    note_by_key = {_key(note): note for note in result}
+    reverted = 0
+    for key in list(dead_by_key):
+        note = note_by_key.get(key)
+        if note is None:
+            continue
+        presence_value = presence_scores.get(key, {}).get("presence")
+        bp = bp_votes.get(key)
+        if bp is True or (
+            presence_value is not None
+            and presence_value >= float(presence_pitched_threshold)
+        ):
+            note.pop("_drop", None)
+            dead_notes = [
+                dead
+                for dead in dead_notes
+                if (int(dead["t"]), int(dead["s"])) != key
+            ]
+            dead_by_key.pop(key, None)
+            reverted += 1
+            review.append(
+                _review_item(
+                    note,
+                    _event_review_event(event_by_key.get(key)),
+                    1.0 - float(presence_value or 0.0),
+                    action="keep",
+                    reason="basic_pitch_or_presence_high",
+                    pitch_support=presence_value,
+                )
+            )
+
+    # 2. Add missed dead notes inside repeated runs.  Only runs with at least
+    # two Basic Pitch-detected notes establish a local reference.
+    added_run = 0
+    for key, reference in run_ref.items():
+        note = note_by_key.get(key)
+        if note is None or note.get("_drop"):
+            continue
+        presence_value = presence_scores.get(key, {}).get("presence")
+        if presence_value is None:
+            continue
+        if presence_value >= float(reference):
+            continue
+        run_cap = 0.60 if int(note["s"]) <= 3 else 0.30
+        if presence_value > min(float(presence_dead_threshold), run_cap):
+            # High strings decay quickly; a low run-relative value alone is not
+            # enough to call them dead.
+            continue
+        if bp_votes.get(key) is not False:
+            continue
+        note["_drop"] = True
+        dead_notes.append(
+            {
+                "t": int(note["t"]),
+                "dur": max(1, int(grid_ticks)),
+                "s": int(note["s"]),
+                "f": 0,
+                "kind": "dead",
+                "source": "audio_presence_run",
+                "confidence": 1.0 - float(presence_value),
+                "reason": "run_presence_low",
+            }
+        )
+        added_run += 1
+        review.append(
+            _review_item(
+                note,
+                _event_review_event(event_by_key.get(key)),
+                1.0 - float(presence_value),
+                action="replace",
+                reason="run_presence_low",
+                pitch_support=presence_value,
+            )
+        )
+
+    # 3. Resolve mixed chords.  A percussive attack can contain both a pitched
+    # chord and one or more dead strings.  Keep the pitched notes and give the
+    # absent strings their own x; remove any slap marker under that chord.
+    mixed = 0
+    mixed_recovered = 0
+    dead_keys = {(int(dead["t"]), int(dead["s"])) for dead in dead_notes}
+    for slot, group in by_slot.items():
+        if len(group) < 2:
+            continue
+        group_event = _pick_group_event(
+            [event_by_key.get(_key(note)) for note in group]
+        )
+        if group_event is None or event_audio_class(group_event) not in {
+            "dead",
+            "percussive",
+        }:
+            continue
+        strong = [
+            note for note in group if bp_votes.get(_key(note)) is True
+        ]
+        weak = [
+            note
+            for note in group
+            if bp_votes.get(_key(note)) is False
+            and presence_scores.get(_key(note), {}).get("presence") is not None
+            and presence_scores[_key(note)]["presence"]
+            <= (0.35 if int(note["s"]) <= 3 else 0.15)
+        ]
+        if not strong or not weak:
+            continue
+        mixed += 1
+        dead_notes = [
+            dead
+            for dead in dead_notes
+            if not (
+                int(dead["t"]) == int(weak[0]["t"])
+                and dead.get("source") == "audio_slap"
+            )
+        ]
+        for note in weak:
+            key = _key(note)
+            if note.get("_drop") or key in dead_keys:
+                continue
+            note["_drop"] = True
+            presence_value = presence_scores.get(key, {}).get("presence")
+            dead_notes.append(
+                {
+                    "t": int(note["t"]),
+                    "dur": max(1, int(grid_ticks)),
+                    "s": int(note["s"]),
+                    "f": 0,
+                    "kind": "dead",
+                    "source": "audio_presence_mixed",
+                    "confidence": 1.0 - float(presence_value or 0.0),
+                    "reason": "mixed_chord_presence_low",
+                }
+            )
+            dead_keys.add(key)
+            mixed_recovered += 1
+            review.append(
+                _review_item(
+                    note,
+                    _event_review_event(group_event),
+                    1.0 - float(presence_value or 0.0),
+                    action="replace",
+                    reason="mixed_chord_presence_low",
+                    pitch_support=presence_value,
+                )
+            )
+
+    # 4. A slap marker with no dead notes in its chord is valid.  Keep it.
+
+    protected_ticks: set[int] = set()
+    for note in result:
+        key = _key(note)
+        presence_value = presence_scores.get(key, {}).get("presence")
+        if bp_votes.get(key) is True or (
+            presence_value is not None
+            and presence_value >= float(presence_pitched_threshold)
+        ):
+            protected_ticks.add(int(note["t"]))
+
+    review.sort(
+        key=lambda item: (
+            int(item["note"]["t"]),
+            int(item["note"]["s"]),
+        )
+    )
+    stats = {
+        **base_stats,
+        "presence_reverted": reverted,
+        "presence_run_added": added_run,
+        "mixed_chords": mixed,
+        "mixed_recovered": mixed_recovered,
+        "basic_pitch_notes": len(basic_pitch_notes or []),
+        "presence_notes": len(presence_scores),
+        "presence_dead_threshold": float(presence_dead_threshold),
+        "presence_pitched_threshold": float(presence_pitched_threshold),
+        "run_presence_ratio": float(run_presence_ratio),
+        "basic_pitch_tolerance_s": float(basic_pitch_tolerance_s),
+        "used_event_ticks": sorted(used_event_ticks),
+        "protected_ticks": sorted(protected_ticks),
+    }
+    return result, dead_notes, review, stats
+
+
+def _apply_run_ref(
+    run: list[dict[str, Any]],
+    presence_scores: dict[tuple[int, int], dict[str, float]],
+    bp_votes: dict[tuple[int, int], bool | None],
+    run_ref: dict[tuple[int, int], float],
+    ratio: float,
+) -> None:
+    if len(run) < 2:
+        return
+    detected: list[float] = []
+    for note in run:
+        key = _key(note)
+        if bp_votes.get(key) is not True:
+            continue
+        score = presence_scores.get(key, {}).get("presence")
+        if score is not None:
+            detected.append(float(score))
+    if len(detected) < 2:
+        return
+    reference = float(median(detected)) * float(ratio)
+    for note in run:
+        run_ref[_key(note)] = reference

@@ -15,6 +15,7 @@ from .dead import insert_dead_notes, merge_dead_notes, trim_notes_for_dead
 from .evidence import AudioAnalysis
 from .hp import infer_hp
 from .non_note import detect_non_notes
+from .note_presence import NotePresenceAnalyzer, load_basic_pitch_notes
 from .overlay import apply_overlay, load_overlay
 from .reconcile import align_events, read_midi_notes
 from .render import render_tab_with_features
@@ -34,6 +35,8 @@ __all__ = [
     "trim_notes_for_dead",
     "AudioAnalysis",
     "detect_non_notes",
+    "NotePresenceAnalyzer",
+    "load_basic_pitch_notes",
     "infer_hp",
     "load_overlay",
     "apply_overlay",
