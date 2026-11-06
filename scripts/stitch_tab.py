@@ -297,6 +297,8 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
             analysis=analysis,
             grid_ticks=grid_ticks,
             min_confidence=args.non_note_min_confidence,
+            unmatched_min_confidence=args.non_note_unmatched_min_confidence,
+            unmatched_max_harmonic_ratio=args.non_note_unmatched_max_harmonic_ratio,
             review_confidence=args.non_note_review_confidence,
             slap_min_pitch_support=args.slap_min_pitch_support,
         )
@@ -313,6 +315,7 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
         strings=args.dead_strings,
         grid_ticks=grid_ticks,
         min_confidence=args.min_confidence,
+        skip_ticks=set(non_note_stats.get("used_event_ticks", [])),
     )
     dead_notes = merge_dead_notes(non_note_dead, dead_notes)
     final_notes = trim_notes_for_dead(final_notes, dead_notes)
@@ -485,6 +488,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.60,
         help="minimum score to convert a matched non-note to X (default: 0.60)",
+    )
+    parser.add_argument(
+        "--non-note-unmatched-min-confidence",
+        type=float,
+        default=0.50,
+        help=(
+            "minimum score to convert a note using a nearby unmatched "
+            "percussive onset (default: 0.50)"
+        ),
+    )
+    parser.add_argument(
+        "--non-note-unmatched-max-harmonic-ratio",
+        type=float,
+        default=0.70,
+        help=(
+            "ignore unmatched onsets above this harmonic ratio as likely "
+            "real notes (default: 0.70)"
+        ),
     )
     parser.add_argument(
         "--non-note-review-confidence",

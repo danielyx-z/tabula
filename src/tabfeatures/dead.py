@@ -60,6 +60,7 @@ def insert_dead_notes(
     grid_ticks: int = 240,
     min_confidence: float = 0.5,
     max_per_tick: int = 6,
+    skip_ticks: set[int] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Turn unmatched audio candidates into dead-note records.
 
@@ -95,9 +96,13 @@ def insert_dead_notes(
     }
     candidates: list[tuple[int, float, dict[str, Any]]] = []
     filtered = Counter()
+    skip_ticks = set(skip_ticks or ())
     for event in events:
         if event.get("matched"):
             filtered["matched_note_attack"] += 1
+            continue
+        if int(event.get("tick", -1)) in skip_ticks:
+            filtered["used_by_non_note"] += 1
             continue
         if int(event.get("tick", -1)) in matched_ticks:
             # A second detection of the same attack.  The matched event is

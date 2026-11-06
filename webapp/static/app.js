@@ -126,6 +126,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   let isMuted = localStorage.getItem("tabula:isMuted") === "1";
   let followEnabled = localStorage.getItem("tabula:followEnabled") !== "0"; // on by default
   let loopEnabled = localStorage.getItem("tabula:loopEnabled") === "1";
+  let programmaticScrollUntil = 0;
 
   const MAX_RECENT = 5;
 
@@ -657,9 +658,14 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     }
     const y = bar.visualBounds.y;
     const top = alphaTabEl.scrollTop;
-    const bottom = top + alphaTabEl.clientHeight;
-    if (y < top + 48 || y + bar.visualBounds.h > bottom - 24) {
-      alphaTabEl.scrollTop = Math.max(0, y - 72);
+    const viewport = alphaTabEl.clientHeight;
+    const bottom = top + viewport;
+    // Keep the active bar inside a generous safe zone.  A tiny margin made the
+    // scrollbar fire on almost every bar and fight manual scrolling.
+    const margin = Math.max(72, Math.min(180, viewport * 0.2));
+    if (y < top + margin || y + bar.visualBounds.h > bottom - margin) {
+      programmaticScrollUntil = performance.now() + 180;
+      alphaTabEl.scrollTop = Math.max(0, y - margin);
     }
   }
 
@@ -1327,6 +1333,17 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
   loopButton.addEventListener("click", () => setLoop(!loopEnabled));
   followButton.addEventListener("click", () => setFollow(!followEnabled));
+
+  // Manual scrolling takes priority over follow mode.  Without this, the next
+  // bar boundary yanks the score back and the scrollbar appears to flicker.
+  alphaTabEl.addEventListener(
+    "scroll",
+    () => {
+      if (performance.now() < programmaticScrollUntil) return;
+      if (followEnabled) setFollow(false);
+    },
+    { passive: true },
+  );
 
   speedSelect.addEventListener("change", () => {
     playbackSpeed = Number(speedSelect.value) || 1;

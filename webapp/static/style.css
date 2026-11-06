@@ -1053,7 +1053,8 @@ a:hover {
   height: 100%;
   min-height: 0;
   overflow-x: hidden;
-  overflow-y: auto;
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: var(--line-strong) transparent;
   overscroll-behavior: contain;

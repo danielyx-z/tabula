@@ -25,6 +25,7 @@ from .evidence import (
     AudioAnalysis,
     best_event_for_note,
     event_audio_class,
+    nearest_unmatched_event_for_note,
     non_note_score,
 )
 from .ticks import PPQ
@@ -113,6 +114,8 @@ def detect_non_notes(
     audio_path: str | Path | None = None,
     grid_ticks: int = 240,
     min_confidence: float = 0.60,
+    unmatched_min_confidence: float = 0.50,
+    unmatched_max_harmonic_ratio: float = 0.70,
     review_confidence: float = 0.45,
     slap_min_pitch_support: float = 0.12,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
@@ -126,6 +129,10 @@ def detect_non_notes(
     """
     if min_confidence < 0.0 or min_confidence > 1.0:
         raise ValueError("min_confidence must be between 0 and 1")
+    if unmatched_min_confidence < 0.0 or unmatched_min_confidence > 1.0:
+        raise ValueError("unmatched_min_confidence must be between 0 and 1")
+    if unmatched_max_harmonic_ratio < 0.0 or unmatched_max_harmonic_ratio > 1.0:
+        raise ValueError("unmatched_max_harmonic_ratio must be between 0 and 1")
     if review_confidence < 0.0 or review_confidence > 1.0:
         raise ValueError("review_confidence must be between 0 and 1")
     if slap_min_pitch_support < 0.0:
@@ -143,6 +150,8 @@ def detect_non_notes(
     converted_keys: set[tuple[int, int]] = set()
     handled_keys: set[tuple[int, int]] = set()
     slap_slots: set[int] = set()
+    used_event_ticks: set[int] = set()
+    unmatched_skipped_harmonic = 0
 
     by_slot: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for note in result:
@@ -159,7 +168,23 @@ def detect_non_notes(
             continue
         event = best_event_for_note(note, events, grid_ticks=grid_ticks)
         if event is None:
+            event = nearest_unmatched_event_for_note(
+                note, events, grid_ticks=grid_ticks
+            )
+        if event is None:
             continue
+        if (
+            not event.get("matched")
+            and float(event.get("harmonic_ratio", 0.0) or 0.0)
+            > float(unmatched_max_harmonic_ratio)
+        ):
+            # A strong harmonic onset is probably a real note that merely
+            # failed alignment, not a dead-string attack.
+            unmatched_skipped_harmonic += 1
+            continue
+        event_tick = int(event.get("tick", -1))
+        if event_tick >= 0:
+            used_event_ticks.add(event_tick)
         if event_audio_class(event) not in {"dead", "percussive"}:
             # Keep pitched events in the score map so the repeated-run fallback
             # can still catch a pitched outlier surrounded by non-notes.
@@ -198,7 +223,10 @@ def detect_non_notes(
 
         scores[key] = score
         events_by_key[key] = event
-        if score < min_confidence:
+        conversion_threshold = (
+            min_confidence if event.get("matched") else unmatched_min_confidence
+        )
+        if score < conversion_threshold:
             if score >= review_confidence:
                 review.append(
                     _review_item(
@@ -221,7 +249,8 @@ def detect_non_notes(
         }
         max_support = max(group_support.values()) if group_support else 0.0
         is_slap = (
-            analysis is not None
+            bool(event.get("matched"))
+            and analysis is not None
             and len(group) >= 2
             and max_support >= float(slap_min_pitch_support)
         )
@@ -387,7 +416,11 @@ def detect_non_notes(
         "reviewed": len(review),
         "no_event": no_event,
         "min_confidence": float(min_confidence),
+        "unmatched_min_confidence": float(unmatched_min_confidence),
+        "unmatched_max_harmonic_ratio": float(unmatched_max_harmonic_ratio),
+        "unmatched_skipped_harmonic": unmatched_skipped_harmonic,
         "review_confidence": float(review_confidence),
         "slap_min_pitch_support": float(slap_min_pitch_support),
+        "used_event_ticks": sorted(used_event_ticks),
     }
     return result, dead_notes, review, stats

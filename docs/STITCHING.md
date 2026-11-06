@@ -169,6 +169,13 @@ tone has real pitch support (`--slap-min-pitch-support`, default `0.12`).  The
 chord is kept and one `x` is placed on the lowest free string, which renders
 beneath the chord.  This is the slap-strum case.
 
+If a note has no matched onset, a nearby unmatched dead/percussive onset within
+one grid cell can still validate it.  This catches dead notes where the audio
+and MIDI clocks drift by a fraction of a grid cell.  The unmatched fallback
+uses `--non-note-unmatched-min-confidence` (default `0.50`) and ignores
+onsets above `--non-note-unmatched-max-harmonic-ratio` (default `0.70`) because
+those are probably real notes that merely failed alignment.
+
 Scores at or above `--non-note-review-confidence` (default `0.45`) but below
 the conversion threshold are left as notes.  All candidates at or above the
 review threshold are written to `non_note_review.json`, including the ones
@@ -260,6 +267,10 @@ entirely with `--no-auto-hp`.
   to review more candidates; the full list is in `percussion_events.json`.
 * `--non-note-min-confidence 0.60` — matched non-note conversion threshold;
   candidates at `--non-note-review-confidence` and above are reported.
+* `--non-note-unmatched-min-confidence 0.50` — conversion threshold for notes
+  validated by a nearby unmatched percussive onset.
+* `--non-note-unmatched-max-harmonic-ratio 0.70` — ignore unmatched onsets
+  that look harmonic rather than percussive.
 * `--slap-min-pitch-support 0.12` — chord pitch support needed to keep a
   percussive chord and add an `x` beneath it instead of replacing notes.
 * `--no-non-note` — disable matched non-note conversion.

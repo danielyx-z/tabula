@@ -139,6 +139,40 @@ def best_event_for_note(
     return candidates[0][2]
 
 
+def nearest_unmatched_event_for_note(
+    note: dict[str, Any],
+    events: list[dict[str, Any]],
+    *,
+    grid_ticks: int = 240,
+) -> dict[str, Any] | None:
+    """Find a nearby percussive onset that did not match a MIDI note.
+
+    Alignment can miss a transient when the audio and MIDI clocks drift by a
+    fraction of a grid cell.  The note still needs validation, so an unmatched
+    dead/percussive onset within one grid cell is used as evidence.
+    """
+    target_tick = int(note.get("t", 0))
+    candidates: list[tuple[int, float, dict[str, Any]]] = []
+    for event in events:
+        if event.get("matched"):
+            continue
+        if event_audio_class(event) not in {"dead", "percussive"}:
+            continue
+        tick = int(event.get("tick", -1))
+        if tick < 0:
+            continue
+        distance = abs(tick - target_tick)
+        if distance > max(1, int(grid_ticks)):
+            continue
+        candidates.append(
+            (distance, -float(event.get("strength", 0.0) or 0.0), event)
+        )
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return candidates[0][2]
+
+
 def local_median_strength(
     events: list[dict[str, Any]],
     *,

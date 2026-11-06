@@ -322,6 +322,65 @@ def test_non_note_detector_converts_noise_but_keeps_harmonic_tone(
     assert review[0]["note"]["t"] == 480
 
 
+def test_unmatched_percussive_onset_can_replace_nearby_note(
+    tmp_path: Path,
+) -> None:
+    sr = 22050
+    duration = 0.6
+    y = np.zeros(int(sr * duration), dtype=np.float32)
+    start = int(0.05 * sr)
+    length = int(0.06 * sr)
+    local = np.arange(length) / sr
+    rng = np.random.default_rng(7)
+    y[start : start + length] += (
+        0.9 * rng.standard_normal(length) * np.exp(-local / 0.008)
+    ).astype(np.float32)
+    audio = tmp_path / "unmatched.wav"
+    sf.write(audio, y, sr, subtype="PCM_16")
+
+    notes = [{"t": 0, "dur": 240, "pitch": 57, "s": 3, "f": 5}]
+    events = [
+        {
+            "time": 0.05,
+            "matched": False,
+            "tick": 240,
+            "class": "dead",
+            "audio_class": "percussive",
+            "audio_confidence": 0.42,
+            "confidence": 0.42,
+            "strength": 5.0,
+            "harmonic_ratio": 0.05,
+            "voiced_prob": 0.02,
+        }
+    ]
+    analysis = AudioAnalysis.load(audio, sr=sr)
+    result, dead, _review, stats = detect_non_notes(
+        notes,
+        events,
+        analysis=analysis,
+        grid_ticks=240,
+        min_confidence=0.60,
+        unmatched_min_confidence=0.50,
+    )
+    assert result[0].get("_drop") is True
+    assert {(d["t"], d["s"]) for d in dead} == {(0, 3)}
+    assert stats["converted"] == 1
+
+    harmonic_events = [dict(events[0], harmonic_ratio=0.95)]
+    kept, kept_dead, _review, kept_stats = detect_non_notes(
+        notes,
+        harmonic_events,
+        analysis=analysis,
+        grid_ticks=240,
+        min_confidence=0.60,
+        unmatched_min_confidence=0.50,
+        unmatched_max_harmonic_ratio=0.70,
+    )
+    assert not kept[0].get("_drop")
+    assert kept_dead == []
+    assert kept_stats["unmatched_skipped_harmonic"] == 1
+
+
 def test_percussive_chord_keeps_notes_and_adds_slap_x(tmp_path: Path) -> None:
     sr = 22050
     duration = 0.8
