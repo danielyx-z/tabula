@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>Tabula — audio and MIDI to tab</title>
+  <title>Tabula — audio to tab</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2320231e'/%3E%3Cpath d='M7 9h18M7 13h18M7 17h18M7 21h18M7 25h18' stroke='%23f3eee3' stroke-width='1.2' opacity='.65'/%3E%3Ccircle cx='13' cy='17' r='2.6' fill='%23c2663d'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
@@ -19,6 +19,7 @@
         </svg>
         <span>tabula</span>
       </a>
+      <a class="topbar-link" href="/label">Dead-note labeller</a>
       <div class="topbar-meta" aria-label="Server status">
         <span id="server-dot" class="server-dot" data-state="{{ 'ok' if checkpoint_ready and vocab_ready else 'down' }}" aria-hidden="true"></span>
         <span id="server-label">{% if checkpoint_ready and vocab_ready %}local server{% else %}unavailable{% endif %}</span>
@@ -31,15 +32,14 @@
           <details id="upload-details" class="upload-details" open>
             <summary class="upload-summary">
               <h2 id="upload-title">New take</h2>
-              <span class="summary-subtitle">Pair the recording with its MIDI transcription.</span>
+              <span class="summary-subtitle">Add a recording. Transcription runs locally.</span>
               <span class="summary-cue" aria-hidden="true">
                 <svg viewBox="0 0 20 20"><path d="M5 8l5 5 5-5"/></svg>
               </span>
             </summary>
 
             <form id="upload-form" novalidate
-                data-max-audio-mb="{{ max_audio_mb }}"
-                data-max-midi-mb="{{ max_midi_mb }}">
+                data-max-audio-mb="{{ max_audio_mb }}">
             <div class="file-pair" aria-label="Source files">
               <div id="audio-row" class="pair-row" data-slot="audio">
                 <input id="audio-file" class="sr-only" name="audio" type="file"
@@ -60,27 +60,9 @@
                 </button>
               </div>
 
-              <div id="midi-row" class="pair-row" data-slot="midi">
-                <input id="midi-file" class="sr-only" name="midi" type="file"
-                       accept=".mid,.midi,audio/midi,audio/x-midi">
-                <label id="midi-drop" class="pair-hit" for="midi-file">
-                  <span class="pair-icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24"><path d="M8 17V6l8-1.5V15"/><circle cx="5.5" cy="17.5" r="2.5"/><circle cx="13.5" cy="15.5" r="2.5"/></svg>
-                  </span>
-                  <span class="pair-copy">
-                    <span class="pair-kicker">MIDI transcription</span>
-                    <span id="midi-title" class="pair-title">Add the MIDI</span>
-                    <span id="midi-meta" class="pair-meta">.mid or .midi · {{ max_midi_mb }} MB</span>
-                  </span>
-                  <span id="midi-action" class="pair-action">Browse</span>
-                </label>
-                <button type="button" id="midi-clear" class="pair-clear" aria-label="Remove MIDI transcription" title="Remove MIDI transcription" hidden>
-                  <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>
-                </button>
-              </div>
             </div>
 
-            <p class="pair-note">Both files must come from the same solo-guitar take. The MIDI should be quantized to 1/16 and carry the performance’s tempo.</p>
+            <p class="pair-note">Add a recording. The local MuScriptor small model transcribes it on this PC, then Tabula builds the tab.</p>
 
             <button type="submit" id="convert-button" class="button button-primary" disabled>
               <span class="button-spinner" aria-hidden="true"></span>
@@ -214,7 +196,7 @@
           </div>
           <div class="empty-copy">
             <h1>Turn a take into a tab you can hear.</h1>
-            <p class="empty-lede">Upload the recording and its MIDI transcription. Tabula aligns the attacks, replaces percussion and other non-note hits with dead notes, adds articulations, chooses a capo, and writes a Guitar Pro tab with the performance’s own tempo.</p>
+            <p class="empty-lede">Upload a recording. Tabula transcribes it locally, aligns the attacks, replaces percussion and other non-note hits with dead notes, adds articulations, chooses a capo, and writes a Guitar Pro tab with the performance’s own tempo.</p>
             <p class="fine-print">Nylon guitar <span class="fine-sep">·</span> source tempo map <span class="fine-sep">·</span> both files stay on this machine</p>
 
             <section id="recent-takes" class="recent-takes" hidden>
@@ -242,7 +224,7 @@
             <span class="working-note note-6"></span>
           </div>
           <h2>Reading the take.</h2>
-          <p>Matching the recording to its MIDI, validating note attacks, placing dead notes, choosing a capo, and writing the tab. This can take a minute on the first run.</p>
+          <p>Transcribing and validating note attacks, placing dead notes, choosing a capo, and writing the tab. This can take a minute on the first run.</p>
         </div>
 
         <div id="error-state" class="state error-state" hidden>

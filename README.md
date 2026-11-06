@@ -15,6 +15,7 @@ New to the project? Read:
 
 * [`docs/FORMATS.md`](docs/FORMATS.md) — every input/output format.
 * [`docs/STITCHING.md`](docs/STITCHING.md) — audio dead notes and articulations on top of MIDI-to-tab.
+* [`docs/LABELING.md`](docs/LABELING.md) — MIDI-anchored dead-note labelling and classifier training.
 * [`docs/DATA_FORMAT.md`](docs/DATA_FORMAT.md) — the training data contract.
 * [`docs/VERIFICATION.md`](docs/VERIFICATION.md) — what was tested and what
   still fails.
@@ -77,11 +78,13 @@ tone may be dropped; `report.json` lists it (Valentine: 21 duplicated-Eb drops,
 
 ## Web app
 
-The Flask workbench turns a MIDI upload into a real Guitar Pro 5 score and
-plays it in the browser with alphaTab. The score keeps the source tempo map,
-uses the nylon-guitar program (24), and highlights the current measure during
-playback. It invokes the same `midi2tab.py` pipeline with `--no-audio` and
-exports `score.gp5` from that job's own `final.json` and `final.mid`.
+The Flask workbench turns an audio recording into a real Guitar Pro 5 score and
+plays it in the browser with alphaTab. The local MuScriptor small model
+transcribes the recording first; the workbench no longer asks for a MIDI upload.
+The score keeps the source tempo map, uses the nylon-guitar program (24), and
+highlights the current measure during playback. The stitching pipeline runs on
+the original audio, so classifier dead notes reach the online renderer as
+`NoteType.dead`.
 
 On the machine that has the checkpoint and vocabulary:
 
@@ -92,7 +95,23 @@ On the machine that has the checkpoint and vocabulary:
 .venv/bin/python -m webapp.server --host 0.0.0.0 --port 8000
 ```
 
-Open <http://127.0.0.1:8000>, upload a `.mid`/`.midi`, and wait for the score.
+Open <http://127.0.0.1:8000>, upload a recording, and wait for the score. The dead-note labeller is at <http://127.0.0.1:8000/label>.
+
+The labeller is a MIDI-anchored piano roll. Pitched is the default; click a
+note or drag a rectangle to mark dead notes. It supports resuming recent
+sessions, deleting a session, a bottom scrollbar, zoom controls, and a reviewed
+flag. Playback uses the Web Audio clock (the same approach as MuScriptor's own
+player), and MuScriptor's `muscriptor:bar_offset=` marker is subtracted from
+labelling/classifier audio times so the roll matches the recording. MIDI ticks
+are left untouched for the tab model. See [`docs/LABELING.md`](docs/LABELING.md).
+
+MuScriptor is an external local install. The app looks for
+`TABULA_MUSCRIPTOR_BIN`, then `muscriptor` on `PATH`, then
+`~/Projects/muscriptor/.venv/bin/muscriptor`, then `uvx muscriptor`.
+`TABULA_MUSCRIPTOR_MODEL` defaults to `small`. Quantization is off by default
+so trailing and percussive detail survives; `TABULA_MUSCRIPTOR_QUANTIZE=1`
+enables it, and `TABULA_MUSCRIPTOR_GRID` then defaults to `8` (thirty-second
+notes).
 A conversion takes roughly 20–30 s on the 3070. Job files live under
 `webapp/jobs/<id>/` (`upload.mid`, `score.gp5`, `final.mid`,
 `final_tab.txt`, `report.json`); that directory is local data and is ignored
@@ -111,6 +130,8 @@ src/
   tablature/   # tokenizer, stream decoder, playability, metrics, render
   model/       # T5 config, chunking, decoding, training
   audio/       # guitar synth, MIDI writer, WAV/playback
+  transcribe/  # local MuScriptor runner
+  tabfeatures/ # audio events, dead notes, classifier, GP5 export
   cli.py       # `python -m cli`
 scripts/       # converters, training/eval, preview, Slurm jobs
 tests/

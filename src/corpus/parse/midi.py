@@ -40,7 +40,7 @@ def _ticks_from_seconds(pm: pretty_midi.PrettyMIDI, seconds: float) -> int:
     """Convert seconds to ticks at PPQ 960, following the tempo map.
 
     pretty_midi's time_to_tick() returns ticks at the file's own resolution
-    (e.g. 220 for basic-pitch output).  Scale to our standard PPQ=960 so
+    (e.g. a transcriber that uses 220 PPQ).  Scale to our standard PPQ=960 so
     TIME_SHIFT tokens match the training distribution.
     """
     ticks_at_file_res = pm.time_to_tick(seconds)

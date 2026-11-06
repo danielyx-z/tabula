@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Audio → tablature pipeline using Spotify basic-pitch + Tabula T5.
+"""Audio → tablature pipeline using local MuScriptor + Tabula T5.
 
 Full chain:
 
     YouTube URL (or local audio file)
         → yt-dlp download (audio only)
-        → basic-pitch (audio-to-MIDI, ONNX)
+        → local MuScriptor small model (audio-to-MIDI)
         → pretty_midi note events
         → Tabula T5 (MIDI-to-tab, 20-note chunks + post-processing)
         → ASCII tablature
@@ -35,6 +35,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+import pretty_midi
 import torch
 from transformers import T5ForConditionalGeneration
 
@@ -44,7 +45,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from basic_pitch.inference import predict  # noqa: E402
+from transcribe import transcribe_audio  # noqa: E402
 from model.chunk import ChunkConfig, make_inference_chunks  # noqa: E402
 from model.decode import constrained_beam_search, greedy_decode  # noqa: E402
 from tablature.metrics import decode_predictions, compute_rhythm_metrics  # noqa: E402
@@ -126,31 +127,40 @@ def load_model(checkpoint_dir: str, vocab_path: str, device: str = "cuda"):
 
 
 def audio_to_midi_notes(audio_path: str | Path):
-    """
-    Run basic-pitch on an audio file and return (pretty_midi, note_dicts).
+    """Run local MuScriptor and return (pretty_midi, note_dicts).
 
     note_dicts are in Tabula's internal format:
         {"t": onset_tick, "dur": dur_tick, "pitch": midi_pitch, "s": 0, "f": 0}
     """
-    print(f"Running basic-pitch on {audio_path} ...")
-    model_output, midi_data, note_events = predict(
-        str(audio_path),
-        onset_threshold=0.5,
-        frame_threshold=0.3,
-        minimum_note_length=127.70,
-        melodia_trick=True,
-        midi_tempo=120.0,
-    )
+    import tempfile
 
-    # Convert pretty_midi notes to our internal Note format
+    print(f"Running local MuScriptor on {audio_path} ...")
+    with tempfile.TemporaryDirectory(prefix="audio2tab_muscriptor_") as tmp:
+        midi_path = Path(tmp) / "transcribed.mid"
+        transcribe_audio(
+            audio_path,
+            midi_path,
+            model=os.environ.get("TABULA_MUSCRIPTOR_MODEL", "small"),
+            instrument=os.environ.get("TABULA_MUSCRIPTOR_INSTRUMENTS", "acoustic_guitar"),
+            quantize=os.environ.get("TABULA_MUSCRIPTOR_QUANTIZE", "0") != "0",
+            grid=int(os.environ.get("TABULA_MUSCRIPTOR_GRID", "8")),
+        )
+        midi_data = pretty_midi.PrettyMIDI(str(midi_path))
+
+    # Convert pretty_midi notes to our internal Note format.  The project's
+    # canonical grid is PPQ 960; scale the file's own resolution with its
+    # tempo map instead of assuming a fixed BPM.
     notes = []
     for inst in midi_data.instruments:
         if inst.is_drum:
             continue
         for note in inst.notes:
-            # basic-pitch MIDI uses PPQ=220; scale to our PPQ=960
-            onset_tick = int(round(midi_data.time_to_tick(note.start) * 960 / 220))
-            end_tick = int(round(midi_data.time_to_tick(note.end) * 960 / 220))
+            onset_tick = int(
+                round(midi_data.time_to_tick(note.start) * 960 / midi_data.resolution)
+            )
+            end_tick = int(
+                round(midi_data.time_to_tick(note.end) * 960 / midi_data.resolution)
+            )
             dur = max(1, end_tick - onset_tick)
             notes.append(
                 {
@@ -163,7 +173,7 @@ def audio_to_midi_notes(audio_path: str | Path):
             )
 
     notes.sort(key=lambda n: (n["t"], n["pitch"]))
-    print(f"  basic-pitch found {len(notes)} notes")
+    print(f"  MuScriptor found {len(notes)} notes")
     return midi_data, notes
 
 
@@ -287,7 +297,7 @@ def main() -> None:
         print(f"  Downloaded to: {audio_path}")
 
     try:
-        # Step 1: Audio → MIDI (basic-pitch)
+        # Step 1: Audio → MIDI (local MuScriptor)
         midi_data, notes = audio_to_midi_notes(audio_path)
         if not notes:
             raise SystemExit("No notes detected in audio")
@@ -326,7 +336,7 @@ def main() -> None:
         for i, n in enumerate(pred_note_dicts):
             arr[i] = (n["t"], n["dur"], n["pitch"], n["s"], n["f"])
 
-        bpm = 120.0  # basic-pitch default tempo
+        bpm = 120.0  # synthesis-only fallback
         samples = synthesize(arr, bpm)
 
         if args.wav:

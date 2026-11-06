@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -38,7 +39,6 @@ from tabfeatures import (  # noqa: E402
     detect_audio_events,
     infer_hp,
     insert_dead_notes,
-    load_basic_pitch_notes,
     load_overlay,
     parse_grid,
     read_midi_notes,
@@ -48,6 +48,11 @@ from tabfeatures import (  # noqa: E402
 )
 from tabfeatures.audio_events import write_stems  # noqa: E402
 from tabfeatures.dead import merge_dead_notes  # noqa: E402
+from tabfeatures.deadnotes import apply_dead_classifier  # noqa: E402
+from tabfeatures.deadnotes.model import (  # noqa: E402
+    DEFAULT_MODEL_DIR,
+    load_model as load_dead_model,
+)
 from tabfeatures.evidence import AudioAnalysis  # noqa: E402
 from tabfeatures.gp5 import build_gp5  # noqa: E402
 from tabfeatures.non_note import detect_non_notes  # noqa: E402
@@ -183,6 +188,15 @@ def run_stage_tab(args: argparse.Namespace, out: Path) -> Path:
     return final_json
 
 
+def _dead_model_path(args: argparse.Namespace) -> Path | None:
+    if getattr(args, "no_dead_model", False):
+        return None
+    value = getattr(args, "dead_model", None) or os.environ.get("TABULA_DEAD_MODEL")
+    if value:
+        return _repo_path(value)
+    return DEFAULT_MODEL_DIR if (DEFAULT_MODEL_DIR / "metadata.json").is_file() else None
+
+
 def _ensure_overlay(path: Path) -> Path:
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -283,8 +297,18 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
     if not timing_midi.exists():
         timing_midi = _user_path(args.midi)
 
+    dead_model_path = _dead_model_path(args)
+    dead_model = None
+    if dead_model_path is not None:
+        try:
+            dead_model = load_dead_model(dead_model_path)
+        except (OSError, ValueError) as exc:
+            raise SystemExit(f"[stitch] could not load dead-note model: {exc}") from exc
+        if dead_model is None:
+            print(f"[stitch] dead-note model not found at {dead_model_path}", flush=True)
+
     analysis: AudioAnalysis | None = None
-    if args.non_note or (args.auto_hp and args.hp_audio):
+    if (dead_model is None and args.non_note) or (args.auto_hp and args.hp_audio):
         print("[stitch] measuring audio note evidence ...", flush=True)
         analysis = AudioAnalysis.load(args.audio, sr=args.sr)
 
@@ -293,19 +317,39 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
         pm, _ = read_midi_notes(timing_midi)
         tick_seconds = lambda tick: tick_to_seconds(pm, tick)
 
-    basic_pitch_notes = None
-    if args.non_note and args.basic_pitch:
-        print("[stitch] running basic-pitch note presence ...", flush=True)
-        try:
-            basic_pitch_notes = load_basic_pitch_notes(args.audio)
-            _write_json(out / "basic_pitch_notes.json", basic_pitch_notes)
-        except Exception as exc:  # noqa: BLE001 - optional second opinion
-            print(f"[stitch] basic-pitch unavailable: {exc}", flush=True)
-
     non_note_dead: list[dict[str, Any]] = []
     non_note_review: list[dict[str, Any]] = []
     non_note_stats: dict[str, Any] = {"enabled": False}
-    if args.non_note:
+    classifier_dead: list[dict[str, Any]] = []
+    classifier_decisions: list[dict[str, Any]] = []
+    classifier_stats: dict[str, Any] = {"enabled": False}
+
+    if dead_model is not None:
+        print(
+            f"[stitch] dead-note classifier: {dead_model_path} "
+            f"(threshold {(args.dead_threshold if args.dead_threshold is not None else dead_model.threshold):.2f})",
+            flush=True,
+        )
+        final_notes, classifier_dead, classifier_decisions, classifier_stats = (
+            apply_dead_classifier(
+                final_notes,
+                audio_path=args.audio,
+                midi_path=args.midi,
+                model=dead_model,
+                threshold=args.dead_threshold,
+            )
+        )
+        _write_json(out / "dead_decisions.json", classifier_decisions)
+        non_note_stats = {
+            "enabled": False,
+            "reason": "dead_classifier_active",
+        }
+        print(
+            f"[stitch] dead-note classifier: {classifier_stats.get('dead', 0)} "
+            f"dead of {classifier_stats.get('predictions', 0)} notes",
+            flush=True,
+        )
+    elif args.non_note:
         final_notes, non_note_dead, non_note_review, non_note_stats = detect_non_notes(
             final_notes,
             events,
@@ -316,33 +360,32 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
             unmatched_max_harmonic_ratio=args.non_note_unmatched_max_harmonic_ratio,
             review_confidence=args.non_note_review_confidence,
             slap_min_pitch_support=args.slap_min_pitch_support,
-            presence=None,
-            basic_pitch_notes=basic_pitch_notes,
-            tick_seconds=tick_seconds,
-            offset_sec=float(alignment.get("applied_offset_sec", 0.0) or 0.0),
-            basic_pitch_tolerance_s=args.basic_pitch_tolerance,
-            basic_pitch_heuristic_threshold=args.basic_pitch_heuristic_threshold,
         )
         print(
             f"[stitch] non-note evidence: {non_note_stats.get('converted', 0)} replaced, "
-            f"{non_note_stats.get('basic_pitch_absent_dead', 0)} basic-pitch dead, "
             f"{non_note_stats.get('slap', 0)} slap markers, "
             f"{non_note_stats.get('reviewed', 0)} in review",
             flush=True,
         )
 
-    dead_notes, dead_stats = insert_dead_notes(
-        final_notes,
-        events,
-        strings=args.dead_strings,
-        grid_ticks=grid_ticks,
-        min_confidence=args.min_confidence,
-        skip_ticks=(
-            set(non_note_stats.get("used_event_ticks", []))
-            | set(non_note_stats.get("protected_ticks", []))
-        ),
-    )
-    dead_notes = merge_dead_notes(non_note_dead, dead_notes)
+    audio_dead: list[dict[str, Any]] = []
+    dead_stats: dict[str, Any] = {
+        "enabled": False,
+        "reason": "dead_classifier_active" if dead_model is not None else "disabled",
+    }
+    if dead_model is None or args.audio_extra_dead:
+        audio_dead, dead_stats = insert_dead_notes(
+            final_notes,
+            events,
+            strings=args.dead_strings,
+            grid_ticks=grid_ticks,
+            min_confidence=args.min_confidence,
+            skip_ticks=(
+                set(non_note_stats.get("used_event_ticks", []))
+                | set(non_note_stats.get("protected_ticks", []))
+            ),
+        )
+    dead_notes = merge_dead_notes(non_note_dead, classifier_dead, audio_dead)
     final_notes = trim_notes_for_dead(final_notes, dead_notes)
 
     if args.auto_hp:
@@ -388,6 +431,7 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
     tab_path.write_text(tab_text, encoding="utf-8")
 
     _write_json(out / "dead_notes.json", dead_notes)
+    _write_json(out / "dead_decisions.json", classifier_decisions)
     _write_json(out / "hp_review.json", hp_review)
     _write_json(out / "non_note_review.json", non_note_review)
 
@@ -417,6 +461,7 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
         "dead_notes": len(dead_notes),
         "dead_stats": dead_stats,
         "non_note": non_note_stats,
+        "dead_classifier": classifier_stats,
         "hp_candidates": len(hp_review),
         "hp_inferred": hp_inferred,
         "hp_applied": hp_applied,
@@ -429,6 +474,7 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
             "tab": str(tab_path),
             "gp5": str(gp5_path) if gp5_info else None,
             "dead_notes": str(out / "dead_notes.json"),
+            "dead_decisions": str(out / "dead_decisions.json"),
             "hp_review": str(out / "hp_review.json"),
             "non_note_review": str(out / "non_note_review.json"),
         },
@@ -510,31 +556,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="minimum score to convert a matched non-note to X (default: 0.60)",
     )
     parser.add_argument(
-        "--basic-pitch",
-        dest="basic_pitch",
-        action="store_true",
-        default=True,
-        help="use basic-pitch as a second opinion for note presence (default: on)",
-    )
-    parser.add_argument(
-        "--no-basic-pitch",
-        dest="basic_pitch",
-        action="store_false",
-        help="disable basic-pitch note presence",
-    )
-    parser.add_argument(
-        "--basic-pitch-tolerance",
-        type=float,
-        default=0.12,
-        help="Basic Pitch onset tolerance in seconds (default: 0.12)",
-    )
-    parser.add_argument(
-        "--basic-pitch-heuristic-threshold",
-        type=float,
-        default=0.35,
+        "--dead-model",
+        default=None,
         help=(
-            "minimum heuristic dead-note score required before Basic Pitch "
-            "absence is used (default: 0.35)"
+            "trained dead-note classifier directory "
+            "(default: data/models/dead_notes when present)"
+        ),
+    )
+    parser.add_argument(
+        "--no-dead-model",
+        action="store_true",
+        help="disable the dead-note classifier and use the audio heuristic",
+    )
+    parser.add_argument(
+        "--dead-threshold",
+        type=float,
+        default=None,
+        help="override the dead-note classifier threshold",
+    )
+    parser.add_argument(
+        "--audio-extra-dead",
+        action="store_true",
+        help=(
+            "also insert dead notes from unmatched audio onsets when the "
+            "classifier is active"
         ),
     )
     parser.add_argument(

@@ -6,7 +6,7 @@ note) on a **20-tick grid** (1/48 note).
 
 ```
 audio file / YouTube URL
-        │  basic-pitch
+        │  local MuScriptor (small)
         ▼
 MIDI note events  ──────────────►  canonical Note record
         │                              │
@@ -27,12 +27,20 @@ MIDI note events  ──────────────►  canonical Note 
 ## 1. Audio input
 
 Accepted by `scripts/audio2tab.py`: a local audio file (`.wav`, `.mp3`, …) or a
-YouTube URL. Audio is transcribed by basic-pitch into note events; nothing
-about the audio itself is stored.
+YouTube URL. Audio is transcribed by the local MuScriptor small model into
+note events; nothing about the audio itself is stored.
+
+The web workbench also accepts audio only.  It runs local MuScriptor, then the
+Tabula tab model, and does not expose a MIDI upload slot on the transcription
+page.  The label page still accepts an optional MIDI upload because labelling
+is tied to a specific transcription.
 
 ## 2. MIDI input
 
 Accepted by `scripts/midi2tab.py` and `src/cli.py`: `.mid` / `.midi`.
+MuScriptor's exported MIDI may carry a `muscriptor:bar_offset=` marker; the
+labeller/classifier subtract that value from their audio-facing timestamps but
+leave MIDI ticks unchanged.  The tab model consumes the MIDI ticks as-is.
 
 `corpus.parse.midi.parse_midi` reads the file with `pretty_midi`, merges
 non-drum tracks by default, filters pitches to 36–96, and rescales the file's

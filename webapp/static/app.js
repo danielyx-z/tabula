@@ -8,17 +8,11 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   const form = byId("upload-form");
   const uploadDetails = byId("upload-details");
   const audioInput = byId("audio-file");
-  const midiInput = byId("midi-file");
   const audioRow = byId("audio-row");
-  const midiRow = byId("midi-row");
   const audioTitle = byId("audio-title");
-  const midiTitle = byId("midi-title");
   const audioMeta = byId("audio-meta");
-  const midiMeta = byId("midi-meta");
   const audioAction = byId("audio-action");
-  const midiAction = byId("midi-action");
   const audioClear = byId("audio-clear");
-  const midiClear = byId("midi-clear");
   const convertButton = byId("convert-button");
   const convertLabel = byId("convert-label");
   const cancelButton = byId("cancel-button");
@@ -80,13 +74,10 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   const recentList = byId("recent-list");
 
   const MAX_AUDIO_MB = Number(form.dataset.maxAudioMb) || 96;
-  const MAX_MIDI_MB = Number(form.dataset.maxMidiMb) || 8;
   const MAX_AUDIO_BYTES = MAX_AUDIO_MB * 1024 * 1024;
-  const MAX_MIDI_BYTES = MAX_MIDI_MB * 1024 * 1024;
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
   const AUDIO_NAME = /\.(wav|flac|ogg|oga|mp3|m4a|aac|aif|aiff|opus|wma)$/i;
-  const MIDI_NAME = /\.(mid|midi)$/i;
 
   const LayoutMode = AlphaTab && AlphaTab.LayoutMode;
   const ScrollMode = AlphaTab && AlphaTab.ScrollMode;
@@ -142,19 +133,6 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
       file: null,
       defaultTitle: "Add the recording",
       defaultMeta: `WAV, FLAC, OGG, MP3 · ${MAX_AUDIO_MB} MB`,
-      defaultAction: "Browse",
-    },
-    midi: {
-      kind: "midi",
-      input: midiInput,
-      row: midiRow,
-      title: midiTitle,
-      meta: midiMeta,
-      action: midiAction,
-      clear: midiClear,
-      file: null,
-      defaultTitle: "Add the MIDI",
-      defaultMeta: `.mid or .midi · ${MAX_MIDI_MB} MB`,
       defaultAction: "Browse",
     },
   };
@@ -226,29 +204,22 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
   function fileKind(file) {
     const name = file && file.name ? file.name : "";
-    if (MIDI_NAME.test(name)) return "midi";
     if (AUDIO_NAME.test(name)) return "audio";
     if (file && typeof file.type === "string" && file.type.startsWith("audio/")) {
-      return file.type === "audio/midi" || file.type === "audio/x-midi" ? "midi" : "audio";
+      return "audio";
     }
     return null;
   }
 
   function validateFile(kind, file) {
-    const label = kind === "audio" ? "recording" : "MIDI transcription";
-    const maxBytes = kind === "audio" ? MAX_AUDIO_BYTES : MAX_MIDI_BYTES;
-    const maxMb = kind === "audio" ? MAX_AUDIO_MB : MAX_MIDI_MB;
-    const pattern = kind === "audio" ? AUDIO_NAME : MIDI_NAME;
-    if (!pattern.test(file.name || "")) {
-      return kind === "audio"
-        ? "Choose an audio recording (WAV, FLAC, OGG, MP3, M4A)."
-        : "Choose a .mid or .midi file for the transcription.";
+    if (kind !== "audio" || !AUDIO_NAME.test(file.name || "")) {
+      return "Choose an audio recording (WAV, FLAC, OGG, MP3, M4A).";
     }
     if (!file.size) {
       return "That file is empty.";
     }
-    if (file.size > maxBytes) {
-      return `That ${label} is larger than ${maxMb} MB.`;
+    if (file.size > MAX_AUDIO_BYTES) {
+      return `That recording is larger than ${MAX_AUDIO_MB} MB.`;
     }
     return "";
   }
@@ -299,30 +270,26 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   }
 
   function updateConvertAvailability() {
-    const pairReady = Boolean(slots.audio.file && slots.midi.file);
-    convertButton.disabled = busy || !serverReady || !pairReady;
+    const ready = Boolean(slots.audio.file);
+    convertButton.disabled = busy || !serverReady || !ready;
     convertLabel.textContent = busy
-      ? "Making tab"
-      : lastConverted && pairReady
+      ? "Transcribing + making tab"
+      : lastConverted && ready
         ? "Convert again"
-        : "Make tab";
+        : "Transcribe + make tab";
   }
 
   function setBusy(value) {
     busy = value;
     convertButton.classList.toggle("is-loading", value);
     audioInput.disabled = value;
-    midiInput.disabled = value;
     audioClear.disabled = value;
-    midiClear.disabled = value;
     cancelButton.disabled = !value;
     cancelButton.hidden = !value;
     form.setAttribute("aria-busy", value ? "true" : "false");
     audioRow.setAttribute("aria-disabled", value ? "true" : "false");
-    midiRow.setAttribute("aria-disabled", value ? "true" : "false");
     if (value) {
       audioRow.classList.remove("is-dragging");
-      midiRow.classList.remove("is-dragging");
       abortController = new AbortController();
     } else {
       abortController = null;
@@ -340,12 +307,12 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     for (const file of list) {
       const kind = fileKind(file) || (list.length === 1 ? fallbackKind : null);
       if (!kind) {
-        setStatus(`“${file.name}” is not a MIDI or audio file.`);
+        setStatus(`“${file.name}” is not an audio file.`);
         continue;
       }
       if (setSlot(kind, file)) accepted += 1;
     }
-    if (accepted && slots.audio.file && slots.midi.file) {
+    if (accepted && slots.audio.file) {
       setStatus("");
     }
   }
@@ -1009,12 +976,12 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     if (busy || !serverReady) {
       return;
     }
-    if (!slots.audio.file || !slots.midi.file) {
-      setStatus("Add the recording and its MIDI transcription first.");
+    if (!slots.audio.file) {
+      setStatus("Add the recording first. MuScriptor can transcribe it locally.");
       return;
     }
 
-    lastFileName = slots.audio.file.name.replace(/\.[^.]+$/, "") || slots.midi.file.name;
+    lastFileName = slots.audio.file.name.replace(/\.[^.]+$/, "") || "take";
     setStatus("");
     if (api) {
       try {
@@ -1029,7 +996,6 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
     const body = new FormData();
     body.append("audio", slots.audio.file, slots.audio.file.name);
-    body.append("midi", slots.midi.file, slots.midi.file.name);
 
     const signal = abortController && abortController.signal;
 
@@ -1113,7 +1079,6 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     }
     setPlaying(false);
     resetSlot("audio");
-    resetSlot("midi");
     setStatus("");
     lastConverted = false;
     lastFileName = "";
@@ -1257,13 +1222,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     audioInput.value = "";
   });
 
-  midiInput.addEventListener("change", () => {
-    chooseFiles(midiInput.files, "midi");
-    midiInput.value = "";
-  });
-
   audioClear.addEventListener("click", () => clearSlot("audio"));
-  midiClear.addEventListener("click", () => clearSlot("midi"));
 
   Object.values(slots).forEach((slot) => {
     ["dragenter", "dragover"].forEach((type) => {

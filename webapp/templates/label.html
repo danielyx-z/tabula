@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Tabula — dead-note labeller</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2320231e'/%3E%3Cpath d='M7 9h18M7 13h18M7 17h18M7 21h18M7 25h18' stroke='%23f3eee3' stroke-width='1.2' opacity='.65'/%3E%3Ccircle cx='13' cy='17' r='2.6' fill='%23c2663d'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='label.css') }}">
+</head>
+<body class="label-body">
+  <header class="topbar label-topbar">
+    <a class="wordmark" href="/" aria-label="Tabula, home">
+      <svg class="wordmark-mark" viewBox="0 0 30 34" aria-hidden="true">
+        <path d="M4 7h22M4 11h22M4 15h22M4 19h22M4 23h22M4 27h22" />
+        <circle cx="12" cy="19" r="2.4" />
+        <path class="stem" d="M14 19V9" />
+      </svg>
+      <span>tabula</span>
+    </a>
+    <div class="label-topbar-copy">
+      <strong>Dead-note labeller</strong>
+      <span>MIDI-anchored. Pitched is the default; click or box-select dead notes.</span>
+    </div>
+    <a class="label-back" href="/">Back to tab workbench</a>
+  </header>
+
+  <main class="label-main">
+    <section id="label-upload" class="label-upload">
+      <form id="label-form" class="label-form">
+        <div class="label-upload-row">
+          <label class="label-file">
+            <span class="label-file-kicker">Recording</span>
+            <span class="label-file-title" id="label-audio-title">Choose audio</span>
+            <span class="label-file-meta" id="label-audio-meta">WAV, FLAC, OGG, MP3 · {{ max_audio_mb }} MB</span>
+            <input id="label-audio" type="file" accept="audio/*,.wav,.flac,.ogg,.oga,.mp3,.m4a,.aac,.aif,.aiff,.opus">
+          </label>
+          <label class="label-file">
+            <span class="label-file-kicker">MIDI <em>optional</em></span>
+            <span class="label-file-title" id="label-midi-title">Upload if you have it</span>
+            <span class="label-file-meta" id="label-midi-meta">Otherwise local MuScriptor {{ muscriptor_model }} transcribes</span>
+            <input id="label-midi" type="file" accept=".mid,.midi,audio/midi,audio/x-midi">
+          </label>
+          <button id="label-start" class="button button-primary" type="submit" disabled>
+            <span class="button-spinner" aria-hidden="true"></span>
+            <span>Open session</span>
+          </button>
+        </div>
+        <p id="label-status" class="form-status" role="status" aria-live="polite"></p>
+      </form>
+
+      <section id="label-recent" class="label-recent" hidden>
+        <div class="label-recent-head">
+          <h2>Recent sessions</h2>
+          <span>Resume a session and keep marking dead notes.</span>
+        </div>
+        <div id="label-recent-list" class="label-recent-list"></div>
+      </section>
+    </section>
+
+    <section id="label-workspace" class="label-workspace" hidden>
+      <div class="label-toolbar">
+        <button id="label-play" class="button button-quiet label-icon-button" type="button" title="Play / pause (space)">▶</button>
+        <div class="label-time" id="label-time">0:00.0</div>
+        <div class="label-toolbar-spacer"></div>
+        <div class="label-zoom-controls" aria-label="Zoom">
+          <button id="label-zoom-out" class="button button-quiet label-icon-button" type="button" title="Zoom out">−</button>
+          <input id="label-zoom" type="range" min="1" max="12" step="0.25" value="1" aria-label="Zoom">
+          <button id="label-zoom-in" class="button button-quiet label-icon-button" type="button" title="Zoom in">+</button>
+        </div>
+        <button id="label-fit" class="button button-quiet" type="button">Fit</button>
+        <button id="label-undo" class="button button-quiet" type="button" title="Undo (u)">Undo</button>
+        <button id="label-clear" class="button button-quiet" type="button">Clear dead</button>
+      </div>
+
+      <div class="label-summary">
+        <span id="label-name">—</span>
+        <span id="label-counts">—</span>
+        <span id="label-saved">All changes saved</span>
+        <div class="label-summary-actions">
+          <button id="label-new" class="button button-quiet label-mini" type="button">New</button>
+          <button id="label-delete" class="button button-quiet label-mini" type="button">Delete</button>
+          <a id="label-export" class="button button-quiet label-mini" href="#" download>Export</a>
+          <button id="label-review" class="button button-quiet label-mini label-review-button" type="button">Mark reviewed</button>
+        </div>
+      </div>
+
+      <div class="label-canvas-wrap" id="label-canvas-wrap">
+        <canvas id="label-canvas" tabindex="0" aria-label="Piano roll. Click a note to toggle dead; drag a rectangle to mark dead notes."></canvas>
+        <div id="label-empty" class="label-empty" hidden>No note groups found.</div>
+      </div>
+
+      <div id="label-scrollbar" class="label-scrollbar" aria-label="Timeline scrollbar">
+        <div id="label-scroll-thumb" class="label-scroll-thumb"></div>
+      </div>
+
+      <p class="label-help">
+        Click a note to toggle. Drag a rectangle to mark everything inside dead.
+        Alt-drag clears. Space plays; U undoes. −/+ or wheel zooms; shift-wheel
+        scrolls; drag the scrollbar to move.
+      </p>
+    </section>
+  </main>
+
+  <script>
+    window.TABULA_LABEL = {
+      maxAudioMb: {{ max_audio_mb }},
+      maxMidiMb: {{ max_midi_mb }},
+      muscriptorModel: "{{ muscriptor_model }}"
+    };
+  </script>
+  <script src="{{ url_for('static', filename='label.js') }}"></script>
+</body>
+</html>

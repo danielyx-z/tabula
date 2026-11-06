@@ -176,7 +176,7 @@ def notes_to_events(notes: list[Note], base_t: int = 0,
 
     If ``snap_shifts`` is true, each inter-onset time delta is snapped to the
     nearest valid TIME_SHIFT token value before encoding.  This is useful when
-    the input comes from an audio-to-MIDI step (e.g. basic-pitch) whose
+    the input comes from an audio-to-MIDI step (e.g. MuScriptor) whose
     timings don't align to the training grid.
     """
     if not notes:

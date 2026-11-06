@@ -18,8 +18,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
-from statistics import median
-from typing import Any, Callable
+from typing import Any
 
 from .dead import lowest_free_string
 from .evidence import (
@@ -29,7 +28,6 @@ from .evidence import (
     nearest_unmatched_event_for_note,
     non_note_score,
 )
-from .note_presence import basic_pitch_votes_for_notes
 from .ticks import PPQ
 
 
@@ -120,15 +118,6 @@ def detect_non_notes(
     unmatched_max_harmonic_ratio: float = 0.70,
     review_confidence: float = 0.45,
     slap_min_pitch_support: float = 0.12,
-    presence: Any | None = None,
-    basic_pitch_notes: list[dict[str, Any]] | None = None,
-    tick_seconds: Callable[[int], float] | None = None,
-    offset_sec: float = 0.0,
-    presence_dead_threshold: float = 0.65,
-    presence_pitched_threshold: float = 0.70,
-    run_presence_ratio: float = 0.90,
-    basic_pitch_tolerance_s: float = 0.12,
-    basic_pitch_heuristic_threshold: float = 0.35,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     """Return notes with ``_drop`` markers, replacement/additive dead notes, and review.
 
@@ -148,36 +137,6 @@ def detect_non_notes(
         raise ValueError("review_confidence must be between 0 and 1")
     if slap_min_pitch_support < 0.0:
         raise ValueError("slap_min_pitch_support must be >= 0")
-    if presence_dead_threshold < 0.0 or presence_dead_threshold > 1.0:
-        raise ValueError("presence_dead_threshold must be between 0 and 1")
-    if presence_pitched_threshold < 0.0 or presence_pitched_threshold > 1.0:
-        raise ValueError("presence_pitched_threshold must be between 0 and 1")
-    if run_presence_ratio < 0.0:
-        raise ValueError("run_presence_ratio must be >= 0")
-
-    if presence is not None or basic_pitch_notes is not None:
-        return _detect_with_presence(
-            notes,
-            events,
-            analysis=analysis,
-            audio_path=audio_path,
-            presence=presence,
-            basic_pitch_notes=basic_pitch_notes,
-            grid_ticks=grid_ticks,
-            tick_seconds=tick_seconds,
-            offset_sec=offset_sec,
-            min_confidence=min_confidence,
-            unmatched_min_confidence=unmatched_min_confidence,
-            unmatched_max_harmonic_ratio=unmatched_max_harmonic_ratio,
-            review_confidence=review_confidence,
-            slap_min_pitch_support=slap_min_pitch_support,
-            presence_dead_threshold=presence_dead_threshold,
-            presence_pitched_threshold=presence_pitched_threshold,
-            run_presence_ratio=run_presence_ratio,
-            basic_pitch_tolerance_s=basic_pitch_tolerance_s,
-            basic_pitch_heuristic_threshold=basic_pitch_heuristic_threshold,
-        )
-
     if analysis is None and audio_path is not None:
         analysis = AudioAnalysis.load(audio_path)
 
@@ -462,220 +421,5 @@ def detect_non_notes(
         "review_confidence": float(review_confidence),
         "slap_min_pitch_support": float(slap_min_pitch_support),
         "used_event_ticks": sorted(used_event_ticks),
-    }
-    return result, dead_notes, review, stats
-
-
-def _pick_group_event(events: list[dict[str, Any] | None]) -> dict[str, Any] | None:
-    available = [event for event in events if event is not None]
-    if not available:
-        return None
-    available.sort(
-        key=lambda event: (
-            bool(event.get("matched")),
-            float(event.get("audio_confidence", 0.0) or 0.0),
-            float(event.get("strength", 0.0) or 0.0),
-        )
-    )
-    return available[-1]
-
-
-def _event_review_event(event: dict[str, Any] | None) -> dict[str, Any]:
-    if event is not None:
-        return event
-    return {
-        "time": 0.0,
-        "class": "presence",
-        "audio_confidence": 0.0,
-        "strength": 0.0,
-        "harmonic_ratio": 0.0,
-        "voiced_prob": 0.0,
-    }
-
-
-def _detect_with_presence(
-    notes: list[dict[str, Any]],
-    events: list[dict[str, Any]],
-    *,
-    analysis: AudioAnalysis | None,
-    audio_path: str | Path | None,
-    presence: Any | None,
-    basic_pitch_notes: list[dict[str, Any]] | None,
-    grid_ticks: int,
-    tick_seconds: Callable[[int], float] | None,
-    offset_sec: float,
-    min_confidence: float,
-    unmatched_min_confidence: float,
-    unmatched_max_harmonic_ratio: float,
-    review_confidence: float,
-    slap_min_pitch_support: float,
-    presence_dead_threshold: float,
-    presence_pitched_threshold: float,
-    run_presence_ratio: float,
-    basic_pitch_tolerance_s: float,
-    basic_pitch_heuristic_threshold: float,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
-    """Use Basic Pitch note presence as the per-note decision.
-
-    The uploaded MIDI is the source of candidate notes.  Basic Pitch is run on
-    the same audio.  For every uploaded note:
-
-    * Basic Pitch has the same note at that time -> keep it pitched;
-    * Basic Pitch has no note there -> replace it with ``x`` on its string;
-    * Basic Pitch was not run -> keep the event-heuristic decision.
-
-    Chords are handled per string.  If some strings are detected and others are
-    missing, only the missing strings become ``x``.  A fully pitched percussive
-    chord is a slap strum and gets one ``x`` below it.
-    """
-    result, dead_notes, review, base_stats = detect_non_notes(
-        notes,
-        events,
-        analysis=analysis,
-        audio_path=audio_path,
-        grid_ticks=grid_ticks,
-        min_confidence=min_confidence,
-        unmatched_min_confidence=unmatched_min_confidence,
-        unmatched_max_harmonic_ratio=unmatched_max_harmonic_ratio,
-        review_confidence=review_confidence,
-        slap_min_pitch_support=slap_min_pitch_support,
-    )
-    if basic_pitch_notes is None:
-        return result, dead_notes, review, base_stats
-
-    by_slot: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    for note in result:
-        by_slot[_slot(int(note["t"]), grid_ticks)].append(note)
-
-    event_by_key: dict[tuple[int, int], dict[str, Any] | None] = {}
-    time_by_key: dict[tuple[int, int], float | None] = {}
-    used_event_ticks: set[int] = set(base_stats.get("used_event_ticks", []))
-    for note in result:
-        key = _key(note)
-        event = best_event_for_note(
-            note, events, grid_ticks=grid_ticks
-        ) or nearest_unmatched_event_for_note(
-            note, events, grid_ticks=grid_ticks
-        )
-        event_by_key[key] = event
-        if event is not None:
-            event_tick = int(event.get("tick", -1))
-            if event_tick >= 0:
-                used_event_ticks.add(event_tick)
-        if tick_seconds is not None:
-            time_by_key[key] = float(tick_seconds(int(note["t"]))) - float(offset_sec)
-        elif event is not None:
-            time_by_key[key] = float(event.get("time", 0.0) or 0.0)
-        else:
-            time_by_key[key] = None
-
-    heuristic_score_by_key: dict[tuple[int, int], float] = {}
-    for note in result:
-        key = _key(note)
-        event = event_by_key.get(key)
-        if event is None:
-            continue
-        pitch_support = (
-            analysis.pitch_support(
-                float(event.get("time", 0.0) or 0.0), int(note["pitch"])
-            )
-            if analysis is not None
-            else 0.5
-        )
-        heuristic_score_by_key[key] = non_note_score(event, pitch_support)
-
-    bp_votes = basic_pitch_votes_for_notes(
-        result,
-        basic_pitch_notes,
-        time_by_key=time_by_key,
-        tolerance_s=basic_pitch_tolerance_s,
-    )
-    group_size = {slot: len(group) for slot, group in by_slot.items()}
-
-    dead_by_key = {
-        (int(dead["t"]), int(dead["s"])): dead
-        for dead in dead_notes
-    }
-    note_by_key = {_key(note): note for note in result}
-    absent_dead = 0
-    present_kept = 0
-
-    for key, bp in bp_votes.items():
-        note = note_by_key.get(key)
-        if note is None:
-            continue
-        if group_size.get(_slot(int(note["t"]), grid_ticks), 0) != 1:
-            # Basic Pitch is a single-note fallback.  Polyphonic chords keep
-            # the event/presence decision because Basic Pitch misses notes in
-            # dense chords.
-            continue
-        if bp is False:
-            if (
-                heuristic_score_by_key.get(key, 0.0)
-                < float(basic_pitch_heuristic_threshold)
-            ):
-                continue
-            absent_dead += 1
-            note["_drop"] = True
-            existing = dead_by_key.get(key)
-            if existing is None:
-                dead_notes.append(
-                    {
-                        "t": int(note["t"]),
-                        "dur": max(1, int(grid_ticks)),
-                        "s": int(note["s"]),
-                        "f": 0,
-                        "kind": "dead",
-                        "source": "basic_pitch_absence",
-                        "confidence": 1.0,
-                        "reason": "basic_pitch_absent",
-                    }
-                )
-                dead_by_key[key] = dead_notes[-1]
-            else:
-                existing["source"] = "basic_pitch_absence"
-                existing["confidence"] = 1.0
-                existing["reason"] = "basic_pitch_absent"
-            review.append(
-                _review_item(
-                    note,
-                    _event_review_event(event_by_key.get(key)),
-                    1.0,
-                    action="replace",
-                    reason="basic_pitch_absent",
-                )
-            )
-        elif bp is True:
-            if note.get("_drop"):
-                note.pop("_drop", None)
-                present_kept += 1
-            if key in dead_by_key:
-                dead_notes = [
-                    dead
-                    for dead in dead_notes
-                    if (int(dead["t"]), int(dead["s"])) != key
-                ]
-                dead_by_key.pop(key, None)
-
-    slap = int(base_stats.get("slap", 0) or 0)
-
-    review.sort(
-        key=lambda item: (
-            int(item["note"]["t"]),
-            int(item["note"]["s"]),
-        )
-    )
-    stats = {
-        **base_stats,
-        "basic_pitch_notes": len(basic_pitch_notes),
-        "basic_pitch_absent_dead": absent_dead,
-        "basic_pitch_present_kept": present_kept,
-        "slap": slap,
-        "used_event_ticks": sorted(used_event_ticks),
-        "basic_pitch_tolerance_s": float(basic_pitch_tolerance_s),
-        "basic_pitch_heuristic_threshold": float(basic_pitch_heuristic_threshold),
-        "presence_dead_threshold": float(presence_dead_threshold),
-        "presence_pitched_threshold": float(presence_pitched_threshold),
-        "run_presence_ratio": float(run_presence_ratio),
     }
     return result, dead_notes, review, stats

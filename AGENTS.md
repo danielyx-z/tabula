@@ -177,9 +177,36 @@ is off by default; enable it only if memory becomes tight.
   and the GuitarSet fine-tune (`runs/finetune_t5_guitarset/best`).
   `vocab/guitarset.json` (248) is the older GuitarSet-only vocab. Do not use
   the unpruned `DEFAULT_VOCAB` (286) for training.
+- `src/transcribe/muscriptor.py` — local MuScriptor call. The web app uses the
+  small model when the user does not upload MIDI.
+- `src/tabfeatures/midi_groups.py` — MIDI-derived attack/chord groups used by
+  both the labeller and the dead-note classifier. Candidates never come from
+  audio onset detection.
+- `src/tabfeatures/labeling/` — `data/labels_dead` sessions, per-note labels,
+  reviewed flag, JSONL export.
+- `src/tabfeatures/deadnotes/` — MIDI-anchored features, XGBoost model,
+  per-note inference. It runs after `midi2tab` and writes `dead_notes.json` for
+  `tabfeatures/gp5.py` (`NoteType.dead`). `raw.mid` is untouched.
+- `webapp/templates/label.html`, `webapp/static/label.js` — piano-roll
+  labeller; pitched is default, click/box-select marks dead.
+- `scripts/train_dead_classifier.py` — trains from reviewed sessions and prints
+  holdout precision/recall/confusion.
 
 ## Fixed bugs (recent)
 
+- **MuScriptor bar offset** — exported MIDI notes are shifted forward so bar 1
+  starts at tick 0 and a `muscriptor:bar_offset=` marker records the shift. The
+  labeller and dead-note classifier subtract that marker from audio-facing
+  times; MIDI ticks passed to `midi2tab` stay unchanged. Do not add an
+  estimated audio/MIDI offset on top.
+- **Labeller playback clock** — an `<audio>` element clock drifted by tens of
+  milliseconds against the WAV. Playback now uses an `AudioBufferSourceNode`
+  and `AudioContext.currentTime`, matching MuScriptor's own web player.
+- **MuScriptor quantization** — pre-quantization is off by default. `midi2tab`
+  applies the 20-tick model grid itself. If `TABULA_MUSCRIPTOR_QUANTIZE=1`,
+  `TABULA_MUSCRIPTOR_GRID` defaults to 8 (1/32), not 4 (1/16).
+- **Main workbench is audio-only** — `/` has no MIDI upload slot. The label page
+  keeps optional MIDI upload for labelling a specific transcription.
 - **Tempo map flattening** — output `input/raw/final.mid` previously flattened
   to a single constant BPM. Now they load the source MIDI and replace instruments,
   keeping all original tempo changes (e.g. lover_girl.mid: 37 tempo changes,

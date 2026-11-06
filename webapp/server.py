@@ -28,6 +28,21 @@ try:
 except ImportError:  # Allow ``python webapp/server.py`` as well as ``-m webapp.server``.
     from gp5 import build_gp5 as build_legacy_gp5
 
+from transcribe import MuscriptorUnavailable, transcribe_audio
+from tabfeatures.labeling.store import (
+    LABEL_ROOT,
+    append_labels,
+    create_session,
+    export_labels,
+    label_state,
+    list_sessions,
+    mark_reviewed,
+    remove_session,
+    write_candidates,
+    write_meta,
+)
+from tabfeatures.midi_groups import load_note_groups
+
 REPO = Path(__file__).resolve().parents[1]
 WEB = Path(__file__).resolve().parent
 JOBS = WEB / "jobs"
@@ -50,6 +65,12 @@ MAX_UPLOAD_MB = int(
 )
 CONVERT_TIMEOUT = int(os.environ.get("TABULA_CONVERT_TIMEOUT", "900"))
 AUDIO_TIMEOUT = int(os.environ.get("TABULA_AUDIO_TIMEOUT", "180"))
+MUSCRIPTOR_MODEL = os.environ.get("TABULA_MUSCRIPTOR_MODEL", "small")
+MUSCRIPTOR_INSTRUMENTS = os.environ.get(
+    "TABULA_MUSCRIPTOR_INSTRUMENTS", "acoustic_guitar"
+)
+MUSCRIPTOR_GRID = int(os.environ.get("TABULA_MUSCRIPTOR_GRID", "8"))
+MUSCRIPTOR_QUANTIZE = os.environ.get("TABULA_MUSCRIPTOR_QUANTIZE", "0") != "0"
 
 AUDIO_SUFFIXES = {
     ".wav", ".flac", ".ogg", ".oga", ".mp3", ".m4a", ".aac",
@@ -185,6 +206,19 @@ def _normalize_audio(source: Path, destination: Path) -> Path:
     return destination
 
 
+def _local_transcribe(audio_path: Path, out_path: Path) -> None:
+    """Run the local small MuScriptor model, preserving the tempo map."""
+    transcribe_audio(
+        audio_path,
+        out_path,
+        model=MUSCRIPTOR_MODEL,
+        instrument=MUSCRIPTOR_INSTRUMENTS,
+        quantize=MUSCRIPTOR_QUANTIZE,
+        grid=MUSCRIPTOR_GRID,
+        timeout=CONVERT_TIMEOUT,
+    )
+
+
 def _run_conversion(command: list[str]) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     src = str(REPO / "src")
@@ -266,6 +300,182 @@ def _validate_upload(
     return Path(safe), suffix
 
 
+@app.get("/label")
+def label_page():
+    return render_template(
+        "label.html",
+        max_audio_mb=MAX_AUDIO_MB,
+        max_midi_mb=MAX_MIDI_MB,
+        muscriptor_model=MUSCRIPTOR_MODEL,
+        label_root=str(LABEL_ROOT),
+    )
+
+
+def _label_session_or_404(session_id: str) -> None:
+    if not re.fullmatch(r"[0-9a-f]{32}", session_id):
+        abort(404)
+    if not (LABEL_ROOT / session_id).is_dir():
+        abort(404)
+
+
+def _audio_duration(path: Path) -> float:
+    try:
+        import librosa
+
+        return float(librosa.get_duration(path=str(path)))
+    except Exception:
+        return 0.0
+
+
+@app.get("/api/label/sessions")
+def label_list():
+    return jsonify({"sessions": list_sessions()})
+
+
+@app.post("/api/label/sessions")
+def label_create():
+    audio_upload = request.files.get("audio")
+    midi_upload = request.files.get("midi")
+    if audio_upload is None or not audio_upload.filename:
+        return _error("Choose a recording to label.")
+    try:
+        audio_original, audio_suffix = _validate_upload(
+            audio_upload,
+            label="label audio",
+            suffixes=AUDIO_SUFFIXES,
+            max_mb=MAX_AUDIO_MB,
+        )
+    except ValueError as exc:
+        return _error(str(exc))
+
+    midi_original = None
+    if midi_upload is not None and midi_upload.filename:
+        try:
+            midi_original, _midi_suffix = _validate_upload(
+                midi_upload,
+                label="label MIDI",
+                suffixes=MIDI_SUFFIXES,
+                max_mb=MAX_MIDI_MB,
+            )
+        except ValueError as exc:
+            return _error(str(exc))
+
+    session_id, directory = create_session()
+    upload_path = directory / f"upload_audio{audio_suffix}"
+    audio_path = directory / "audio.wav"
+    midi_path = directory / "transcribed.mid"
+    try:
+        audio_upload.save(upload_path)
+        if not upload_path.stat().st_size:
+            raise ValueError("That recording is empty.")
+        normalized = _normalize_audio(upload_path, audio_path)
+        if normalized != audio_path:
+            shutil.copy2(normalized, audio_path)
+        if midi_original is not None:
+            midi_upload.save(midi_path)
+            source = "uploaded"
+        else:
+            _local_transcribe(audio_path, midi_path)
+            source = "muscriptor"
+        if not midi_path.is_file() or not midi_path.stat().st_size:
+            raise ValueError("No MIDI transcription was produced.")
+        payload = load_note_groups(
+            midi_path,
+            duration_s=_audio_duration(audio_path),
+        )
+        write_candidates(session_id, payload)
+        note_count = sum(len(group.get("notes", [])) for group in payload["groups"])
+        write_meta(
+            session_id,
+            {
+                "original_name": audio_original.name,
+                "midi_name": midi_original.name if midi_original else "transcribed.mid",
+                "source": source,
+                "model": MUSCRIPTOR_MODEL if source == "muscriptor" else None,
+                "quantize": MUSCRIPTOR_QUANTIZE if source == "muscriptor" else None,
+                "grid": MUSCRIPTOR_GRID if source == "muscriptor" else None,
+                "duration": payload.get("duration"),
+                "note_count": note_count,
+                "dead_count": 0,
+                "reviewed": False,
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            },
+        )
+    except MuscriptorUnavailable as exc:
+        remove_session(session_id)
+        return _error("Local MuScriptor is not available.", 500, str(exc))
+    except Exception as exc:  # noqa: BLE001 - surfaced to the local UI
+        remove_session(session_id)
+        return _error(
+            "The label session could not be created.", 500, str(exc)
+        )
+    finally:
+        upload_path.unlink(missing_ok=True)
+
+    return jsonify(label_state(session_id))
+
+
+@app.get("/api/label/sessions/<session_id>")
+def label_get(session_id: str):
+    _label_session_or_404(session_id)
+    return jsonify(label_state(session_id))
+
+
+@app.get("/api/label/sessions/<session_id>/audio")
+def label_audio(session_id: str):
+    _label_session_or_404(session_id)
+    path = LABEL_ROOT / session_id / "audio.wav"
+    if not path.is_file():
+        abort(404)
+    return send_file(path, mimetype="audio/wav", conditional=True)
+
+
+@app.post("/api/label/sessions/<session_id>/labels")
+def label_append(session_id: str):
+    _label_session_or_404(session_id)
+    payload = request.get_json(silent=True) or {}
+    raw = payload.get("labels")
+    if raw is None:
+        raw = [payload]
+    if not isinstance(raw, list):
+        return _error("labels must be a list.")
+    records = [item for item in raw if isinstance(item, dict)]
+    append_labels(session_id, records, op_id=uuid.uuid4().hex)
+    state = label_state(session_id)
+    meta = state.get("meta") or {}
+    meta["dead_count"] = int((state.get("summary") or {}).get("dead", 0))
+    write_meta(session_id, meta)
+    return jsonify(state)
+
+
+@app.post("/api/label/sessions/<session_id>/reviewed")
+def label_reviewed(session_id: str):
+    _label_session_or_404(session_id)
+    payload = request.get_json(silent=True) or {}
+    mark_reviewed(session_id, bool(payload.get("reviewed", True)))
+    return jsonify(label_state(session_id))
+
+
+@app.get("/api/label/sessions/<session_id>/labels.jsonl")
+def label_export(session_id: str):
+    _label_session_or_404(session_id)
+    body = export_labels(session_id)
+    return app.response_class(
+        body,
+        mimetype="application/x-ndjson",
+        headers={
+            "Content-Disposition": f'attachment; filename="{session_id}-labels.jsonl"'
+        },
+    )
+
+
+@app.delete("/api/label/sessions/<session_id>")
+def label_delete(session_id: str):
+    _label_session_or_404(session_id)
+    remove_session(session_id)
+    return jsonify({"ok": True})
+
+
 @app.post("/api/convert")
 def convert():
     if not CHECKPOINT.exists():
@@ -284,19 +494,25 @@ def convert():
     midi_upload = request.files.get("midi") or request.files.get("file")
     audio_upload = request.files.get("audio")
 
-    if midi_upload is None or not midi_upload.filename:
-        return _error("Choose the MIDI transcription for this take.")
-    try:
-        midi_original, midi_suffix = _validate_upload(
-            midi_upload,
-            label="MIDI transcription",
-            suffixes=MIDI_SUFFIXES,
-            max_mb=MAX_MIDI_MB,
-        )
-    except ValueError as exc:
-        return _error(str(exc))
+    has_midi = bool(midi_upload and midi_upload.filename)
+    has_audio = bool(audio_upload and audio_upload.filename)
+    if not has_midi and not has_audio:
+        return _error("Choose a recording, a MIDI transcription, or both.")
 
-    audio_mode = bool(audio_upload and audio_upload.filename)
+    midi_original = None
+    midi_suffix = ".mid"
+    if has_midi:
+        try:
+            midi_original, midi_suffix = _validate_upload(
+                midi_upload,
+                label="MIDI transcription",
+                suffixes=MIDI_SUFFIXES,
+                max_mb=MAX_MIDI_MB,
+            )
+        except ValueError as exc:
+            return _error(str(exc))
+
+    audio_mode = has_audio
     audio_original = None
     audio_suffix = ""
     if audio_mode:
@@ -315,8 +531,12 @@ def convert():
     out_dir = job_dir / "out"
     job_dir.mkdir(parents=True, exist_ok=False)
 
-    midi_name = midi_original.name if midi_original else f"transcription{midi_suffix}"
-    midi_path = job_dir / f"transcribed{midi_suffix}"
+    midi_name = (
+        midi_original.name
+        if midi_original is not None
+        else f"{Path(audio_original.name).stem}.mid"
+    )
+    midi_path = job_dir / "transcribed.mid"
     audio_path = None
     normalized_audio = None
     if audio_mode:
@@ -327,11 +547,6 @@ def convert():
         audio_name = None
 
     try:
-        midi_upload.save(midi_path)
-        if midi_path.stat().st_size == 0:
-            raise ValueError("That MIDI file is empty.")
-        if _size_mb(midi_path) > MAX_MIDI_MB:
-            raise ValueError(f"The MIDI transcription is larger than {MAX_MIDI_MB} MB.")
         if audio_mode:
             audio_upload.save(audio_path)
             if audio_path.stat().st_size == 0:
@@ -339,6 +554,22 @@ def convert():
             if _size_mb(audio_path) > MAX_AUDIO_MB:
                 raise ValueError(f"The source recording is larger than {MAX_AUDIO_MB} MB.")
             normalized_audio = _normalize_audio(audio_path, normalized_audio)
+        if has_midi:
+            midi_upload.save(midi_path)
+            if midi_path.stat().st_size == 0:
+                raise ValueError("That MIDI file is empty.")
+            if _size_mb(midi_path) > MAX_MIDI_MB:
+                raise ValueError(f"The MIDI transcription is larger than {MAX_MIDI_MB} MB.")
+        else:
+            try:
+                _local_transcribe(normalized_audio, midi_path)
+            except MuscriptorUnavailable as exc:
+                raise MuscriptorUnavailable(str(exc)) from exc
+            except RuntimeError as exc:
+                raise RuntimeError(f"MuScriptor transcription failed: {exc}") from exc
+    except MuscriptorUnavailable as exc:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        return _error("Local MuScriptor is not available.", 500, str(exc))
     except (OSError, ValueError, RuntimeError) as exc:
         shutil.rmtree(job_dir, ignore_errors=True)
         return _error(str(exc) or "The upload could not be saved.", 400)

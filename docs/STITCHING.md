@@ -2,7 +2,8 @@
 
 This pipeline adds performance features that a MIDI-only tab cannot represent:
 
-* dead notes / string mutes (`x`) detected from unmatched audio onsets,
+* dead notes / string mutes (`x`) from the per-note classifier, with the
+  audio-only onset heuristic retained as a fallback,
 * matched notes that are actually percussion or other non-note hits replaced
   with dead notes (`x`),
 * slap-strum chords kept intact with one `x` placed on the lowest free string
@@ -16,11 +17,16 @@ It does **not** retrain Tabula and does **not** replace the existing
 ## Inputs and assumptions
 
 * Guitar-only audio.
-* A quantised MIDI transcription (for example from MuScriptor), with a tempo
-  map that follows the performance.  The default grid is `1/16`.
-* The MIDI is the source of truth for pitch and rhythm.  Audio is used for
-  onsets absent from the MIDI, to validate matched notes against the expected
-  pitch, and to gate H/P decisions.
+* A MIDI transcription (for example from MuScriptor), with a tempo map that
+  follows the performance.  Pre-quantization is not required; `midi2tab.py`
+  applies the model's own 20-tick grid internally.
+* The MIDI is the source of truth for pitch and rhythm.  Audio is used for the
+  per-note dead classifier, for onsets absent from the MIDI, and to gate H/P
+  decisions.
+* MuScriptor writes a `muscriptor:bar_offset=` marker because it shifts notes
+  so bar 1 starts at tick 0.  Labelling, classifier features and classifier
+  inference subtract that marker from their audio times; MIDI ticks passed to
+  the tab model are unchanged.
 
 ## Run it
 
@@ -75,8 +81,8 @@ After editing `articulations.json`, rerun only the last stage:
 | `percussion_events.json` | onsets after reconciliation (matched/unmatched, snapped ticks) |
 | `tabula/` | the job's own `final.json`, `final.mid`, `report.json`, logs |
 | `dead_notes.json` | inserted `x` notes, with ticks and confidence |
-| `non_note_review.json` | note decisions with presence, Basic Pitch, and event evidence |
-| `basic_pitch_notes.json` | independent Basic Pitch note events used as a second opinion |
+| `dead_decisions.json` | per-note classifier scores and keep/dead decisions |
+| `non_note_review.json` | note decisions from the audio heuristic (fallback only) |
 | `hp_review.json` | H/P candidates, accepted/rejected state, gaps, confidence |
 | `articulations.json` | editable manual overlay (created empty) |
 | `tab_with_features.txt` | ASCII tab with `x`, `h`, `p`, slide/bend/vibrato markers |
@@ -200,25 +206,38 @@ Existing jobs created before raw audio classes were preserved are backfilled
 from `audio_events.json` when Stage 3 is resumed.  Re-run `--stage audio`
 first if that raw file is also missing.
 
-## Basic Pitch single-note fallback
+## Per-note dead-note classifier
 
-Basic Pitch is run once on the source audio.  Its note starts are matched
-one-to-one against uploaded MIDI notes of the same pitch, allowing for the
-quantisation/timing difference.
+The recommended path is a small classifier trained from the piano-roll
+labeller.  It runs after `midi2tab` because the model's per-string assignment
+is needed to place an `x` on the correct string.
 
-For a **single-note attack**:
+```bash
+python scripts/stitch_tab.py \
+  --audio take.wav --midi take.mid --out-dir out/take \
+  --dead-model data/models/dead_notes
+```
 
-- the event heuristic must first score at or above
-  `--basic-pitch-heuristic-threshold` (default `0.35`);
-- Basic Pitch has a matching note -> keep it pitched;
-- Basic Pitch has no matching note -> replace it with `x` on its string;
-- Basic Pitch was not run -> keep the event-heuristic decision.
+If `data/models/dead_notes/metadata.json` exists, the classifier is enabled
+automatically.  Disable it with `--no-dead-model`.
 
-Polyphonic chords keep the event/presence decision because Basic Pitch is less
-reliable when several strings sound at once.  A fully pitched percussive chord
-can still receive the slap-strum marker from the event heuristic.
+For every MIDI note the classifier sees the original audio around the MIDI
+onset.  Pitched is the default; notes above the dead threshold are relabelled
+in place as `x` on the string `final.json` assigned.  No note is deleted: the
+pitched event becomes one dead note.  `dead_decisions.json` records every
+score, and `dead_notes.json` is what the GP5 renderer consumes.
 
-Basic Pitch output is written to `basic_pitch_notes.json` for inspection.
+The old audio heuristic remains available as a fallback when no model exists.
+Use `--audio-extra-dead` to also insert unmatched audio onsets while the
+classifier is active.
+
+Train the model from reviewed sessions:
+
+```bash
+PYTHONPATH=src .venv/bin/python3 scripts/train_dead_classifier.py
+```
+
+See `docs/LABELING.md`.
 
 ## H/P guard rails
 
@@ -294,15 +313,11 @@ entirely with `--no-auto-hp`.
   that look harmonic rather than percussive.
 * `--slap-min-pitch-support 0.12` — chord pitch support needed to keep a
   percussive chord and add an `x` beneath it instead of replacing notes.
-* `--basic-pitch` / `--no-basic-pitch` — enable or disable the independent
-  Basic Pitch note-presence vote (default: on).
-* `--basic-pitch-tolerance 0.12` — allowed Basic Pitch onset difference in
-  seconds.
-* `--basic-pitch-heuristic-threshold 0.35` — minimum heuristic dead-note
-  score before Basic Pitch absence is trusted.
 * `--no-non-note` — disable matched non-note conversion.
 * `--min-match-rate 0.5` — safety guard against mismatched audio/MIDI.
 * `--dead-strings lowest|nearest|all`.
+* `--dead-model PATH`, `--no-dead-model`, `--dead-threshold` — classifier controls.
+* `--audio-extra-dead` — also insert unmatched audio onsets in classifier mode.
 * `--hp-max-gap-beats 0.5`, `--hp-max-interval 7`, `--ring-tolerance 60`.
 * `--hp-min-confidence 0.70`, `--no-hp-audio` — tune or disable the audio gate.
 * `--no-auto-hp`, `--no-gp5`, `--keep-intermediate`.

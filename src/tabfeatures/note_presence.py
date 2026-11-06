@@ -11,17 +11,11 @@ plus a broadband noise template.  A note whose coefficient collapses when the
 other notes are present is likely dead; a note that keeps a strong coefficient
 is likely pitched.
 
-Basic Pitch is used as an independent second opinion.  It is deliberately a
-vote, not an oracle: quiet real notes can be missed, but a dead note should not
-produce a stable Basic Pitch event.
 """
 
 from __future__ import annotations
 
-from bisect import bisect_left
-from collections import defaultdict
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 import librosa
@@ -187,141 +181,3 @@ class NotePresenceAnalyzer:
                 "explained": float(explained),
             }
         return result
-
-
-def load_basic_pitch_notes(
-    audio_path: str | Path,
-    *,
-    minimum_note_length: float = 50.0,
-    onset_threshold: float = 0.45,
-    frame_threshold: float = 0.30,
-) -> list[dict[str, Any]]:
-    """Run Basic Pitch once and return its note events."""
-    from basic_pitch.inference import predict
-
-    _model_output, _midi, note_events = predict(
-        str(audio_path),
-        onset_threshold=float(onset_threshold),
-        frame_threshold=float(frame_threshold),
-        minimum_note_length=float(minimum_note_length),
-    )
-    notes: list[dict[str, Any]] = []
-    for event in note_events:
-        if len(event) < 4:
-            continue
-        start, end, pitch, amplitude = event[:4]
-        notes.append(
-            {
-                "start": float(start),
-                "end": float(end),
-                "pitch": int(pitch),
-                "amplitude": float(amplitude),
-            }
-        )
-    notes.sort(key=lambda item: (item["start"], item["pitch"]))
-    return notes
-
-
-def basic_pitch_votes_for_notes(
-    notes: list[dict[str, Any]],
-    basic_pitch_notes: list[dict[str, Any]] | None,
-    *,
-    time_by_key: dict[tuple[int, int], float | None],
-    tolerance_s: float = 0.12,
-) -> dict[tuple[int, int], bool | None]:
-    """Match uploaded notes to Basic Pitch note onsets one-to-one.
-
-    Matching starts rather than sustained intervals prevents a previous note's
-    tail from making the next attack look present.  One-to-one assignment also
-    prevents one Basic Pitch onset from vouching for several uploaded notes.
-    """
-    if basic_pitch_notes is None:
-        return {key: None for key in time_by_key}
-
-    uploaded: dict[int, list[tuple[float, tuple[int, int]]]] = defaultdict(list)
-    votes: dict[tuple[int, int], bool | None] = {}
-    for note in notes:
-        key = (int(note["t"]), int(note["s"]))
-        time_s = time_by_key.get(key)
-        if time_s is None:
-            votes[key] = None
-            continue
-        uploaded[int(note["pitch"])].append((float(time_s), key))
-
-    basic: dict[int, list[float]] = defaultdict(list)
-    for note in basic_pitch_notes:
-        basic[int(note["pitch"])].append(float(note["start"]))
-
-    for pitch, items in uploaded.items():
-        starts = sorted(basic.get(pitch, []))
-        if not starts:
-            for _time_s, key in items:
-                votes[key] = False
-            continue
-        used: set[int] = set()
-        matched: set[tuple[int, int]] = set()
-        for time_s, key in sorted(items):
-            candidates = [
-                (abs(time_s - start), index)
-                for index, start in enumerate(starts)
-                if index not in used and abs(time_s - start) <= float(tolerance_s)
-            ]
-            if not candidates:
-                continue
-            _distance, index = min(candidates)
-            used.add(index)
-            matched.add(key)
-        for _time_s, key in items:
-            votes[key] = key in matched
-    return votes
-
-
-def basic_pitch_time_votes(
-    notes: list[dict[str, Any]],
-    basic_pitch_notes: list[dict[str, Any]] | None,
-    *,
-    time_by_key: dict[tuple[int, int], float | None],
-    tolerance_s: float = 0.12,
-) -> dict[tuple[int, int], bool | None]:
-    """Return whether Basic Pitch has any onset near each uploaded note time.
-
-    This is the simple rule: if the upload has a note at a time but Basic Pitch
-    has no note at that time, the uploaded note is a dead-note candidate.
-    """
-    if basic_pitch_notes is None:
-        return {key: None for key in time_by_key}
-    starts = sorted(float(note["start"]) for note in basic_pitch_notes)
-    votes: dict[tuple[int, int], bool | None] = {}
-    for note in notes:
-        key = (int(note["t"]), int(note["s"]))
-        time_s = time_by_key.get(key)
-        if time_s is None:
-            votes[key] = None
-            continue
-        index = bisect_left(starts, float(time_s))
-        present = False
-        for candidate in (index - 1, index):
-            if 0 <= candidate < len(starts):
-                if abs(starts[candidate] - float(time_s)) <= float(tolerance_s):
-                    present = True
-                    break
-        votes[key] = present
-    return votes
-
-
-def basic_pitch_presence(
-    time_s: float | None,
-    pitch: int,
-    notes: list[dict[str, Any]] | None,
-    *,
-    tolerance_s: float = 0.12,
-) -> bool | None:
-    """Return Basic Pitch's vote for one note, or ``None`` when not run."""
-    if notes is None or time_s is None:
-        return None
-    for note in notes:
-        if int(note["pitch"]) != int(pitch):
-            continue
-        if abs(float(note["start"]) - float(time_s)) <= float(tolerance_s):
-            return True
-    return False
