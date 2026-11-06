@@ -200,32 +200,21 @@ Existing jobs created before raw audio classes were preserved are backfilled
 from `audio_events.json` when Stage 3 is resumed.  Re-run `--stage audio`
 first if that raw file is also missing.
 
-## Note presence and Basic Pitch
+## Basic Pitch single-note fallback
 
-The event heuristic is the first pass, not the final word.  Stage 3 also builds
-a per-note harmonic-template fit for each chord/onset:
+Basic Pitch is run once on the source audio.  Its note starts are matched
+one-to-one against uploaded MIDI notes of the same pitch, allowing for the
+quantisation/timing difference.
 
-- every note contributes a fundamental + overtone template,
-- the spectrum is fitted with all chord templates plus a broadband noise
-  template,
-- a note whose coefficient collapses is absent; a note that keeps a strong
-  coefficient is pitched.
+For a **single-note attack**:
 
-A nearby Basic Pitch note is an independent "pitched" vote.  Basic Pitch is
-used conservatively: a detected note is never converted to `x`, and a missing
-note in a repeated run is compared with the Basic Pitch-detected notes in that
-same run.  High strings decay quickly, so their presence threshold is stricter
-than the low strings.
+- Basic Pitch has a matching note -> keep it pitched;
+- Basic Pitch has no matching note -> replace it with `x` on its string;
+- Basic Pitch was not run -> keep the event-heuristic decision.
 
-Evidence is used in three ways:
-
-1. **Revert false positives** — if Basic Pitch or strong harmonic presence says
-   the note is real, the old `x` is removed.
-2. **Recover missed dead notes in runs** — a missing note whose presence is
-   clearly below the Basic Pitch-detected notes in the same run becomes `x`.
-3. **Mixed chords** — a percussive chord with some sharply absent notes drops
-   only those strings and keeps the pitched notes.  A fully pitched percussive
-   chord is a slap strum and gets one `x` on the lowest free string.
+Polyphonic chords keep the event/presence decision because Basic Pitch is less
+reliable when several strings sound at once.  A fully pitched percussive chord
+can still receive the slap-strum marker from the event heuristic.
 
 Basic Pitch output is written to `basic_pitch_notes.json` for inspection.
 
@@ -305,11 +294,7 @@ entirely with `--no-auto-hp`.
   percussive chord and add an `x` beneath it instead of replacing notes.
 * `--basic-pitch` / `--no-basic-pitch` — enable or disable the independent
   Basic Pitch note-presence vote (default: on).
-* `--presence-dead-threshold 0.65`,
-  `--presence-pitched-threshold 0.70`,
-  `--presence-run-ratio 0.90` — harmonic-presence thresholds for dead,
-  pitched, and repeated-run decisions.
-* `--basic-pitch-tolerance 0.10` — allowed Basic Pitch onset difference in
+* `--basic-pitch-tolerance 0.12` — allowed Basic Pitch onset difference in
   seconds.
 * `--no-non-note` — disable matched non-note conversion.
 * `--min-match-rate 0.5` — safety guard against mismatched audio/MIDI.

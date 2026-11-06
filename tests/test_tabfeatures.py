@@ -438,6 +438,11 @@ def test_percussive_chord_keeps_notes_and_adds_slap_x(tmp_path: Path) -> None:
 
 
 
+class _FakeAnalysis:
+    def pitch_support(self, *args, **kwargs):
+        return 0.5
+
+
 class _FakePresence:
     def __init__(self, scores):
         self.scores = scores
@@ -724,7 +729,7 @@ def test_audio_event_detection_finds_click(tmp_path: Path) -> None:
     assert click_events
     assert click_events[0]["class"] in {"dead", "percussive"}
 
-def test_presence_reverts_false_positive() -> None:
+def test_basic_pitch_absence_marks_note_dead() -> None:
     notes = [{"t": 0, "dur": 240, "pitch": 55, "s": 3, "f": 5}]
     events = [
         _matched_event(
@@ -740,17 +745,16 @@ def test_presence_reverts_false_positive() -> None:
         notes,
         events,
         grid_ticks=240,
-        presence=_FakePresence({(0, 3): 0.90}),
         basic_pitch_notes=[],
         tick_seconds=lambda tick: 0.0,
-        presence_pitched_threshold=0.70,
     )
-    assert not result[0].get("_drop")
-    assert dead == []
-    assert stats["presence_reverted"] == 1
+    assert result[0].get("_drop") is True
+    assert {(d["t"], d["s"]) for d in dead} == {(0, 3)}
+    assert dead[0]["source"] == "basic_pitch_absence"
+    assert stats["basic_pitch_absent_dead"] == 1
 
 
-def test_presence_run_recovers_missed_dead_notes() -> None:
+def test_basic_pitch_absence_covers_repeated_run() -> None:
     notes = [
         {"t": tick, "dur": 240, "pitch": 40, "s": 1, "f": 0}
         for tick in (0, 240, 480, 720)
@@ -764,8 +768,8 @@ def test_presence_run_recovers_missed_dead_notes() -> None:
         }
     )
     basic_pitch = [
-        {"start": 0.0, "end": 0.2, "pitch": 40, "amplitude": 0.4},
-        {"start": 0.48, "end": 0.7, "pitch": 40, "amplitude": 0.4},
+        {"start": 0.0, "end": 0.05, "pitch": 40, "amplitude": 0.4},
+        {"start": 0.48, "end": 0.53, "pitch": 40, "amplitude": 0.4},
     ]
     result, dead, _review, stats = detect_non_notes(
         notes,
@@ -782,10 +786,71 @@ def test_presence_run_recovers_missed_dead_notes() -> None:
     assert result[1].get("_drop") is True
     assert result[2].get("_drop") is None
     assert result[3].get("_drop") is True
-    assert stats["presence_run_added"] == 2
+    assert stats["basic_pitch_absent_dead"] == 2
 
 
-def test_presence_mixed_chord_keeps_pitched_note() -> None:
+def test_basic_pitch_time_presence_keeps_chord() -> None:
+    notes = [
+        {"t": 0, "dur": 240, "pitch": 55, "s": 3, "f": 5},
+        {"t": 0, "dur": 240, "pitch": 59, "s": 4, "f": 4},
+    ]
+    result, dead, _review, _stats = detect_non_notes(
+        notes,
+        [],
+        grid_ticks=240,
+        basic_pitch_notes=[
+            {"start": 0.0, "end": 0.2, "pitch": 59, "amplitude": 0.4}
+        ],
+        tick_seconds=lambda tick: 0.0,
+    )
+    assert not result[0].get("_drop")
+    assert not result[1].get("_drop")
+    assert dead == []
+
+
+def test_basic_pitch_absence_does_not_override_chord() -> None:
+    notes = [
+        {"t": 0, "dur": 240, "pitch": 55, "s": 3, "f": 5},
+        {"t": 0, "dur": 240, "pitch": 59, "s": 4, "f": 4},
+    ]
+    result, dead, _review, _stats = detect_non_notes(
+        notes,
+        [],
+        grid_ticks=240,
+        basic_pitch_notes=[],
+        tick_seconds=lambda tick: 0.0,
+    )
+    assert not result[0].get("_drop")
+    assert not result[1].get("_drop")
+    assert dead == []
+
+def test_basic_pitch_present_keeps_a_note() -> None:
+    notes = [{"t": 0, "dur": 240, "pitch": 55, "s": 3, "f": 5}]
+    events = [
+        _matched_event(
+            0.0,
+            0,
+            55,
+            audio_class="percussive",
+            harmonic_ratio=0.05,
+            voiced_prob=0.02,
+        )
+    ]
+    result, dead, _review, stats = detect_non_notes(
+        notes,
+        events,
+        grid_ticks=240,
+        basic_pitch_notes=[
+            {"start": 0.0, "end": 0.2, "pitch": 55, "amplitude": 0.4}
+        ],
+        tick_seconds=lambda tick: 0.0,
+    )
+    assert not result[0].get("_drop")
+    assert dead == []
+    assert stats["basic_pitch_present_kept"] >= 1
+
+
+def test_basic_pitch_all_present_chord_adds_slap_x() -> None:
     notes = [
         {"t": 0, "dur": 240, "pitch": 55, "s": 3, "f": 5},
         {"t": 0, "dur": 240, "pitch": 59, "s": 4, "f": 4},
@@ -803,15 +868,15 @@ def test_presence_mixed_chord_keeps_pitched_note() -> None:
     result, dead, _review, _stats = detect_non_notes(
         notes,
         events,
+        analysis=_FakeAnalysis(),
         grid_ticks=240,
-        presence=_FakePresence({(0, 3): 0.05, (0, 4): 0.90}),
         basic_pitch_notes=[
-            {"start": 0.0, "end": 0.2, "pitch": 59, "amplitude": 0.4}
+            {"start": 0.0, "end": 0.2, "pitch": 55, "amplitude": 0.4},
+            {"start": 0.0, "end": 0.2, "pitch": 59, "amplitude": 0.4},
         ],
         tick_seconds=lambda tick: 0.0,
-        presence_pitched_threshold=0.70,
     )
-    assert result[0].get("_drop") is True
+    assert not result[0].get("_drop")
     assert not result[1].get("_drop")
-    assert {(d["t"], d["s"]) for d in dead} == {(0, 3)}
-    assert all(d.get("source") != "audio_slap" for d in dead)
+    assert {(d["t"], d["s"]) for d in dead} == {(0, 1)}
+    assert dead[0]["source"] == "audio_slap"
