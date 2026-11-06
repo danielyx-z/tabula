@@ -47,11 +47,6 @@ from tabfeatures import (  # noqa: E402
 )
 from tabfeatures.audio_events import write_stems  # noqa: E402
 from tabfeatures.dead import merge_dead_notes  # noqa: E402
-from tabfeatures.events import (  # noqa: E402
-    apply_event_predictions,
-    load_event_model,
-    predict_events,
-)
 from tabfeatures.evidence import AudioAnalysis  # noqa: E402
 from tabfeatures.gp5 import build_gp5  # noqa: E402
 from tabfeatures.non_note import detect_non_notes  # noqa: E402
@@ -303,43 +298,12 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
             grid_ticks=grid_ticks,
             min_confidence=args.non_note_min_confidence,
             review_confidence=args.non_note_review_confidence,
+            slap_min_pitch_support=args.slap_min_pitch_support,
         )
         print(
-            f"[stitch] non-note evidence: {non_note_stats.get('converted', 0)} converted, "
+            f"[stitch] non-note evidence: {non_note_stats.get('converted', 0)} replaced, "
+            f"{non_note_stats.get('slap', 0)} slap markers, "
             f"{non_note_stats.get('reviewed', 0)} in review",
-            flush=True,
-        )
-
-    event_model_dead: list[dict[str, Any]] = []
-    event_model_review: list[dict[str, Any]] = []
-    event_model_predictions: list[dict[str, Any]] = []
-    event_model_stats: dict[str, Any] = {"enabled": False}
-    if args.event_model:
-        model_path = _repo_path(args.event_model)
-        try:
-            event_model = load_event_model(model_path)
-        except (OSError, ValueError) as exc:
-            raise SystemExit(f"[stitch] could not load event model: {exc}") from exc
-        if event_model is None:
-            raise SystemExit("[stitch] event model path was empty")
-        event_model_predictions = predict_events(
-            args.audio,
-            events,
-            event_model,
-            sr=args.sr,
-        )
-        final_notes, event_model_dead, event_model_review, event_model_stats = (
-            apply_event_predictions(
-                final_notes,
-                event_model_predictions,
-                grid_ticks=grid_ticks,
-                thresholds=event_model.thresholds,
-                review_margin=event_model.review_margin,
-            )
-        )
-        print(
-            f"[stitch] event model: {event_model_stats.get('dead_notes', 0)} dead/percussion, "
-            f"{event_model_stats.get('reviewed', 0)} in review",
             flush=True,
         )
 
@@ -350,7 +314,7 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
         grid_ticks=grid_ticks,
         min_confidence=args.min_confidence,
     )
-    dead_notes = merge_dead_notes(non_note_dead, event_model_dead, dead_notes)
+    dead_notes = merge_dead_notes(non_note_dead, dead_notes)
     final_notes = trim_notes_for_dead(final_notes, dead_notes)
 
     tick_seconds = None
@@ -403,9 +367,6 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
     _write_json(out / "dead_notes.json", dead_notes)
     _write_json(out / "hp_review.json", hp_review)
     _write_json(out / "non_note_review.json", non_note_review)
-    _write_json(out / "event_model_review.json", event_model_review)
-    if event_model_predictions:
-        _write_json(out / "event_model_predictions.json", event_model_predictions)
 
     gp5_info: dict[str, Any] | None = None
     gp5_path = out / "song.gp5"
@@ -433,7 +394,6 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
         "dead_notes": len(dead_notes),
         "dead_stats": dead_stats,
         "non_note": non_note_stats,
-        "event_model": event_model_stats,
         "hp_candidates": len(hp_review),
         "hp_inferred": hp_inferred,
         "hp_applied": hp_applied,
@@ -448,12 +408,6 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
             "dead_notes": str(out / "dead_notes.json"),
             "hp_review": str(out / "hp_review.json"),
             "non_note_review": str(out / "non_note_review.json"),
-            "event_model_review": str(out / "event_model_review.json"),
-            "event_model_predictions": (
-                str(out / "event_model_predictions.json")
-                if event_model_predictions
-                else None
-            ),
         },
     }
     _write_json(out / "pipeline_report.json", pipeline_report)
@@ -539,11 +493,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="minimum score to record a non-note candidate in review (default: 0.45)",
     )
     parser.add_argument(
-        "--event-model",
-        default=None,
+        "--slap-min-pitch-support",
+        type=float,
+        default=0.12,
         help=(
-            "optional trained event-model directory (metadata.json + per-head "
-            "XGBoost JSON files)"
+            "minimum chord pitch support to keep a percussive chord and add "
+            "an x beneath it (default: 0.12)"
         ),
     )
     parser.add_argument(

@@ -24,6 +24,34 @@ def _nearest_string(notes: list[dict[str, Any]], tick: int) -> int | None:
     return int(nearest["s"])
 
 
+def lowest_free_string(
+    notes: list[dict[str, Any]],
+    dead_notes: list[dict[str, Any]],
+    tick: int,
+    *,
+    grid_ticks: int = 240,
+) -> int | None:
+    """Return the lowest string unused in this quantised slot.
+
+    The helper is used for additive percussion markers: a slap strum keeps its
+    pitched chord and places one ``x`` beneath it on the lowest free string.
+    """
+    slot = _slot(tick, grid_ticks)
+    occupied = {
+        (_slot(int(note["t"]), grid_ticks), int(note["s"]))
+        for note in notes
+        if not note.get("_drop")
+    }
+    occupied.update(
+        (_slot(int(note["t"]), grid_ticks), int(note["s"]))
+        for note in dead_notes
+    )
+    for string in range(1, 7):
+        if (slot, string) not in occupied:
+            return string
+    return None
+
+
 def insert_dead_notes(
     notes: list[dict[str, Any]],
     events: list[dict[str, Any]],
@@ -60,11 +88,21 @@ def insert_dead_notes(
         for note in active_notes
     }
 
+    matched_ticks = {
+        int(event.get("tick", -1))
+        for event in events
+        if event.get("matched") and int(event.get("tick", -1)) >= 0
+    }
     candidates: list[tuple[int, float, dict[str, Any]]] = []
     filtered = Counter()
     for event in events:
         if event.get("matched"):
             filtered["matched_note_attack"] += 1
+            continue
+        if int(event.get("tick", -1)) in matched_ticks:
+            # A second detection of the same attack.  The matched event is
+            # handled by the non-note validator (replace or slap marker).
+            filtered["duplicate_of_matched_attack"] += 1
             continue
         if event.get("class") == "pitched":
             filtered["pitched_event"] += 1

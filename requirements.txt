@@ -1,5 +1,4 @@
 numpy>=1.26,<3
-xgboost>=2.0,<3
 PyYAML>=6,<7
 # Tested stack (fractal RTX 3070 and WATcloud RTX 3090). Install the
 # CUDA-enabled wheel first on the cluster:

@@ -322,6 +322,61 @@ def test_non_note_detector_converts_noise_but_keeps_harmonic_tone(
     assert review[0]["note"]["t"] == 480
 
 
+def test_percussive_chord_keeps_notes_and_adds_slap_x(tmp_path: Path) -> None:
+    sr = 22050
+    duration = 0.8
+    y = np.zeros(int(sr * duration), dtype=np.float32)
+    t = np.arange(len(y)) / sr
+    start = int(0.05 * sr)
+    length = int(0.45 * sr)
+    local = np.arange(length) / sr
+    env = np.exp(-local / 0.30)
+    # A real G3 + B3 chord.
+    tone = sum(
+        np.sin(2 * math.pi * 196.0 * harmonic * local) / harmonic
+        for harmonic in range(1, 6)
+    ) + sum(
+        np.sin(2 * math.pi * 246.94 * harmonic * local) / harmonic
+        for harmonic in range(1, 6)
+    )
+    y[start : start + length] += (0.25 * tone * env).astype(np.float32)
+
+    audio = tmp_path / "slap_chord.wav"
+    sf.write(audio, y, sr, subtype="PCM_16")
+
+    notes = [
+        {"t": 0, "dur": 240, "pitch": 55, "s": 3, "f": 5},
+        {"t": 0, "dur": 240, "pitch": 59, "s": 4, "f": 4},
+    ]
+    events = [
+        _matched_event(
+            0.05,
+            0,
+            55,
+            audio_class="percussive",
+            harmonic_ratio=0.05,
+            voiced_prob=0.02,
+        ),
+    ]
+    analysis = AudioAnalysis.load(audio, sr=sr)
+    result, dead, review, stats = detect_non_notes(
+        notes,
+        events,
+        analysis=analysis,
+        grid_ticks=240,
+        min_confidence=0.60,
+        slap_min_pitch_support=0.02,
+    )
+    assert not result[0].get("_drop")
+    assert not result[1].get("_drop")
+    assert len(dead) == 1
+    assert dead[0]["source"] == "audio_slap"
+    assert (dead[0]["t"], dead[0]["s"]) == (0, 1)
+    assert stats["slap"] == 1
+    assert stats["converted"] == 0
+    assert any(item["action"] == "slap" for item in review)
+
+
 def test_non_note_run_catches_a_pitched_outlier() -> None:
     notes = [
         {"t": tick, "dur": 240, "pitch": 57, "s": 3, "f": 5}

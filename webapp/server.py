@@ -19,26 +19,9 @@ from pathlib import Path
 from flask import Flask, abort, jsonify, render_template, request, send_file
 from werkzeug.utils import secure_filename
 
-# The labeller backend lives in ``src/tabfeatures``.  Make the import work both
-# for ``python webapp/server.py`` and ``python -m webapp.server``.
 _EARLY_REPO = Path(__file__).resolve().parents[1]
 if str(_EARLY_REPO / "src") not in sys.path:
     sys.path.insert(0, str(_EARLY_REPO / "src"))
-from tabfeatures.labeling import (  # noqa: E402
-    append_label,
-    append_pitched_run,
-    detect_candidates,
-    ensure_session,
-    export_labels,
-    new_session_id,
-    recent_sessions,
-    remove_session,
-    state as label_state,
-    undo_label,
-    write_candidates,
-    write_meta,
-)
-from tabfeatures.labeling.store import is_session_id, session_dir  # noqa: E402
 
 try:
     from webapp.gp5 import build_gp5 as build_legacy_gp5
@@ -60,9 +43,6 @@ CHECKPOINT = _project_path(os.environ.get(
 ))
 VOCAB = _project_path(os.environ.get("TABULA_VOCAB", "vocab/canonical.json"))
 PYTHON = os.environ.get("TABULA_PYTHON", sys.executable)
-EVENT_MODEL = _project_path(
-    os.environ.get("TABULA_EVENT_MODEL", "data/models/events")
-)
 MAX_AUDIO_MB = int(os.environ.get("TABULA_MAX_AUDIO_MB", "96"))
 MAX_MIDI_MB = int(os.environ.get("TABULA_MAX_MIDI_MB", "8"))
 MAX_UPLOAD_MB = int(
@@ -234,149 +214,6 @@ def index():
     )
 
 
-@app.get("/label")
-def label_page():
-    return render_template("label.html", max_audio_mb=MAX_AUDIO_MB)
-
-
-@app.post("/api/label/sessions")
-def label_create_session():
-    upload = request.files.get("audio") or request.files.get("file")
-    if upload is None or not upload.filename:
-        return _error("Choose an audio file to label.")
-    try:
-        original, suffix = _validate_upload(
-            upload,
-            label="label audio",
-            suffixes=AUDIO_SUFFIXES,
-            max_mb=MAX_AUDIO_MB,
-        )
-    except ValueError as exc:
-        return _error(str(exc))
-
-    session_id = new_session_id()
-    directory = ensure_session(session_id)
-    upload_path = directory / f"upload_audio{suffix}"
-    try:
-        upload.save(upload_path)
-        if upload_path.stat().st_size == 0:
-            raise ValueError("That audio file is empty.")
-        if _size_mb(upload_path) > MAX_AUDIO_MB:
-            raise ValueError(f"That audio file is larger than {MAX_AUDIO_MB} MB.")
-        normalized = _normalize_audio(upload_path, directory / "audio.wav")
-        if normalized != directory / "audio.wav":
-            shutil.copy2(normalized, directory / "audio.wav")
-        candidates = detect_candidates(directory / "audio.wav")
-        write_candidates(session_id, candidates)
-        write_meta(
-            session_id,
-            {
-                "original_name": original.name,
-                "duration": candidates.get("duration", 0.0),
-                "sr": candidates.get("sr"),
-                "candidate_count": len(candidates.get("candidates", [])),
-            },
-        )
-    except (OSError, ValueError, RuntimeError) as exc:
-        remove_session(session_id)
-        return _error(str(exc) or "The audio could not be prepared for labeling.", 400)
-    except Exception as exc:  # noqa: BLE001 - surfaced to the local UI
-        remove_session(session_id)
-        return _error("The audio could not be prepared for labeling.", 500, str(exc))
-    finally:
-        upload_path.unlink(missing_ok=True)
-
-    return jsonify(label_state(session_id))
-
-
-def _label_session_or_404(session_id: str) -> Path:
-    if not is_session_id(session_id):
-        abort(404)
-    directory = session_dir(session_id)
-    if not directory.is_dir():
-        abort(404)
-    return directory
-
-
-@app.get("/api/label/sessions")
-def label_list_sessions():
-    return jsonify({"sessions": recent_sessions()})
-
-
-@app.get("/api/label/sessions/<session_id>")
-def label_get_session(session_id: str):
-    _label_session_or_404(session_id)
-    try:
-        return jsonify(label_state(session_id))
-    except (OSError, ValueError) as exc:
-        return _error("The label session could not be read.", 500, str(exc))
-
-
-@app.get("/api/label/sessions/<session_id>/audio")
-def label_audio(session_id: str):
-    directory = _label_session_or_404(session_id)
-    audio_path = directory / "audio.wav"
-    if not audio_path.exists():
-        abort(404)
-    return send_file(
-        audio_path,
-        mimetype="audio/wav",
-        as_attachment=False,
-        conditional=True,
-    )
-
-
-@app.post("/api/label/sessions/<session_id>/labels")
-def label_append(session_id: str):
-    _label_session_or_404(session_id)
-    payload = request.get_json(silent=True) or {}
-    try:
-        index = int(payload.get("index"))
-        label = str(payload.get("label") or "")
-        record = append_label(session_id, index=index, label=label)
-    except (TypeError, ValueError) as exc:
-        return _error(str(exc) or "The label could not be saved.", 400)
-    return jsonify({"label": record, **label_state(session_id)})
-
-
-@app.post("/api/label/sessions/<session_id>/pitched-run")
-def label_pitched_run(session_id: str):
-    _label_session_or_404(session_id)
-    payload = request.get_json(silent=True) or {}
-    try:
-        result = append_pitched_run(
-            session_id,
-            start_index=int(payload.get("start_index")),
-            max_count=int(payload.get("max_count", 8)),
-            max_gap_s=float(payload.get("max_gap_s", 0.25)),
-        )
-    except (TypeError, ValueError) as exc:
-        return _error(str(exc) or "The pitched run could not be saved.", 400)
-    return jsonify({**result, **label_state(session_id)})
-
-
-@app.post("/api/label/sessions/<session_id>/undo")
-def label_undo(session_id: str):
-    _label_session_or_404(session_id)
-    removed = undo_label(session_id)
-    return jsonify({"removed": removed, **label_state(session_id)})
-
-
-@app.get("/api/label/sessions/<session_id>/labels.jsonl")
-def label_export(session_id: str):
-    _label_session_or_404(session_id)
-    body = export_labels(session_id)
-    return app.response_class(
-        body,
-        mimetype="application/x-ndjson",
-        headers={
-            "Content-Disposition": (
-                f'attachment; filename="{session_id}-labels.jsonl"'
-            )
-        },
-    )
-
-
 @app.get("/api/health")
 def health():
     return jsonify({
@@ -526,8 +363,6 @@ def convert():
             "--width", "120",
             "--force",
         ]
-        if (EVENT_MODEL / "metadata.json").exists():
-            command.extend(["--event-model", str(EVENT_MODEL)])
     else:
         command = [
             PYTHON, str(REPO / "scripts" / "midi2tab.py"), str(midi_path),

@@ -5,6 +5,8 @@ This pipeline adds performance features that a MIDI-only tab cannot represent:
 * dead notes / string mutes (`x`) detected from unmatched audio onsets,
 * matched notes that are actually percussion or other non-note hits replaced
   with dead notes (`x`),
+* slap-strum chords kept intact with one `x` placed on the lowest free string
+  beneath the chord,
 * inferred hammer-ons and pull-offs (`h` / `p`), gated by audio evidence,
 * manually supplied slides, bends, vibrato, and H/P overrides.
 
@@ -116,18 +118,22 @@ job's own `final.json`, `final.mid`, `final_tab.txt`, and `report.json` into
 ### Stage 3: stitching
 
 1. Snap candidate ticks to the chosen grid.
-2. Validate matched notes against audio.  High-confidence non-notes are marked
-   for removal and replaced by a dead note on their original string.
-3. Insert dead notes from unmatched candidates.  Default string policy is
+2. Validate matched notes against audio.  A high-confidence non-note on a
+   single string is marked for removal and replaced by a dead note on its
+   original string.
+3. A high-confidence percussive event on a chord with real pitch support is a
+   slap strum: the pitched chord stays and one dead note is placed on the
+   lowest free string, so the `x` renders beneath the chord.
+4. Insert dead notes from unmatched candidates.  Default string policy is
    `lowest`: try string 1 (low E), then the next free string.  If all strings
    are occupied in that grid slot, the candidate is skipped and reported.
-4. Merge the two dead-note sources, then shorten any sustained note on the same
+5. Merge the dead-note sources, then shorten any sustained note on the same
    string at a dead-note tick, so the GP5 file never contains a tie and a dead
    note on the same string at once.
-5. Infer H/P on adjacent same-string notes with conservative model and audio
+6. Infer H/P on adjacent same-string notes with conservative model and audio
    guards.
-6. Apply `articulations.json` as the final override.
-7. Render ASCII and export GP5.
+7. Apply `articulations.json` as the final override.
+8. Render ASCII and export GP5.
 
 `final.json` on disk is never mutated; dead notes are kept separately and
 merged at render/export time.
@@ -146,8 +152,8 @@ rendering.
 
 ## Non-note validation
 
-Matched notes are not automatically trusted.  For each matched onset the
-validator measures:
+Matched notes are not automatically trusted.  For each matched percussive
+onset the validator measures:
 
 * harmonicity and `pyin` voiced probability from the onset window,
 * expected-pitch support: energy at the MIDI fundamental and its first
@@ -156,11 +162,18 @@ validator measures:
 
 The combined non-note score is deliberately not tied to a pitch, string, time,
 or song.  A score at or above `--non-note-min-confidence` (default `0.60`)
-converts the note to a dead note on its original string.  Scores at or above
-`--non-note-review-confidence` (default `0.45`) but below the conversion
-threshold are left as notes.  All candidates at or above the review threshold
-are written to `non_note_review.json`, including the ones that were converted,
-so every automatic decision can be inspected.
+converts the note to a dead note on its original string.
+
+A percussive event on a chord is handled additively when at least one chord
+tone has real pitch support (`--slap-min-pitch-support`, default `0.12`).  The
+chord is kept and one `x` is placed on the lowest free string, which renders
+beneath the chord.  This is the slap-strum case.
+
+Scores at or above `--non-note-review-confidence` (default `0.45`) but below
+the conversion threshold are left as notes.  All candidates at or above the
+review threshold are written to `non_note_review.json`, including the ones
+that were converted, so every automatic decision can be inspected.  The
+review entry's `action` is `replace`, `slap`, or `review`.
 
 Ambiguous and medium-confidence events are never silently removed.  To keep a
 note that the validator removed, add an overlay entry with `"keep": true` or
@@ -207,30 +220,6 @@ model-only rules.  Every candidate, accepted or rejected, is written to
 `hp_review.json` with its metrics and rejection reason.  Disable inference
 entirely with `--no-auto-hp`.
 
-## Optional event model
-
-The hand-built non-note score remains the default.  A tiny XGBoost model can be
-trained from browser-labeller sessions and enabled explicitly:
-
-```bash
-python scripts/stitch_tab.py \
-  --audio take.wav \
-  --midi take.mid \
-  --out-dir out/take \
-  --event-model data/models/events
-```
-
-The model has independent heads for `dead_string`, `bass_flick`, and
-`body_percussion` (plus an auxiliary `pitched` head).  Dead-string predictions
-can replace a matched note; bass flicks and body percussion are additive and
-place an `x` on the lowest free string without deleting the melody note.  Body
-percussion is written as a dead note with a staccato dot (`x.`).  Outputs:
-
-* `event_model_predictions.json` — per-onset head probabilities,
-* `event_model_review.json` — near-threshold candidates.
-
-See [LABELING.md](LABELING.md) and [EVENT_MODEL.md](EVENT_MODEL.md).
-
 ## Manual overlay
 
 `articulations.json` is tick-based:
@@ -271,6 +260,8 @@ See [LABELING.md](LABELING.md) and [EVENT_MODEL.md](EVENT_MODEL.md).
   to review more candidates; the full list is in `percussion_events.json`.
 * `--non-note-min-confidence 0.60` — matched non-note conversion threshold;
   candidates at `--non-note-review-confidence` and above are reported.
+* `--slap-min-pitch-support 0.12` — chord pitch support needed to keep a
+  percussive chord and add an `x` beneath it instead of replacing notes.
 * `--no-non-note` — disable matched non-note conversion.
 * `--min-match-rate 0.5` — safety guard against mismatched audio/MIDI.
 * `--dead-strings lowest|nearest|all`.
@@ -291,7 +282,6 @@ The exporter is a feature-aware copy of the web app exporter.  It writes:
 * capo and standard tuning,
 * nylon guitar program 24,
 * `NoteType.dead` for `x`,
-* `NoteEffect.staccato` for body-percussion `x.` events,
 * `NoteEffect.hammer`, `slides`, `vibrato`, and `bend`.
 
 A voice cannot sound two notes on one string at once.  If `final.json` contains
