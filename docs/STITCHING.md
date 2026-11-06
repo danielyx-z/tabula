@@ -208,6 +208,8 @@ quantisation/timing difference.
 
 For a **single-note attack**:
 
+- the event heuristic must first score at or above
+  `--basic-pitch-heuristic-threshold` (default `0.35`);
 - Basic Pitch has a matching note -> keep it pitched;
 - Basic Pitch has no matching note -> replace it with `x` on its string;
 - Basic Pitch was not run -> keep the event-heuristic decision.
@@ -296,6 +298,8 @@ entirely with `--no-auto-hp`.
   Basic Pitch note-presence vote (default: on).
 * `--basic-pitch-tolerance 0.12` — allowed Basic Pitch onset difference in
   seconds.
+* `--basic-pitch-heuristic-threshold 0.35` — minimum heuristic dead-note
+  score before Basic Pitch absence is trusted.
 * `--no-non-note` — disable matched non-note conversion.
 * `--min-match-rate 0.5` — safety guard against mismatched audio/MIDI.
 * `--dead-strings lowest|nearest|all`.

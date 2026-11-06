@@ -321,6 +321,7 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
             tick_seconds=tick_seconds,
             offset_sec=float(alignment.get("applied_offset_sec", 0.0) or 0.0),
             basic_pitch_tolerance_s=args.basic_pitch_tolerance,
+            basic_pitch_heuristic_threshold=args.basic_pitch_heuristic_threshold,
         )
         print(
             f"[stitch] non-note evidence: {non_note_stats.get('converted', 0)} replaced, "
@@ -525,7 +526,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--basic-pitch-tolerance",
         type=float,
         default=0.12,
-        help="Basic Pitch note-window tolerance in seconds (default: 0.12)",
+        help="Basic Pitch onset tolerance in seconds (default: 0.12)",
+    )
+    parser.add_argument(
+        "--basic-pitch-heuristic-threshold",
+        type=float,
+        default=0.35,
+        help=(
+            "minimum heuristic dead-note score required before Basic Pitch "
+            "absence is used (default: 0.35)"
+        ),
     )
     parser.add_argument(
         "--non-note-unmatched-min-confidence",

@@ -128,6 +128,7 @@ def detect_non_notes(
     presence_pitched_threshold: float = 0.70,
     run_presence_ratio: float = 0.90,
     basic_pitch_tolerance_s: float = 0.12,
+    basic_pitch_heuristic_threshold: float = 0.35,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     """Return notes with ``_drop`` markers, replacement/additive dead notes, and review.
 
@@ -174,6 +175,7 @@ def detect_non_notes(
             presence_pitched_threshold=presence_pitched_threshold,
             run_presence_ratio=run_presence_ratio,
             basic_pitch_tolerance_s=basic_pitch_tolerance_s,
+            basic_pitch_heuristic_threshold=basic_pitch_heuristic_threshold,
         )
 
     if analysis is None and audio_path is not None:
@@ -511,6 +513,7 @@ def _detect_with_presence(
     presence_pitched_threshold: float,
     run_presence_ratio: float,
     basic_pitch_tolerance_s: float,
+    basic_pitch_heuristic_threshold: float,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     """Use Basic Pitch note presence as the per-note decision.
 
@@ -566,6 +569,21 @@ def _detect_with_presence(
         else:
             time_by_key[key] = None
 
+    heuristic_score_by_key: dict[tuple[int, int], float] = {}
+    for note in result:
+        key = _key(note)
+        event = event_by_key.get(key)
+        if event is None:
+            continue
+        pitch_support = (
+            analysis.pitch_support(
+                float(event.get("time", 0.0) or 0.0), int(note["pitch"])
+            )
+            if analysis is not None
+            else 0.5
+        )
+        heuristic_score_by_key[key] = non_note_score(event, pitch_support)
+
     bp_votes = basic_pitch_votes_for_notes(
         result,
         basic_pitch_notes,
@@ -592,6 +610,11 @@ def _detect_with_presence(
             # dense chords.
             continue
         if bp is False:
+            if (
+                heuristic_score_by_key.get(key, 0.0)
+                < float(basic_pitch_heuristic_threshold)
+            ):
+                continue
             absent_dead += 1
             note["_drop"] = True
             existing = dead_by_key.get(key)
@@ -650,6 +673,7 @@ def _detect_with_presence(
         "slap": slap,
         "used_event_ticks": sorted(used_event_ticks),
         "basic_pitch_tolerance_s": float(basic_pitch_tolerance_s),
+        "basic_pitch_heuristic_threshold": float(basic_pitch_heuristic_threshold),
         "presence_dead_threshold": float(presence_dead_threshold),
         "presence_pitched_threshold": float(presence_pitched_threshold),
         "run_presence_ratio": float(run_presence_ratio),

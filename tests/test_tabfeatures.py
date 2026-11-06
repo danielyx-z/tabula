@@ -745,8 +745,10 @@ def test_basic_pitch_absence_marks_note_dead() -> None:
         notes,
         events,
         grid_ticks=240,
+        min_confidence=0.99,
         basic_pitch_notes=[],
         tick_seconds=lambda tick: 0.0,
+        basic_pitch_heuristic_threshold=0.35,
     )
     assert result[0].get("_drop") is True
     assert {(d["t"], d["s"]) for d in dead} == {(0, 3)}
@@ -755,31 +757,34 @@ def test_basic_pitch_absence_marks_note_dead() -> None:
 
 
 def test_basic_pitch_absence_covers_repeated_run() -> None:
+    ticks = (0, 240, 480, 720)
     notes = [
         {"t": tick, "dur": 240, "pitch": 40, "s": 1, "f": 0}
-        for tick in (0, 240, 480, 720)
+        for tick in ticks
     ]
-    presence = _FakePresence(
-        {
-            (0, 1): 0.80,
-            (240, 1): 0.55,
-            (480, 1): 0.80,
-            (720, 1): 0.50,
-        }
-    )
+    events = [
+        _matched_event(
+            tick / 1000.0,
+            tick,
+            40,
+            audio_class="percussive",
+            harmonic_ratio=0.05,
+            voiced_prob=0.02,
+        )
+        for tick in ticks
+    ]
     basic_pitch = [
         {"start": 0.0, "end": 0.05, "pitch": 40, "amplitude": 0.4},
         {"start": 0.48, "end": 0.53, "pitch": 40, "amplitude": 0.4},
     ]
     result, dead, _review, stats = detect_non_notes(
         notes,
-        [],
+        events,
         grid_ticks=240,
-        presence=presence,
+        min_confidence=0.99,
         basic_pitch_notes=basic_pitch,
         tick_seconds=lambda tick: tick / 1000.0,
-        presence_dead_threshold=0.65,
-        run_presence_ratio=0.90,
+        basic_pitch_heuristic_threshold=0.35,
     )
     assert {(d["t"], d["s"]) for d in dead} == {(240, 1), (720, 1)}
     assert result[0].get("_drop") is None
