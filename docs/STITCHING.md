@@ -346,10 +346,10 @@ a sustained note and a later attack on the same string, the exporter ends the
 earlier note at that attack (and drops exact same-tick duplicates) so the
 written GP5 stays valid.  The count is reported as `gp5.overlap_trimmed`.
 
-Ties are conservative: only notes at least a quarter note long (960 ticks)
-get tie destinations.  Shorter notes that merely cross a beat are re-articulated,
-so a tie cannot silently remove an attack.  Continuation fragments shorter
-than 240 ticks are omitted rather than written as ties.
+The GP5 writer does not emit ties.  A note continuation after a beat or measure
+boundary is omitted, so the note ends at that boundary instead of adding a
+silent tie destination.  Leading measures with no performance are dropped so
+the score starts at the first bar containing notes.
 
 Tempo changes smaller than 10 BPM from the last retained tempo are suppressed
 when writing GP5.  MuScriptor emits small tempo drifts for expressive playing;

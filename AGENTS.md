@@ -271,11 +271,11 @@ is off by default; enable it only if memory becomes tight.
 - **Tempo-change suppression** — the GP5 writer drops tempo changes smaller
   than 10 BPM from the last retained tempo.  MuScriptor's small expressive
   drifts therefore do not clutter the score; meaningful tempo shifts remain.
-- **Conservative ties/H-P** — GP5 tie destinations are only written for
-  genuinely sustained notes (>= 960 ticks). Short notes crossing a beat are
-  re-articulated instead of tied, so they do not lose their attack. Automatic
-  H/P now defaults to confidence 0.85, gap 0.35 beats, interval 5 semitones and
-  ring tolerance 40; chord H/P remains off.
+- **No ties / leading-bar trim** — the GP5 writer no longer emits tie
+  destinations; a note continuation after a beat or measure boundary is
+  omitted. Leading measures with no performance are dropped. Automatic H/P
+  defaults to confidence 0.85, gap 0.35 beats, interval 5 semitones and ring
+  tolerance 40; chord H/P remains off.
 - **GP5 grid-boundary collision** — a sustained note ending just after a
   measure boundary and the next note on the same string starting a few ticks
   later could round into the same grid slot. Both were written into the same

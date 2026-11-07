@@ -18,11 +18,8 @@ import mido
 PPQ = 960
 GP_START = 960
 GRID_MAX = 240
-# Only genuinely sustained notes get tie destinations.  Shorter notes that
-# happen to cross a beat are re-articulated instead, so a tied continuation
-# does not silently remove an attack.
-MIN_TIE_DURATION = 960
-MIN_TIE_SEGMENT = 240
+# MuScriptor emits many small expressive tempo drifts; only meaningful changes
+# are written to the score.
 MIN_TEMPO_DELTA = 10.0
 
 _DURATIONS = (
@@ -326,8 +323,36 @@ def build_gp5(
     tempi, signatures = read_timing(timing_midi)
     max_tick = max((n["t"] + n["dur"] for n in records), default=0)
     plan = _measure_plan(max_tick, signatures)
+    end_tick = plan[-1][0] + plan[-1][1]
 
-    initial_tempo = int(round(next(iter(tempi.values()), 120.0)))
+    # Drop leading measures that contain no performance at all.  This removes
+    # blank bars caused by an intro/silence before the first transcribed note.
+    lead_index = 0
+    for index, (start, length, _numerator, _denominator) in enumerate(plan):
+        end = start + length
+        if any(
+            note["t"] < end and note["t"] + note["dur"] > start
+            for note in records
+        ):
+            lead_index = index
+            break
+    lead_start = plan[lead_index][0]
+    if lead_start:
+        plan = [
+            (start - lead_start, length, numerator, denominator)
+            for start, length, numerator, denominator in plan[lead_index:]
+        ]
+
+    def tempo_at(tick: int) -> float:
+        value = 120.0
+        for change_tick, bpm in tempi.items():
+            if change_tick <= tick:
+                value = float(bpm)
+            else:
+                break
+        return value
+
+    initial_tempo = int(round(tempo_at(lead_start)))
     song = gp.Song(
         title=_clean_title(title), artist="Tabula", tempo=initial_tempo
     )
@@ -351,7 +376,9 @@ def build_gp5(
         )
         measure = track.measures[-1]
         voice = measure.voices[0]
+        absolute_start = lead_start + start
         end = start + length
+        absolute_end = absolute_start + length
         grid = _grid_for(length)
         slots = length // grid
 
@@ -359,21 +386,25 @@ def build_gp5(
         local_info: dict[int, tuple[int, int, bool]] = {}
         for index, note in enumerate(records):
             note_end = note["t"] + note["dur"]
-            if note["t"] >= end or note_end <= start:
+            if note["t"] >= absolute_end or note_end <= absolute_start:
                 continue
-            first = int(round((max(note["t"], start) - start) / grid))
-            last = int(round((min(note_end, end) - start) / grid))
+            first = int(
+                round((max(note["t"], absolute_start) - absolute_start) / grid)
+            )
+            last = int(
+                round((min(note_end, absolute_end) - absolute_start) / grid)
+            )
             first = max(0, min(slots, first))
             last = max(first + 1, min(slots, last))
-            info = (first, last, note["t"] < start)
+            info = (first, last, note["t"] < absolute_start)
             local.append((index, *info))
             local_info[index] = info
 
         tempo_by_slot: dict[int, float] = {}
         for change_tick, bpm in tempi.items():
-            if not (start <= change_tick < end):
+            if not (absolute_start <= change_tick < absolute_end):
                 continue
-            slot = int(round((change_tick - start) / grid))
+            slot = int(round((change_tick - absolute_start) / grid))
             if 0 <= slot < slots:
                 tempo_by_slot[slot] = bpm
         tempo_slots = set(tempo_by_slot)
@@ -459,25 +490,19 @@ def build_gp5(
                             total_notes += 1
                             continue
 
-                        if is_tie and int(record["dur"]) < MIN_TIE_DURATION:
-                            remaining = (
-                                int(record["t"]) + int(record["dur"])
-                                - (start + part_start * grid)
-                            )
-                            if remaining < MIN_TIE_SEGMENT:
-                                continue
-                            is_tie = False
+                        # Ties are intentionally not written.  A continuation
+                        # segment is omitted; the note ends at the previous
+                        # beat/measure boundary instead of showing a silent tie
+                        # destination.
+                        if is_tie:
+                            continue
                         gp_note = gp.Note(
                             beat,
-                            value=0 if is_tie else record["f"],
+                            value=record["f"],
                             string=7 - record["s"],
-                            type=(
-                                gp.NoteType.tie
-                                if is_tie
-                                else gp.NoteType.normal
-                            ),
+                            type=gp.NoteType.normal,
                         )
-                        if not is_tie and part_start == first:
+                        if part_start == first:
                             _apply_features(
                                 gp_note,
                                 features.get((record["t"], record["s"])),
@@ -505,7 +530,6 @@ def build_gp5(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     gp.write(song, str(out_path), version=(5, 1, 0))
 
-    end_tick = plan[-1][0] + plan[-1][1]
     return {
         "measures": len(plan),
         "beats": total_beats,
@@ -516,7 +540,8 @@ def build_gp5(
         "capo": capo,
         "title": song.title,
         "tempo": initial_tempo,
-        "duration": round(_seconds_between(tempi, 0, end_tick), 3),
+        "duration": round(_seconds_between(tempi, lead_start, end_tick), 3),
+        "trimmed_lead_ticks": lead_start,
     }
 
 

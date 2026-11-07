@@ -180,7 +180,7 @@ def test_gp5_rounds_boundary_notes_without_duplicate_strings(
                 assert len(strings) == len(set(strings))
 
 
-def test_gp5_short_notes_are_not_tied_across_beats(tmp_path: Path) -> None:
+def test_gp5_never_writes_ties_across_beats(tmp_path: Path) -> None:
     import guitarpro as gp
 
     from tabfeatures.gp5 import build_gp5
@@ -220,7 +220,7 @@ def test_gp5_short_notes_are_not_tied_across_beats(tmp_path: Path) -> None:
         title="long",
     )
     long_song = gp.parse(str(long))
-    assert any(
+    assert not any(
         note.type == gp.NoteType.tie
         for measure in long_song.tracks[0].measures
         for voice in measure.voices
@@ -272,6 +272,37 @@ def test_gp5_suppresses_small_tempo_drifts(tmp_path: Path) -> None:
     assert 125 not in tempos
     assert 140 not in tempos
     assert {120, 135, 150}.issubset(tempos)
+
+
+def test_gp5_trims_leading_empty_measures(tmp_path: Path) -> None:
+    import guitarpro as gp
+
+    from tabfeatures.gp5 import build_gp5
+
+    timing = tmp_path / "timing.mid"
+    pm = pretty_midi.PrettyMIDI(initial_tempo=120.0)
+    inst = pretty_midi.Instrument(program=24)
+    inst.notes.append(
+        pretty_midi.Note(velocity=90, pitch=60, start=0.0, end=6.0)
+    )
+    pm.instruments.append(inst)
+    pm.write(str(timing))
+
+    output = tmp_path / "trimmed.gp5"
+    info = build_gp5(
+        [{"t": 8000, "dur": 480, "pitch": 47, "s": 2, "f": 2}],
+        timing,
+        output,
+        capo=0,
+        title="trimmed",
+    )
+    assert info["trimmed_lead_ticks"] == 7680
+    song = gp.parse(str(output))
+    assert song.measureHeaders[0].start == 960
+    assert any(
+        beat.notes
+        for beat in song.tracks[0].measures[0].voices[0].beats
+    )
 
 
 def test_apply_predictions_skips_unmatched_model_drop() -> None:
