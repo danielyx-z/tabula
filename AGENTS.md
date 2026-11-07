@@ -273,7 +273,8 @@ is off by default; enable it only if memory becomes tight.
   drifts therefore do not clutter the score; meaningful tempo shifts remain.
 - **No ties / leading-bar trim** — the GP5 writer no longer emits tie
   destinations; a note continuation after a beat or measure boundary is
-  omitted. Leading measures with no performance are dropped. Automatic H/P
+  re-articulated instead. Leading measures with no performance are dropped.
+  Automatic H/P
   defaults to confidence 0.85, gap 0.35 beats, interval 5 semitones and ring
   tolerance 40; chord H/P remains off.
 - **GP5 grid-boundary collision** — a sustained note ending just after a

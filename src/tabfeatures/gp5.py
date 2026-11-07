@@ -490,12 +490,11 @@ def build_gp5(
                             total_notes += 1
                             continue
 
-                        # Ties are intentionally not written.  A continuation
-                        # segment is omitted; the note ends at the previous
-                        # beat/measure boundary instead of showing a silent tie
-                        # destination.
+                        # Ties are intentionally not written.  Re-articulate
+                        # continuation segments instead of emitting a silent
+                        # tie destination.
                         if is_tie:
-                            continue
+                            is_tie = False
                         gp_note = gp.Note(
                             beat,
                             value=record["f"],
