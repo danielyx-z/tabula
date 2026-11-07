@@ -252,4 +252,13 @@ def merge_dead_notes(
             previous = merged.get(key)
             if previous is None or priority(note) > priority(previous):
                 merged[key] = note
-    return [merged[key] for key in sorted(merged)]
+
+    # A chord of dead notes is one percussive event, not a six-string x
+    # cluster.  Keep the lowest string for each onset.
+    by_tick: dict[int, dict[str, Any]] = {}
+    for note in merged.values():
+        tick = int(note["t"])
+        previous = by_tick.get(tick)
+        if previous is None or int(note["s"]) < int(previous["s"]):
+            by_tick[tick] = note
+    return [by_tick[tick] for tick in sorted(by_tick)]

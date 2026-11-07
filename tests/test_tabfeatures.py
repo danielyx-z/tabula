@@ -491,6 +491,16 @@ def test_dead_notes_ignore_dropped_notes_for_occupancy() -> None:
     assert len(merged) == 1
     assert merged[0]["confidence"] == 0.9
 
+    chord = merge_dead_notes(
+        [
+            {"t": 480, "s": 3, "confidence": 0.9},
+            {"t": 480, "s": 1, "confidence": 0.2},
+            {"t": 480, "s": 5, "confidence": 0.8},
+        ]
+    )
+    assert len(chord) == 1
+    assert chord[0]["s"] == 1
+
 
 def test_hp_audio_gate_rejects_separate_attack_and_accepts_weak_second() -> None:
     notes = [

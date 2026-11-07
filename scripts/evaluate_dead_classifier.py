@@ -23,18 +23,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", default=str(DEFAULT_MODEL_DIR))
     parser.add_argument("--label-root", default=str(LABEL_ROOT))
     parser.add_argument("--session", action="append", default=[])
-    parser.add_argument("--threshold", type=float, default=None)
     parser.add_argument("--include-unreviewed", action="store_true")
     args = parser.parse_args(argv)
 
     model = load_model(args.model)
     if model is None:
         raise SystemExit(f"dead-note model not found: {args.model}")
-    threshold = float(args.threshold if args.threshold is not None else model.threshold)
     sessions = args.session or [item["id"] for item in list_sessions()]
     report = {
         "model": str(args.model),
-        "threshold": threshold,
+        "thresholds": model.thresholds,
         "sessions": {},
     }
     for session_id in sessions:
@@ -47,9 +45,8 @@ def main(argv: list[str] | None = None) -> int:
         if not rows:
             report["sessions"][session_id] = {"rows": 0}
             continue
-        scores = model.predict_proba(rows)
         report["sessions"][session_id] = classifier_metrics(
-            rows, scores, threshold
+            rows, model.predict_proba(rows), model.thresholds
         )
     print(json.dumps(report, indent=2))
     return 0

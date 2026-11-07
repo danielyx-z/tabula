@@ -11,6 +11,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import os
+from concurrent.futures import ThreadPoolExecutor
+
 import librosa
 import numpy as np
 
@@ -513,8 +516,9 @@ def extract_group_rows(
     """Extract feature rows for every note in every group."""
     context = AudioContext(audio_path, config=config)
     ordered = sorted(groups, key=lambda item: float(item.get("time_s", 0.0)))
-    rows: list[dict[str, Any]] = []
-    for index, group in enumerate(ordered):
+
+    def extract(index: int) -> list[dict[str, Any]]:
+        group = ordered[index]
         next_time = (
             float(ordered[index + 1]["time_s"])
             if index + 1 < len(ordered)
@@ -523,11 +527,16 @@ def extract_group_rows(
         previous_time = (
             float(ordered[index - 1]["time_s"]) if index > 0 else None
         )
-        rows.extend(
-            context.group_rows(
-                group,
-                next_time_s=next_time,
-                previous_time_s=previous_time,
-            )
+        return context.group_rows(
+            group,
+            next_time_s=next_time,
+            previous_time_s=previous_time,
         )
-    return rows
+
+    workers = max(1, min(4, int(os.environ.get("TABULA_DEAD_WORKERS", "4"))))
+    if workers == 1 or len(ordered) < 8:
+        batches = [extract(index) for index in range(len(ordered))]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            batches = list(pool.map(extract, range(len(ordered))))
+    return [row for batch in batches for row in batch]

@@ -211,7 +211,8 @@ coverage below 1.0. `raw.mid` is never modified this way.
 
 ### Capo
 
-The final fingering is chosen by scanning every feasible capo from 0 up to
+The workbench can fix a capo (`Auto`, `Off`, or 1–6).  With `--capo auto`
+the final fingering is chosen by scanning every feasible capo from 0 up to
 `min(6, --max-capo, min_input_pitch - 40)` and keeping the capo with the best
 lexicographic key: maximum relative fret, number of notes above 6, dropped
 notes, open strings, fret sum, residual span. A capo above `min_pitch - 40`

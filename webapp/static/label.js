@@ -23,6 +23,8 @@
   const zoomOutButton = document.getElementById("label-zoom-out");
   const scrollbar = document.getElementById("label-scrollbar");
   const scrollThumb = document.getElementById("label-scroll-thumb");
+  const mixSlider = document.getElementById("label-mix");
+  const mixValue = document.getElementById("label-mix-value");
   const fitButton = document.getElementById("label-fit");
   const undoButton = document.getElementById("label-undo");
   const clearButton = document.getElementById("label-clear");
@@ -30,11 +32,15 @@
   const reviewButton = document.getElementById("label-review");
   const newButton = document.getElementById("label-new");
   const deleteButton = document.getElementById("label-delete");
+  const modeDead = document.getElementById("label-mode-dead");
+  const modeNoise = document.getElementById("label-mode-noise");
+  const modeIgnore = document.getElementById("label-mode-ignore");
   const recent = document.getElementById("label-recent");
   const recentList = document.getElementById("label-recent-list");
   const nameLabel = document.getElementById("label-name");
   const countsLabel = document.getElementById("label-counts");
   const savedLabel = document.getElementById("label-saved");
+  const moreMenu = document.getElementById("label-more");
 
   // Playback uses the Web Audio clock, not an <audio> element.  The media
   // element clock and its output latency are what made the old playhead drift
@@ -43,12 +49,29 @@
   let audioCtx = null;
   let audioBuffer = null;
   let sourceNode = null;
+  let audioGainNode = null;
+  let midiGainNode = null;
+  let midiCompressor = null;
+  let mixAmount = 0.25;
   let sourceStartCtx = 0;
   let sourceOffset = 0;
   let playing = false;
   let playhead = 0;
   let audioReady = false;
-  let auditionEnd = null;
+
+  // The MIDI monitor is a note-level scheduler, not one pre-rendered WAV.
+  // That lets a dead/noise label take effect without re-rendering the song.
+  const MONITOR_LOOKAHEAD = 0.16;
+  const MONITOR_INTERVAL_MS = 50;
+  let monitorState = "idle"; // idle | loading | ready | error
+  let monitorToken = 0;
+  let monitorSamples = new Map();
+  let monitorDeadBuffer = null;
+  let monitorNotes = [];
+  let monitorIndex = 0;
+  let monitorCursor = 0;
+  let monitorTimer = 0;
+  let monitorNodes = new Map();
 
   const ctx = canvas.getContext("2d");
   const PAD = { left: 44, right: 14, top: 18, bottom: 28 };
@@ -66,6 +89,7 @@
   let dirty = false;
   let playFrame = 0;
   let hoverNote = null;
+  let activeLabel = "dead";
 
   function setStatus(message, kind = "error") {
     status.textContent = message || "";
@@ -88,8 +112,102 @@
     if (!audioCtx) {
       const Ctor = window.AudioContext || window.webkitAudioContext;
       audioCtx = new Ctor({ latencyHint: "interactive" });
+      audioGainNode = audioCtx.createGain();
+      audioGainNode.connect(audioCtx.destination);
+      midiGainNode = audioCtx.createGain();
+      midiCompressor = audioCtx.createDynamicsCompressor();
+      midiCompressor.threshold.value = -18;
+      midiCompressor.knee.value = 12;
+      midiCompressor.ratio.value = 6;
+      midiCompressor.attack.value = 0.003;
+      midiCompressor.release.value = 0.15;
+      midiGainNode.connect(midiCompressor);
+      midiCompressor.connect(audioCtx.destination);
+      applyMix();
     }
     return audioCtx;
+  }
+
+  function applyMix() {
+    mixAmount = Math.max(0, Math.min(1, Number(mixSlider.value) / 100));
+    if (mixValue) {
+      if (monitorState === "loading") mixValue.textContent = "MIDI loading…";
+      else if (monitorState === "error") mixValue.textContent = "MIDI unavailable";
+      else mixValue.textContent = `${Math.round(mixAmount * 100)}% MIDI`;
+    }
+    if (!audioGainNode || !midiGainNode) return;
+    const midiAvailable =
+      monitorState === "ready" && (monitorSamples.size > 0 || Boolean(monitorDeadBuffer));
+    const now = audioCtx.currentTime;
+    audioGainNode.gain.setTargetAtTime(
+      midiAvailable ? Math.cos(mixAmount * Math.PI / 2) ** 2 : 1,
+      now,
+      0.01
+    );
+    midiGainNode.gain.setTargetAtTime(
+      midiAvailable ? Math.sin(mixAmount * Math.PI / 2) ** 2 : 0,
+      now,
+      0.01
+    );
+  }
+
+  async function fetchAudioBuffer(url) {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.arrayBuffer();
+    return ensureAudioContext().decodeAudioData(data);
+  }
+
+  async function mapLimit(items, limit, worker) {
+    const queue = items.slice();
+    const workers = Array.from(
+      { length: Math.min(Math.max(1, limit), queue.length) },
+      async () => {
+        while (queue.length) {
+          const item = queue.shift();
+          await worker(item);
+        }
+      }
+    );
+    await Promise.all(workers);
+  }
+
+  async function loadMonitorBank(sessionNotes) {
+    const token = ++monitorToken;
+    monitorState = "loading";
+    monitorSamples = new Map();
+    monitorDeadBuffer = null;
+    applyMix();
+    const pitches = [
+      ...new Set(
+        sessionNotes
+          .map((note) => Number(note.pitch))
+          .filter((pitch) => Number.isFinite(pitch) && pitch >= 0 && pitch <= 127)
+      ),
+    ];
+    try {
+      monitorDeadBuffer = await fetchAudioBuffer("/api/monitor/samples/dead.wav");
+    } catch (error) {
+      monitorDeadBuffer = null;
+    }
+    await mapLimit(pitches, 4, async (pitch) => {
+      try {
+        const buffer = await fetchAudioBuffer(
+          `/api/monitor/samples/pitched/${pitch}.wav`
+        );
+        if (token === monitorToken) monitorSamples.set(String(pitch), buffer);
+      } catch (error) {
+        // A missing pitch sample is silent; keep the rest of the monitor usable.
+      }
+    });
+    if (token !== monitorToken) return;
+    monitorState =
+      monitorSamples.size > 0 || monitorDeadBuffer ? "ready" : "error";
+    applyMix();
+    if (playing) {
+      resetMonitorCursor(currentTime());
+      startMonitor();
+    }
   }
 
   async function loadAudio(url) {
@@ -113,12 +231,131 @@
     return playhead;
   }
 
+  function stopMonitorNode(noteId) {
+    const item = monitorNodes.get(noteId);
+    if (!item) return;
+    monitorNodes.delete(noteId);
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    try {
+      item.gain.gain.cancelScheduledValues(now);
+      item.gain.gain.setTargetAtTime(0, now, 0.008);
+    } catch (error) {}
+    try {
+      item.source.stop(now + 0.04);
+    } catch (error) {}
+  }
+
+  function stopMonitor() {
+    if (monitorTimer) {
+      clearInterval(monitorTimer);
+      monitorTimer = 0;
+    }
+    for (const noteId of Array.from(monitorNodes.keys())) {
+      stopMonitorNode(noteId);
+    }
+    monitorNodes.clear();
+  }
+
   function stopSource() {
-    if (!sourceNode) return;
-    const node = sourceNode;
-    sourceNode = null;
-    try { node.stop(); } catch {}
-    try { node.disconnect(); } catch {}
+    if (sourceNode) {
+      const node = sourceNode;
+      sourceNode = null;
+      try { node.stop(); } catch {}
+      try { node.disconnect(); } catch {}
+    }
+    stopMonitor();
+  }
+
+  function resetMonitorCursor(offset) {
+    monitorNotes = notes
+      .filter((note) => Number.isFinite(Number(note.time_s)))
+      .slice()
+      .sort((a, b) => Number(a.time_s) - Number(b.time_s));
+    monitorIndex = 0;
+    while (
+      monitorIndex < monitorNotes.length &&
+      Number(monitorNotes[monitorIndex].time_s) < Number(offset) - 0.01
+    ) {
+      monitorIndex += 1;
+    }
+    monitorCursor = Number(offset) || 0;
+  }
+
+  function scheduleMonitorNote(note, buffer, startAt) {
+    if (!audioCtx || !midiGainNode) return;
+    if (startAt < audioCtx.currentTime - 0.02) return;
+    if (monitorNodes.has(note.note_id)) stopMonitorNode(note.note_id);
+    const source = audioCtx.createBufferSource();
+    source.buffer = buffer;
+    const gain = audioCtx.createGain();
+    const velocity = Math.max(1, Math.min(127, Number(note.velocity) || 96)) / 127;
+    const level = (note.label === "dead" ? 0.55 : 0.22) * velocity;
+    const naturalEnd = startAt + buffer.duration;
+    let stopAt = naturalEnd;
+    if (note.label !== "dead") {
+      const held = Math.max(0.08, Number(note.duration_s) || 0.12);
+      stopAt = Math.min(naturalEnd, startAt + held + 0.12);
+    }
+    const fade = Math.min(0.04, Math.max(0.005, (stopAt - startAt) * 0.3));
+    gain.gain.setValueAtTime(0, startAt);
+    gain.gain.linearRampToValueAtTime(level, startAt + 0.006);
+    if (stopAt < naturalEnd - 0.005) {
+      gain.gain.setValueAtTime(level, Math.max(startAt + 0.01, stopAt - fade));
+      gain.gain.linearRampToValueAtTime(0, stopAt);
+    }
+    source.connect(gain);
+    gain.connect(midiGainNode);
+    const item = { source, gain, startAt, stopAt };
+    monitorNodes.set(note.note_id, item);
+    source.onended = () => {
+      if (monitorNodes.get(note.note_id) === item) {
+        monitorNodes.delete(note.note_id);
+      }
+      try { gain.disconnect(); } catch {}
+    };
+    source.start(startAt);
+    source.stop(stopAt + 0.01);
+  }
+
+  function scheduleMonitorWindow(until) {
+    while (
+      monitorIndex < monitorNotes.length &&
+      Number(monitorNotes[monitorIndex].time_s) <= until + 1e-6
+    ) {
+      const note = monitorNotes[monitorIndex];
+      monitorIndex += 1;
+      if (note.label === "noise") continue;
+      const buffer =
+        note.label === "dead"
+          ? monitorDeadBuffer
+          : monitorSamples.get(String(note.pitch));
+      if (!buffer) continue;
+      const startAt = sourceStartCtx + (Number(note.time_s) - sourceOffset);
+      if (startAt < audioCtx.currentTime - 0.02) continue;
+      scheduleMonitorNote(note, buffer, startAt);
+    }
+    monitorCursor = until;
+  }
+
+  function scheduleMonitor() {
+    if (!playing || monitorState !== "ready" || !audioBuffer) return;
+    const nowAudio = currentTime();
+    const until = Math.min(
+      audioBuffer.duration,
+      Math.max(monitorCursor, nowAudio) + MONITOR_LOOKAHEAD
+    );
+    scheduleMonitorWindow(until);
+  }
+
+  function startMonitor() {
+    if (monitorTimer) {
+      clearInterval(monitorTimer);
+      monitorTimer = 0;
+    }
+    if (!playing || monitorState !== "ready") return;
+    scheduleMonitor();
+    monitorTimer = setInterval(scheduleMonitor, MONITOR_INTERVAL_MS);
   }
 
   async function startFrom(offset) {
@@ -126,14 +363,13 @@
     const ctx = ensureAudioContext();
     if (ctx.state === "suspended") await ctx.resume();
     stopSource();
-    auditionEnd = null;
     const safe = Math.max(
       0,
       Math.min(Math.max(0, audioBuffer.duration - 0.001), Number(offset) || 0)
     );
     const node = ctx.createBufferSource();
     node.buffer = audioBuffer;
-    node.connect(ctx.destination);
+    node.connect(audioGainNode);
     // Schedule a hair in the future so the graph and the visual clock start on
     // the same render quantum instead of racing the current callback.
     const when = ctx.currentTime + 0.02;
@@ -144,9 +380,12 @@
     playhead = safe;
     playing = true;
     playButton.textContent = "❚❚";
+    resetMonitorCursor(safe);
+    startMonitor();
     node.onended = () => {
       if (sourceNode !== node) return;
       sourceNode = null;
+      stopMonitor();
       playing = false;
       playhead = Math.min(audioBuffer.duration, safe + (ctx.currentTime - when));
       playButton.textContent = "▶";
@@ -163,7 +402,6 @@
       playing = false;
       stopSource();
     }
-    auditionEnd = null;
     cancelAnimationFrame(playFrame);
     playButton.textContent = "▶";
     timeLabel.textContent = formatTime(playhead);
@@ -190,10 +428,6 @@
     }
     const time = currentTime();
     timeLabel.textContent = formatTime(time);
-    if (auditionEnd !== null && time >= auditionEnd) {
-      pausePlayback();
-      return;
-    }
     if (time > view.end) {
       const span = view.end - view.start;
       setView(time - span * 0.12, time + span * 0.88);
@@ -266,7 +500,12 @@
 
   async function openSession(data) {
     session = data;
+    monitorToken += 1;
+    monitorState = "idle";
+    monitorSamples = new Map();
+    monitorDeadBuffer = null;
     stopSource();
+    applyMix();
     playing = false;
     audioReady = false;
     playButton.disabled = true;
@@ -293,6 +532,7 @@
       (data.meta && (data.meta.original_name || data.meta.midi_name)) || data.id;
     exportLink.href = `/api/label/sessions/${data.id}/labels.jsonl`;
     history.replaceState(null, "", `${location.pathname}?session=${encodeURIComponent(data.id)}`);
+    setActiveLabel("dead");
     updateReviewed();
     updateCounts();
     setSaved(false);
@@ -304,6 +544,7 @@
       playButton.disabled = true;
       setStatus("The session audio could not be loaded.");
     }
+    loadMonitorBank(notes).catch(() => {});
     if (notes.length) canvas.focus();
   }
 
@@ -428,11 +669,15 @@
 
   function showUpload() {
     pausePlayback();
+    monitorToken += 1;
     stopSource();
+    monitorState = "idle";
+    monitorSamples = new Map();
+    monitorDeadBuffer = null;
     audioBuffer = null;
+    applyMix();
     audioReady = false;
     playhead = 0;
-    auditionEnd = null;
     playButton.disabled = true;
     session = null;
     notes = [];
@@ -452,8 +697,18 @@
 
   function updateCounts() {
     const dead = notes.filter((note) => note.label === "dead").length;
-    const label = `${notes.length} notes · ${groups.length} groups · ${dead} dead`;
-    countsLabel.textContent = label;
+    const noise = notes.filter((note) => note.label === "noise").length;
+    const ignore = notes.filter((note) => note.label === "ignore").length;
+    countsLabel.textContent =
+      `${notes.length} notes · ${groups.length} groups · ${dead} dead · ` +
+      `${noise} noise · ${ignore} ignored`;
+  }
+
+  function setActiveLabel(label) {
+    activeLabel = ["dead", "noise", "ignore"].includes(label) ? label : "dead";
+    modeDead.classList.toggle("is-active", activeLabel === "dead");
+    modeNoise.classList.toggle("is-active", activeLabel === "noise");
+    modeIgnore.classList.toggle("is-active", activeLabel === "ignore");
   }
 
   function updateReviewed() {
@@ -598,8 +853,24 @@
       const rect = noteRect(note);
       if (rect.x + rect.w < PAD.left || rect.x > width - PAD.right) continue;
       const isDead = note.label === "dead";
-      ctx.fillStyle = isDead ? "#c2663d" : "#7fa66a";
-      if (note === hoverNote) ctx.fillStyle = isDead ? "#e07a4e" : "#9dc282";
+      const isNoise = note.label === "noise";
+      const isIgnore = note.label === "ignore";
+      ctx.fillStyle = isDead
+        ? "#c2663d"
+        : isNoise
+          ? "#5b86a8"
+          : isIgnore
+            ? "#b9953a"
+            : "#7fa66a";
+      if (note === hoverNote) {
+        ctx.fillStyle = isDead
+          ? "#e07a4e"
+          : isNoise
+            ? "#79a7c8"
+            : isIgnore
+              ? "#d4b45b"
+              : "#9dc282";
+      }
       ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
       if (isDead) {
         ctx.strokeStyle = "#2a1812";
@@ -610,6 +881,27 @@
         ctx.lineTo(rect.x + rect.w - inset, rect.y + rect.h - inset);
         ctx.moveTo(rect.x + rect.w - inset, rect.y + inset);
         ctx.lineTo(rect.x + inset, rect.y + rect.h - inset);
+        ctx.stroke();
+      } else if (isNoise) {
+        ctx.strokeStyle = "#142532";
+        ctx.lineWidth = 1.4;
+        const mid = rect.y + rect.h / 2;
+        const inset = Math.min(3, rect.w * 0.2);
+        ctx.beginPath();
+        ctx.moveTo(rect.x + inset, mid);
+        ctx.lineTo(rect.x + rect.w - inset, mid);
+        ctx.stroke();
+      } else if (isIgnore) {
+        ctx.strokeStyle = "#2a2415";
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.arc(
+          rect.x + rect.w / 2,
+          rect.y + rect.h / 2,
+          Math.max(1.5, Math.min(3, rect.h * 0.22)),
+          0,
+          Math.PI * 2
+        );
         ctx.stroke();
       }
       if (note === pending?.note) {
@@ -679,7 +971,16 @@
     updateCounts();
     setSaved(true);
     draw();
+    syncMonitorLabels(changes);
     saveLabels(changes);
+  }
+
+  function syncMonitorLabels(changes) {
+    for (const change of changes) {
+      if (monitorNodes.has(change.note_id)) {
+        stopMonitorNode(change.note_id);
+      }
+    }
   }
 
   async function saveLabels(changes) {
@@ -700,14 +1001,21 @@
 
   function toggleNote(note) {
     applyLabels([
-      { note_id: note.note_id, label: note.label === "dead" ? "pitched" : "dead" },
+      {
+        note_id: note.note_id,
+        label: note.label === activeLabel ? "pitched" : activeLabel,
+      },
     ]);
-    auditionGroup(note._group);
   }
 
   function clearAll() {
     const changes = notes
-      .filter((note) => note.label === "dead")
+      .filter(
+        (note) =>
+          note.label === "dead" ||
+          note.label === "noise" ||
+          note.label === "ignore"
+      )
       .map((note) => ({ note_id: note.note_id, label: "pitched" }));
     if (!changes.length) return;
     applyLabels(changes);
@@ -723,17 +1031,8 @@
     updateCounts();
     setSaved(true);
     draw();
+    syncMonitorLabels(changes);
     saveLabels(changes);
-  }
-
-  function auditionGroup(group) {
-    if (!group || !audioReady) return;
-    const start = Math.max(0, Number(group.start_s) || 0);
-    startFrom(start)
-      .then(() => {
-        auditionEnd = Math.max(start + 0.05, Number(group.end_s) || start + 0.2);
-      })
-      .catch(() => {});
   }
 
   function seekFromEvent(event) {
@@ -812,7 +1111,7 @@
         rect.y + rect.h >= y &&
         rect.y <= y + h;
       if (!intersects) continue;
-      const next = clear ? "pitched" : "dead";
+      const next = clear ? "pitched" : activeLabel;
       if (note.label !== next) {
         changes.push({ note_id: note.note_id, label: next });
       }
@@ -837,7 +1136,12 @@
     event.preventDefault();
     const rect = canvas.getBoundingClientRect();
     const note = hitTest(event.clientX - rect.left, event.clientY - rect.top);
-    if (note && note.label === "dead") {
+    if (
+      note &&
+      (note.label === "dead" ||
+        note.label === "noise" ||
+        note.label === "ignore")
+    ) {
       applyLabels([{ note_id: note.note_id, label: "pitched" }]);
     }
   });
@@ -944,6 +1248,18 @@
     startFrom(start).catch(() => {});
   });
 
+  mixSlider.addEventListener("input", applyMix);
+  moreMenu.addEventListener("click", (event) => {
+    if (event.target.closest("button, a")) moreMenu.open = false;
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (moreMenu.open && !moreMenu.contains(event.target)) {
+      moreMenu.open = false;
+    }
+  });
+  modeDead.addEventListener("click", () => setActiveLabel("dead"));
+  modeNoise.addEventListener("click", () => setActiveLabel("noise"));
+  modeIgnore.addEventListener("click", () => setActiveLabel("ignore"));
   undoButton.addEventListener("click", undo);
   clearButton.addEventListener("click", clearAll);
   newButton.addEventListener("click", showUpload);
@@ -978,15 +1294,35 @@
 
   window.addEventListener("keydown", (event) => {
     if (!session) return;
-    if (event.target instanceof HTMLInputElement) return;
+    const target = event.target;
+    const isTextField =
+      target instanceof HTMLTextAreaElement ||
+      (target && target.isContentEditable) ||
+      (target instanceof HTMLInputElement &&
+        !["range", "checkbox", "radio", "button"].includes(target.type));
+    if (isTextField) return;
     if (event.code === "Space") {
       event.preventDefault();
       playButton.click();
-    } else if (event.key === "u" || event.key === "U") {
+    } else if (
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      (event.key === "1" || event.key === "2" || event.key === "3")
+    ) {
+      event.preventDefault();
+      setActiveLabel({ "1": "dead", "2": "noise", "3": "ignore" }[event.key]);
+    } else if (
+      (event.ctrlKey || event.metaKey) &&
+      !event.altKey &&
+      event.key.toLowerCase() === "z"
+    ) {
+      event.preventDefault();
       undo();
     } else if (event.key === "Escape") {
       selection = null;
       pending = null;
+      if (moreMenu.open) moreMenu.open = false;
       draw();
     }
   });

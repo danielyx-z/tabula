@@ -77,6 +77,7 @@ def apply_predictions(
     dead_notes: list[dict[str, Any]] = []
     decisions: list[dict[str, Any]] = []
     unmatched = 0
+    noise_count = 0
     already_dead: set[tuple[int, int]] = set()
     for prediction in predictions:
         note_id = str(prediction.get("note_id") or "")
@@ -97,13 +98,17 @@ def apply_predictions(
             }
         )
         decisions.append(item)
-        if not prediction.get("dead"):
+        label = str(prediction.get("label") or "")
+        if label not in {"dead", "noise"}:
             continue
         key = _key(final_note)
         if key in already_dead:
             continue
         final_note["_drop"] = True
         already_dead.add(key)
+        if label == "noise":
+            noise_count += 1
+            continue
         dead_notes.append(
             {
                 "t": int(final_note["t"]),
@@ -121,6 +126,7 @@ def apply_predictions(
         "enabled": True,
         "predictions": len(predictions),
         "dead": len(dead_notes),
+        "noise": noise_count,
         "unmatched": unmatched,
         "input_notes": len(input_notes),
         "final_notes": len(final_notes),
@@ -152,15 +158,10 @@ def apply_dead_classifier(
         groups,
         config=config or model.config,
     )
-    predictions = model.predict(rows)
+    thresholds = dict(model.thresholds)
     if threshold is not None:
-        predictions = [
-            {
-                **prediction,
-                "dead": bool(float(prediction.get("score", 0.0)) >= float(threshold)),
-            }
-            for prediction in predictions
-        ]
+        thresholds["dead"] = float(threshold)
+    predictions = model.predict(rows, thresholds=thresholds)
     result, dead_notes, decisions, stats = apply_predictions(
         final_notes,
         predictions,
@@ -169,7 +170,9 @@ def apply_dead_classifier(
     stats.update(
         {
             "model": str(model.metadata.get("trained_at") or ""),
-            "threshold": float(threshold if threshold is not None else model.threshold),
+            "threshold": float(thresholds.get("dead", 0.8)),
+            "dead_threshold": float(thresholds.get("dead", 0.8)),
+            "noise_threshold": float(thresholds.get("noise", 0.8)),
             "groups": len(groups),
             "score_min": min(
                 (float(item.get("score", 0.0)) for item in predictions), default=0.0

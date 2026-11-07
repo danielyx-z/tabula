@@ -17,6 +17,8 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   const convertLabel = byId("convert-label");
   const cancelButton = byId("cancel-button");
   const formStatus = byId("form-status");
+  const capoSelect = byId("capo-select");
+  const fastMode = byId("fast-mode");
 
   const emptyState = byId("empty-state");
   const loadingState = byId("loading-state");
@@ -25,6 +27,10 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   const errorDetails = byId("error-details");
   const errorLog = byId("error-log");
   const retryButton = byId("retry-button");
+  const streamPreview = byId("stream-preview");
+  const streamMeta = byId("stream-meta");
+  const streamStatus = byId("stream-status");
+  const streamTab = byId("stream-tab");
   const scoreStage = document.querySelector(".score-stage");
 
   const scoreView = byId("score-view");
@@ -88,6 +94,9 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   let busy = false;
   let serverReady = false;
   let abortController = null;
+  let progressTimer = null;
+  let currentJobId = "";
+  let provisionalLoaded = false;
   let lastConverted = false;
   let lastFileName = "";
 
@@ -189,6 +198,81 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     playerStatus.textContent = message || "";
   }
 
+  function resetStream() {
+    if (progressTimer !== null) {
+      window.clearInterval(progressTimer);
+      progressTimer = null;
+    }
+    streamPreview.hidden = true;
+    streamMeta.textContent = "";
+    streamStatus.textContent = "Waiting for the transcription…";
+    streamStatus.hidden = false;
+    streamTab.textContent = "";
+    streamTab.hidden = true;
+    loadingState.classList.remove("has-stream");
+  }
+
+  function makeJobId() {
+    if (window.crypto && typeof window.crypto.randomUUID === "function") {
+      return window.crypto.randomUUID().replace(/-/g, "");
+    }
+    const seed = `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
+    return `${seed}${"0".repeat(32)}`.slice(0, 32);
+  }
+
+  function updateStreamProgress(payload) {
+    if (!payload) return;
+    const tab = typeof payload.tab === "string" ? payload.tab : "";
+    const notes = Number(payload.notes) || 0;
+    const done = Number(payload.chunks_done) || 0;
+    const total = Number(payload.chunks_total) || 0;
+    const capo = Number(payload.capo) || 0;
+    const capoText = payload.auto_capo
+      ? "auto capo preview"
+      : capo > 0
+        ? `Capo ${capo}`
+        : "No capo";
+    const chunkText = total ? `chunk ${done}/${total} · ` : "";
+    const stageText = payload.message ? String(payload.message) : "";
+    streamPreview.hidden = false;
+    loadingState.classList.add("has-stream");
+    if (tab.trim()) {
+      streamStatus.hidden = true;
+      streamTab.hidden = false;
+      streamTab.textContent = tab;
+      streamMeta.textContent = `${chunkText}${notes} notes · ${capoText}${payload.final ? " · final" : ""}`;
+      streamTab.scrollTop = streamTab.scrollHeight;
+      if (payload.provisional) showProvisionalScore(payload);
+    } else {
+      streamTab.hidden = true;
+      streamTab.textContent = "";
+      streamStatus.hidden = false;
+      streamStatus.textContent = stageText || "Preparing the tab…";
+      streamMeta.textContent = payload.stage === "transcribe" ? "audio transcription" : "preparing";
+    }
+  }
+
+  function startStreamProgress(jobId) {
+    currentJobId = jobId;
+    provisionalLoaded = false;
+    resetStream();
+    const poll = async () => {
+      if (!busy) return;
+      try {
+        const response = await fetch(`/api/jobs/${jobId}/progress.json`, {
+          cache: "no-store",
+          headers: { Accept: "application/json" },
+        });
+        if (!response.ok) return;
+        updateStreamProgress(await response.json());
+      } catch (error) {
+        // Progress is best-effort; conversion errors still arrive on the main request.
+      }
+    };
+    progressTimer = window.setInterval(poll, 400);
+    poll();
+  }
+
   function setState(name) {
     emptyState.hidden = name !== "empty";
     loadingState.hidden = name !== "loading";
@@ -197,6 +281,9 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     uploadDetails.open = name !== "score";
     if (name !== "score") {
       sessionPanel.hidden = true;
+    }
+    if (name !== "loading") {
+      resetStream();
     }
     scoreStage.setAttribute("aria-busy", name === "loading" ? "true" : "false");
     scoreStage.dataset.state = name;
@@ -284,6 +371,8 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     convertButton.classList.toggle("is-loading", value);
     audioInput.disabled = value;
     audioClear.disabled = value;
+    capoSelect.disabled = value;
+    fastMode.disabled = value;
     cancelButton.disabled = !value;
     cancelButton.hidden = !value;
     form.setAttribute("aria-busy", value ? "true" : "false");
@@ -878,6 +967,28 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     sessionPanel.hidden = false;
   }
 
+  function showProvisionalScore(progress) {
+    if (provisionalLoaded || !currentJobId) return;
+    provisionalLoaded = true;
+    const title = lastFileName || "Draft tab";
+    const draft = {
+      id: currentJobId,
+      title,
+      files: { title },
+      urls: {
+        gp5: `/api/jobs/${currentJobId}/provisional.gp5`,
+        midi: "",
+        tab: "",
+        report: "",
+      },
+      summary: { exported: { duration: Number(progress.duration) || 0 } },
+      elapsed: 0,
+    };
+    setState("score");
+    loadScore(draft);
+    setPlayerStatus("Draft tab — adding dead notes…");
+  }
+
   function loadScore(payload) {
     score = null;
     bars = [];
@@ -993,9 +1104,15 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     setPlaying(false);
     setState("loading");
     setBusy(true);
+    resetStream();
 
+    const jobId = makeJobId();
     const body = new FormData();
     body.append("audio", slots.audio.file, slots.audio.file.name);
+    body.append("capo", capoSelect.value);
+    body.append("fast", fastMode.checked ? "1" : "0");
+    body.append("job_id", jobId);
+    startStreamProgress(jobId);
 
     const signal = abortController && abortController.signal;
 
@@ -1040,6 +1157,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
         (error && error.detail) || ""
       );
     } finally {
+      resetStream();
       setBusy(false);
     }
   }
@@ -1082,6 +1200,8 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     setStatus("");
     lastConverted = false;
     lastFileName = "";
+    currentJobId = "";
+    provisionalLoaded = false;
     scoreReady = false;
     audioProblem = "";
     score = null;

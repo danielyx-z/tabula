@@ -21,13 +21,17 @@
     </a>
     <div class="label-topbar-copy">
       <strong>Dead-note labeller</strong>
-      <span>MIDI-anchored. Pitched is the default; click or box-select dead notes.</span>
+      <span>MIDI-anchored. Pitched is the default; click or box-select dead, noise or ignore notes.</span>
     </div>
     <a class="label-back" href="/">Back to tab workbench</a>
   </header>
 
   <main class="label-main">
     <section id="label-upload" class="label-upload">
+      <div class="label-intro">
+        <h1>Label a take</h1>
+        <p>Pitched notes are the default. Mark the bad ones as <strong>dead</strong> or <strong>noise</strong>.</p>
+      </div>
       <form id="label-form" class="label-form">
         <div class="label-upload-row">
           <label class="label-file">
@@ -53,41 +57,61 @@
       <section id="label-recent" class="label-recent" hidden>
         <div class="label-recent-head">
           <h2>Recent sessions</h2>
-          <span>Resume a session and keep marking dead notes.</span>
+          <span>Resume a session and keep labelling notes.</span>
         </div>
         <div id="label-recent-list" class="label-recent-list"></div>
       </section>
     </section>
 
     <section id="label-workspace" class="label-workspace" hidden>
-      <div class="label-toolbar">
-        <button id="label-play" class="button button-quiet label-icon-button" type="button" title="Play / pause (space)">▶</button>
-        <div class="label-time" id="label-time">0:00.0</div>
-        <div class="label-toolbar-spacer"></div>
-        <div class="label-zoom-controls" aria-label="Zoom">
-          <button id="label-zoom-out" class="button button-quiet label-icon-button" type="button" title="Zoom out">−</button>
-          <input id="label-zoom" type="range" min="1" max="12" step="0.25" value="1" aria-label="Zoom">
-          <button id="label-zoom-in" class="button button-quiet label-icon-button" type="button" title="Zoom in">+</button>
+      <div class="label-sessionbar">
+        <div class="label-transport">
+          <button id="label-play" class="button button-quiet label-play-button" type="button" title="Play / pause (space)">▶</button>
+          <div class="label-time" id="label-time">0:00.0</div>
         </div>
-        <button id="label-fit" class="button button-quiet" type="button">Fit</button>
-        <button id="label-undo" class="button button-quiet" type="button" title="Undo (u)">Undo</button>
-        <button id="label-clear" class="button button-quiet" type="button">Clear dead</button>
+        <div class="label-session-meta">
+          <span id="label-name">—</span>
+          <span id="label-counts">—</span>
+        </div>
+        <div class="label-session-tools">
+          <span id="label-saved">All changes saved</span>
+          <button id="label-review" class="button button-quiet label-review-button" type="button">Mark reviewed</button>
+          <button id="label-undo" class="button button-quiet label-icon-text" type="button" title="Undo (Ctrl+Z)">Undo</button>
+          <details id="label-more" class="label-more">
+            <summary title="More actions" aria-label="More actions">⋯</summary>
+            <div class="label-more-menu">
+              <button id="label-clear" class="label-menu-item" type="button">Clear labels</button>
+              <a id="label-export" class="label-menu-item" href="#" download>Export labels</a>
+              <button id="label-new" class="label-menu-item" type="button">New session</button>
+              <button id="label-delete" class="label-menu-item is-danger" type="button">Delete session</button>
+            </div>
+          </details>
+        </div>
       </div>
 
-      <div class="label-summary">
-        <span id="label-name">—</span>
-        <span id="label-counts">—</span>
-        <span id="label-saved">All changes saved</span>
-        <div class="label-summary-actions">
-          <button id="label-new" class="button button-quiet label-mini" type="button">New</button>
-          <button id="label-delete" class="button button-quiet label-mini" type="button">Delete</button>
-          <a id="label-export" class="button button-quiet label-mini" href="#" download>Export</a>
-          <button id="label-review" class="button button-quiet label-mini label-review-button" type="button">Mark reviewed</button>
+      <div class="label-controlbar">
+        <div class="label-mode" role="group" aria-label="Label mode">
+          <button id="label-mode-dead" class="label-mode-button is-active" type="button" data-label="dead" title="Dead (1)" aria-keyshortcuts="1">Dead<kbd>1</kbd></button>
+          <button id="label-mode-noise" class="label-mode-button" type="button" data-label="noise" title="Noise (2)" aria-keyshortcuts="2">Noise<kbd>2</kbd></button>
+          <button id="label-mode-ignore" class="label-mode-button" type="button" data-label="ignore" title="Ignore (3)" aria-keyshortcuts="3">Ignore<kbd>3</kbd></button>
+        </div>
+        <div class="label-view-controls">
+          <div class="label-zoom-controls" aria-label="Zoom">
+            <button id="label-zoom-out" class="button button-quiet label-icon-button" type="button" title="Zoom out">−</button>
+            <input id="label-zoom" type="range" min="1" max="12" step="0.25" value="1" aria-label="Zoom">
+            <button id="label-zoom-in" class="button button-quiet label-icon-button" type="button" title="Zoom in">+</button>
+            <button id="label-fit" class="button button-quiet" type="button">Fit</button>
+          </div>
+          <label class="label-mix" title="Crossfade the original recording and the live MIDI monitor">
+            <span>Mix</span>
+            <input id="label-mix" type="range" min="0" max="100" step="5" value="25" aria-label="Original to MIDI monitor mix">
+            <span id="label-mix-value">25% MIDI</span>
+          </label>
         </div>
       </div>
 
       <div class="label-canvas-wrap" id="label-canvas-wrap">
-        <canvas id="label-canvas" tabindex="0" aria-label="Piano roll. Click a note to toggle dead; drag a rectangle to mark dead notes."></canvas>
+        <canvas id="label-canvas" tabindex="0" aria-label="Piano roll. Click or drag to mark the active label class; Alt-drag clears."></canvas>
         <div id="label-empty" class="label-empty" hidden>No note groups found.</div>
       </div>
 
@@ -96,9 +120,8 @@
       </div>
 
       <p class="label-help">
-        Click a note to toggle. Drag a rectangle to mark everything inside dead.
-        Alt-drag clears. Space plays; U undoes. −/+ or wheel zooms; shift-wheel
-        scrolls; drag the scrollbar to move.
+        <b>1</b> dead · <b>2</b> noise · <b>3</b> ignore · Space play · Ctrl+Z undo ·
+        drag to mark · Alt-drag clear. Ignore stays pitched but is not trained.
       </p>
     </section>
   </main>

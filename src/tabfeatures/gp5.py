@@ -18,6 +18,12 @@ import mido
 PPQ = 960
 GP_START = 960
 GRID_MAX = 240
+# Only genuinely sustained notes get tie destinations.  Shorter notes that
+# happen to cross a beat are re-articulated instead, so a tied continuation
+# does not silently remove an attack.
+MIN_TIE_DURATION = 960
+MIN_TIE_SEGMENT = 240
+MIN_TEMPO_DELTA = 10.0
 
 _DURATIONS = (
     (3840, 1, False),
@@ -77,7 +83,16 @@ def read_timing(
         elif message.type == "time_signature":
             if message.numerator > 0 and message.denominator > 0:
                 signatures[scaled] = (message.numerator, message.denominator)
-    return dict(sorted(tempi.items())), dict(sorted(signatures.items()))
+    # MuScriptor writes a tempo event for every small expressive drift.  The
+    # score only needs meaningful tempo changes; suppress changes below 10 BPM
+    # from the last retained value.
+    retained: dict[int, float] = {}
+    last_bpm: float | None = None
+    for tick, bpm in sorted(tempi.items()):
+        if last_bpm is None or abs(float(bpm) - last_bpm) >= MIN_TEMPO_DELTA:
+            retained[int(tick)] = float(bpm)
+            last_bpm = float(bpm)
+    return retained, dict(sorted(signatures.items()))
 
 
 def _measure_plan(max_tick: int, signatures: dict[int, tuple[int, int]]):
@@ -363,15 +378,33 @@ def build_gp5(
                 tempo_by_slot[slot] = bpm
         tempo_slots = set(tempo_by_slot)
 
+        def slot_priority(item: int) -> tuple[int, int, int]:
+            record = records[item]
+            return (
+                int(record["t"]),
+                1 if record["kind"] == "pitched" else 0,
+                -int(record["f"]),
+            )
+
         slot_active: list[tuple[int, ...]] = []
         for slot in range(slots):
-            slot_active.append(
-                tuple(
-                    index
-                    for index, first, last, _before in local
-                    if first <= slot < last
-                )
-            )
+            # A note can end just after a measure boundary while the next
+            # note on the same string starts a few ticks later.  Both round
+            # into the same grid slot; writing both would put two notes on
+            # one string in the same beat, which corrupts the GP5 stream.
+            current: dict[int, int] = {}
+            for index, first, last, _before in local:
+                if not (first <= slot < last):
+                    continue
+                string = records[index]["s"]
+                previous = current.get(string)
+                if previous is None:
+                    current[string] = index
+                    continue
+                # Prefer the later attack; on a tie prefer a pitched note.
+                if slot_priority(index) > slot_priority(previous):
+                    current[string] = index
+            slot_active.append(tuple(sorted(current.values())))
 
         runs = []
         run_start = 0
@@ -426,6 +459,14 @@ def build_gp5(
                             total_notes += 1
                             continue
 
+                        if is_tie and int(record["dur"]) < MIN_TIE_DURATION:
+                            remaining = (
+                                int(record["t"]) + int(record["dur"])
+                                - (start + part_start * grid)
+                            )
+                            if remaining < MIN_TIE_SEGMENT:
+                                continue
+                            is_tie = False
                         gp_note = gp.Note(
                             beat,
                             value=0 if is_tie else record["f"],
@@ -436,7 +477,7 @@ def build_gp5(
                                 else gp.NoteType.normal
                             ),
                         )
-                        if not is_tie:
+                        if not is_tie and part_start == first:
                             _apply_features(
                                 gp_note,
                                 features.get((record["t"], record["s"])),

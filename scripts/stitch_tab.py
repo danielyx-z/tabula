@@ -25,6 +25,7 @@ import json
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -87,7 +88,8 @@ def _write_json(path: Path, payload: Any) -> None:
     )
 
 
-def run_stage_audio(args: argparse.Namespace, out: Path, grid_ticks: int) -> dict[str, Any]:
+def run_stage_detect(args: argparse.Namespace, out: Path) -> dict[str, Any]:
+    """Detect raw percussive events from audio, without MIDI alignment."""
     print("[audio] detecting percussive onsets ...", flush=True)
     result = detect_audio_events(
         args.audio,
@@ -102,10 +104,23 @@ def run_stage_audio(args: argparse.Namespace, out: Path, grid_ticks: int) -> dic
     if args.keep_intermediate:
         write_stems(out, result)
         print(f"[audio] wrote HPSS stems to {out}", flush=True)
+    return result
 
+
+def run_stage_align(
+    args: argparse.Namespace, out: Path, grid_ticks: int
+) -> dict[str, Any]:
+    """Align pre-detected audio events with MIDI onsets."""
+    raw_path = out / "audio_events.json"
+    if not raw_path.is_file():
+        raise SystemExit(
+            f"[audio] missing {raw_path}; run --stage detect or --stage audio first"
+        )
+    raw = _load_json(raw_path)
+    raw_events = raw.get("events", []) if isinstance(raw, dict) else raw
     pm, midi_onsets = read_midi_notes(args.midi)
     events, alignment = align_events(
-        result["events"],
+        raw_events,
         pm,
         midi_onsets,
         grid_ticks=grid_ticks,
@@ -129,6 +144,11 @@ def run_stage_audio(args: argparse.Namespace, out: Path, grid_ticks: int) -> dic
     for warning in alignment.get("warnings", []):
         print(f"[audio] warning: {warning}", flush=True)
     return payload
+
+
+def run_stage_audio(args: argparse.Namespace, out: Path, grid_ticks: int) -> dict[str, Any]:
+    run_stage_detect(args, out)
+    return run_stage_align(args, out, grid_ticks)
 
 
 def run_stage_tab(args: argparse.Namespace, out: Path) -> Path:
@@ -164,8 +184,20 @@ def run_stage_tab(args: argparse.Namespace, out: Path) -> Path:
         "--no-audio",
         "--beam",
         str(args.beam),
+        "--capo",
+        str(args.capo),
+        "--max-capo",
+        str(args.max_capo),
+        "--progress-file",
+        str(tab_dir / "progress.json"),
     ]
     log_path = tab_dir / "run.log"
+    progress_path = tab_dir / "progress.json"
+    progress_path.unlink(missing_ok=True)
+    _write_json(
+        progress_path,
+        {"stage": "tab", "message": "Decoding the tab…", "tab": ""},
+    )
     print(f"[tab] running midi2tab (log: {log_path})", flush=True)
     with log_path.open("w", encoding="utf-8") as log:
         process = subprocess.run(
@@ -186,6 +218,44 @@ def run_stage_tab(args: argparse.Namespace, out: Path) -> Path:
         )
     print(f"[tab] wrote {final_json}", flush=True)
     return final_json
+
+
+def run_stage_provisional(args: argparse.Namespace, out: Path) -> dict[str, Any]:
+    """Write a usable draft GP5 before dead notes and articulations."""
+    tab_dir = out / "tabula"
+    final_json = tab_dir / "final.json"
+    report_path = tab_dir / "report.json"
+    timing_midi = tab_dir / "final.mid"
+    if not final_json.is_file() or not report_path.is_file():
+        raise SystemExit(
+            f"[preview] missing {final_json} or {report_path}; run --stage tab first"
+        )
+    if not timing_midi.is_file():
+        timing_midi = _user_path(args.midi)
+    notes = _load_json(final_json)
+    if isinstance(notes, dict):
+        notes = notes.get("notes", [])
+    report = _load_json(report_path)
+    info = build_gp5(
+        notes,
+        timing_midi,
+        out / "provisional.gp5",
+        capo=int(report.get("capo", 0) or 0),
+        title=args.title,
+    )
+    progress_path = tab_dir / "progress.json"
+    progress = _load_json(progress_path) if progress_path.is_file() else {}
+    if not isinstance(progress, dict):
+        progress = {}
+    progress.update(
+        {
+            "stage": "stitch",
+            "message": "Draft score ready; adding dead notes…",
+            "provisional": True,
+        }
+    )
+    _write_json(progress_path, progress)
+    return info
 
 
 def _dead_model_path(args: argparse.Namespace) -> Path | None:
@@ -212,6 +282,14 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
         raise SystemExit(
             f"[stitch] missing {final_json}; run --stage tab or --stage all first"
         )
+    progress_path = tab_dir / "progress.json"
+    progress = _load_json(progress_path) if progress_path.is_file() else {}
+    if not isinstance(progress, dict):
+        progress = {}
+    progress.update(
+        {"stage": "stitch", "message": "Adding dead notes and articulations…"}
+    )
+    _write_json(progress_path, progress)
 
     events_path = out / "percussion_events.json"
     if not events_path.exists():
@@ -325,9 +403,15 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
     classifier_stats: dict[str, Any] = {"enabled": False}
 
     if dead_model is not None:
+        dead_threshold = (
+            float(args.dead_threshold)
+            if args.dead_threshold is not None
+            else float(dead_model.thresholds.get("dead", 0.8))
+        )
+        noise_threshold = float(dead_model.thresholds.get("noise", 0.8))
         print(
             f"[stitch] dead-note classifier: {dead_model_path} "
-            f"(threshold {(args.dead_threshold if args.dead_threshold is not None else dead_model.threshold):.2f})",
+            f"(dead {dead_threshold:.2f}, noise {noise_threshold:.2f})",
             flush=True,
         )
         final_notes, classifier_dead, classifier_decisions, classifier_stats = (
@@ -346,7 +430,8 @@ def run_stage_stitch(args: argparse.Namespace, out: Path, grid_ticks: int) -> di
         }
         print(
             f"[stitch] dead-note classifier: {classifier_stats.get('dead', 0)} "
-            f"dead of {classifier_stats.get('predictions', 0)} notes",
+            f"dead, {classifier_stats.get('noise', 0)} noise of "
+            f"{classifier_stats.get('predictions', 0)} notes",
             flush=True,
         )
     elif args.non_note:
@@ -509,7 +594,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-dir", required=True, help="job output directory")
     parser.add_argument(
         "--stage",
-        choices=("audio", "tab", "stitch", "all"),
+        choices=("detect", "align", "audio", "tab", "provisional", "stitch", "all"),
         default="all",
         help="run one stage or the whole pipeline (default: all)",
     )
@@ -529,6 +614,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Tabula vocab JSON",
     )
     parser.add_argument("--beam", type=int, default=4, help="midi2tab beam size")
+    parser.add_argument(
+        "--capo",
+        default="auto",
+        help="capo selection: auto, off, or a fixed 0-6 (default: auto)",
+    )
+    parser.add_argument(
+        "--max-capo",
+        type=int,
+        default=6,
+        help="highest capo to consider (default: 6)",
+    )
 
     parser.add_argument(
         "--dead-strings",
@@ -661,26 +757,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--hp-min-confidence",
         type=float,
-        default=0.70,
-        help="minimum audio-gated H/P confidence (default: 0.70)",
+        default=0.85,
+        help="minimum audio-gated H/P confidence (default: 0.85)",
     )
     parser.add_argument(
         "--hp-max-gap-beats",
         type=float,
-        default=0.5,
-        help="maximum H/P gap in quarter notes (default: 0.5)",
+        default=0.35,
+        help="maximum H/P gap in quarter notes (default: 0.35)",
     )
     parser.add_argument(
         "--hp-max-interval",
         type=int,
-        default=7,
-        help="maximum H/P interval in semitones (default: 7)",
+        default=5,
+        help="maximum H/P interval in semitones (default: 5)",
     )
     parser.add_argument(
         "--ring-tolerance",
         type=int,
-        default=60,
-        help="extra ticks allowed for the first note to still ring (default: 60)",
+        default=40,
+        help="extra ticks allowed for the first note to still ring (default: 40)",
     )
     parser.add_argument(
         "--allow-hp-in-chords",
@@ -748,7 +844,7 @@ def main(argv: list[str] | None = None) -> int:
     out = _user_path(args.out_dir)
     if not audio.exists():
         raise SystemExit(f"audio not found: {audio}")
-    if not midi.exists():
+    if args.stage != "detect" and not midi.exists():
         raise SystemExit(f"MIDI not found: {midi}")
     out.mkdir(parents=True, exist_ok=True)
     args.audio = str(audio)
@@ -756,12 +852,35 @@ def main(argv: list[str] | None = None) -> int:
     args.out_dir = str(out)
 
     grid_ticks = parse_grid(args.grid)
-    if args.stage in {"audio", "all"}:
+    if args.stage == "detect":
+        run_stage_detect(args, out)
+        return 0
+    if args.stage == "align":
+        run_stage_align(args, out, grid_ticks)
+        return 0
+    if args.stage == "audio":
         run_stage_audio(args, out, grid_ticks)
-    if args.stage in {"tab", "all"}:
-        run_stage_tab(args, out)
-    if args.stage in {"stitch", "all"}:
+        return 0
+    if args.stage == "all":
+        # Audio analysis and tab decoding are independent once the MIDI
+        # exists.  Running them together lets the live tab preview start
+        # while onset/timbre features are still being measured.
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            audio_future = pool.submit(run_stage_audio, args, out, grid_ticks)
+            tab_future = pool.submit(run_stage_tab, args, out)
+            audio_future.result()
+            tab_future.result()
         run_stage_stitch(args, out, grid_ticks)
+        return 0
+    if args.stage == "tab":
+        run_stage_tab(args, out)
+        return 0
+    if args.stage == "provisional":
+        run_stage_provisional(args, out)
+        return 0
+    if args.stage == "stitch":
+        run_stage_stitch(args, out, grid_ticks)
+        return 0
     return 0
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import mimetypes
 import os
@@ -42,6 +43,7 @@ from tabfeatures.labeling.store import (
     write_meta,
 )
 from tabfeatures.midi_groups import load_note_groups
+from audio.synth import DEFAULT_SF2, render_midi_file_to_wav, render_note_sample
 
 REPO = Path(__file__).resolve().parents[1]
 WEB = Path(__file__).resolve().parent
@@ -71,6 +73,7 @@ MUSCRIPTOR_INSTRUMENTS = os.environ.get(
 )
 MUSCRIPTOR_GRID = int(os.environ.get("TABULA_MUSCRIPTOR_GRID", "8"))
 MUSCRIPTOR_QUANTIZE = os.environ.get("TABULA_MUSCRIPTOR_QUANTIZE", "0") != "0"
+MAX_CAPO = min(6, int(os.environ.get("TABULA_MAX_CAPO", "6")))
 
 AUDIO_SUFFIXES = {
     ".wav", ".flac", ".ogg", ".oga", ".mp3", ".m4a", ".aac",
@@ -80,6 +83,11 @@ MIDI_SUFFIXES = {".mid", ".midi"}
 
 CONVERT_LOCK = threading.Lock()
 JOBS.mkdir(parents=True, exist_ok=True)
+MONITOR_SAMPLE_ROOT = _project_path(
+    os.environ.get("TABULA_MONITOR_SAMPLES", "data/models/monitor_samples")
+)
+CACHE_ROOT = _project_path(os.environ.get("TABULA_CACHE", "data/cache"))
+CACHE_VERSION = "v1"
 
 app = Flask(
     __name__,
@@ -269,6 +277,68 @@ def _error(message: str, status: int = 400, detail: str | None = None):
     return jsonify(payload), status
 
 
+def _stop_process(process: subprocess.Popen | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def _log_tail(path: Path, limit: int = 8000) -> str:
+    try:
+        return "\n".join(path.read_text(encoding="utf-8", errors="replace").splitlines()[-80:])[-limit:]
+    except OSError:
+        return ""
+
+
+def _file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _cache_file(kind: str, key: str, suffix: str) -> Path:
+    return CACHE_ROOT / CACHE_VERSION / kind / f"{key}{suffix}"
+
+
+def _cache_restore(cache_path: Path, target: Path) -> bool:
+    if not cache_path.is_file():
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copy2(cache_path, target)
+        return True
+    except OSError:
+        return False
+
+
+def _cache_store(source: Path, cache_path: Path) -> None:
+    if not source.is_file():
+        return
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, cache_path)
+    except OSError:
+        pass
+
+
+def _write_job_progress(job_dir: Path, payload: dict) -> None:
+    path = job_dir / "out" / "tabula" / "progress.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
 def _conversion_error_message(log: str, audio_mode: bool) -> str:
     lowered = log.lower()
     if "match rate" in lowered:
@@ -276,6 +346,21 @@ def _conversion_error_message(log: str, audio_mode: bool) -> str:
     if audio_mode and ("audio" in lowered or "ffmpeg" in lowered):
         return "The recording could not be read."
     return "The tab could not be built from this take."
+
+
+def _parse_capo(value: object) -> str:
+    raw = str(value or "auto").strip().lower()
+    if raw in {"auto", "off"}:
+        return raw
+    try:
+        capo = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"Capo must be Auto, Off, or a number from 0 to {MAX_CAPO}."
+        ) from exc
+    if not 0 <= capo <= MAX_CAPO:
+        raise ValueError(f"Capo must be Auto, Off, or a number from 0 to {MAX_CAPO}.")
+    return str(capo)
 
 
 def _validate_upload(
@@ -397,6 +482,8 @@ def label_create():
                 "duration": payload.get("duration"),
                 "note_count": note_count,
                 "dead_count": 0,
+                "noise_count": 0,
+                "ignore_count": 0,
                 "reviewed": False,
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             },
@@ -421,6 +508,102 @@ def label_get(session_id: str):
     return jsonify(label_state(session_id))
 
 
+def _monitor_sample_dir() -> Path:
+    """Cache monitor samples by SoundFont identity."""
+    sf2 = Path(DEFAULT_SF2)
+    try:
+        stat = sf2.stat()
+        signature = f"monitor-v2:{sf2.resolve()}:{stat.st_mtime_ns}:{stat.st_size}"
+    except OSError:
+        signature = f"monitor-v2:{sf2}:missing"
+    digest = hashlib.sha1(signature.encode("utf-8")).hexdigest()[:12]
+    return MONITOR_SAMPLE_ROOT / digest
+
+
+def _monitor_sample_path(kind: str, pitch: int = 0) -> Path:
+    directory = _monitor_sample_dir() / kind
+    if kind == "dead":
+        return directory / "dead.wav"
+    return directory / f"{int(pitch)}.wav"
+
+
+def _ensure_monitor_sample(kind: str, pitch: int = 0) -> Path:
+    path = _monitor_sample_path(kind, pitch)
+    if path.is_file():
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.stem}-{uuid.uuid4().hex}.wav")
+    try:
+        if kind == "dead":
+            render_note_sample(
+                45,
+                tmp,
+                program=28,
+                duration=0.12,
+                velocity=84,
+                release_tail=0.12,
+            )
+        else:
+            render_note_sample(
+                int(pitch),
+                tmp,
+                program=24,
+                duration=2.5,
+                velocity=96,
+                release_tail=0.35,
+            )
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return path
+
+
+@app.get("/api/monitor/samples/pitched/<int:pitch>.wav")
+def monitor_pitched_sample(pitch: int):
+    if pitch < 0 or pitch > 127:
+        abort(404)
+    try:
+        path = _ensure_monitor_sample("pitched", pitch)
+    except Exception as exc:  # noqa: BLE001 - optional monitoring aid
+        return _error("The MIDI monitor sample could not be rendered.", 500, str(exc))
+    return send_file(
+        path,
+        mimetype="audio/wav",
+        conditional=True,
+        max_age=31536000,
+    )
+
+
+@app.get("/api/monitor/samples/dead.wav")
+def monitor_dead_sample():
+    try:
+        path = _ensure_monitor_sample("dead")
+    except Exception as exc:  # noqa: BLE001 - optional monitoring aid
+        return _error("The dead-note monitor sample could not be rendered.", 500, str(exc))
+    return send_file(
+        path,
+        mimetype="audio/wav",
+        conditional=True,
+        max_age=31536000,
+    )
+
+
+@app.get("/api/label/sessions/<session_id>/synth")
+def label_synth(session_id: str):
+    _label_session_or_404(session_id)
+    directory = LABEL_ROOT / session_id
+    midi_path = directory / "transcribed.mid"
+    synth_path = directory / "synth.wav"
+    if not midi_path.is_file():
+        abort(404)
+    if not synth_path.is_file():
+        try:
+            render_midi_file_to_wav(midi_path, synth_path)
+        except Exception as exc:  # noqa: BLE001 - optional monitoring aid
+            return _error("The MIDI monitor track could not be rendered.", 500, str(exc))
+    return send_file(synth_path, mimetype="audio/wav", conditional=True)
+
+
 @app.get("/api/label/sessions/<session_id>/audio")
 def label_audio(session_id: str):
     _label_session_or_404(session_id)
@@ -443,7 +626,10 @@ def label_append(session_id: str):
     append_labels(session_id, records, op_id=uuid.uuid4().hex)
     state = label_state(session_id)
     meta = state.get("meta") or {}
-    meta["dead_count"] = int((state.get("summary") or {}).get("dead", 0))
+    summary = state.get("summary") or {}
+    meta["dead_count"] = int(summary.get("dead", 0))
+    meta["noise_count"] = int(summary.get("noise", 0))
+    meta["ignore_count"] = int(summary.get("ignore", 0))
     write_meta(session_id, meta)
     return jsonify(state)
 
@@ -493,6 +679,14 @@ def convert():
 
     midi_upload = request.files.get("midi") or request.files.get("file")
     audio_upload = request.files.get("audio")
+    try:
+        capo = _parse_capo(request.form.get("capo", "auto"))
+    except ValueError as exc:
+        return _error(str(exc))
+    fast_mode = str(request.form.get("fast", "1")).strip().lower() in {
+        "1", "true", "on", "yes"
+    }
+    beam = 1 if fast_mode else 4
 
     has_midi = bool(midi_upload and midi_upload.filename)
     has_audio = bool(audio_upload and audio_upload.filename)
@@ -526,10 +720,33 @@ def convert():
         except ValueError as exc:
             return _error(str(exc))
 
-    job_id = uuid.uuid4().hex
+    requested_job = str(request.form.get("job_id") or "").strip()
+    if requested_job:
+        if not re.fullmatch(r"[0-9a-f]{32}", requested_job):
+            return _error("The job id is invalid.")
+        if (JOBS / requested_job).exists():
+            return _error("That job id is already in use.")
+        job_id = requested_job
+    else:
+        job_id = uuid.uuid4().hex
     job_dir = JOBS / job_id
     out_dir = job_dir / "out"
-    job_dir.mkdir(parents=True, exist_ok=False)
+    try:
+        job_dir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        return _error("That job id is already in use.")
+    _write_job_progress(
+        job_dir,
+        {
+            "stage": "transcribe",
+            "message": (
+                "Preparing the uploaded MIDI…"
+                if has_midi
+                else "Transcribing the recording with MuScriptor…"
+            ),
+            "tab": "",
+        },
+    )
 
     midi_name = (
         midi_original.name
@@ -546,6 +763,12 @@ def convert():
     else:
         audio_name = None
 
+    detect_proc: subprocess.Popen | None = None
+    detect_log = None
+    detect_cache: Path | None = None
+    detect_cached = False
+    audio_digest = ""
+    midi_cache: Path | None = None
     try:
         if audio_mode:
             audio_upload.save(audio_path)
@@ -554,6 +777,46 @@ def convert():
             if _size_mb(audio_path) > MAX_AUDIO_MB:
                 raise ValueError(f"The source recording is larger than {MAX_AUDIO_MB} MB.")
             normalized_audio = _normalize_audio(audio_path, normalized_audio)
+            audio_digest = _file_digest(normalized_audio)
+            detect_signature = (
+                f"{CACHE_VERSION}:{audio_digest}:"
+                "sr=22050:delta=0.05:wait=2:before=0.03:after=0.18"
+            )
+            detect_key = hashlib.sha1(detect_signature.encode("utf-8")).hexdigest()
+            detect_cache = _cache_file("audio_events", detect_key, ".json")
+            if _cache_restore(detect_cache, out_dir / "audio_events.json"):
+                detect_cached = True
+            else:
+                detect_log = (job_dir / "detect.log").open("w", encoding="utf-8")
+                detect_proc = subprocess.Popen(
+                    [
+                        PYTHON, str(REPO / "scripts" / "stitch_tab.py"),
+                        "--audio", str(normalized_audio),
+                        "--midi", str(midi_path),
+                        "--out-dir", str(out_dir),
+                        "--stage", "detect",
+                    ],
+                    cwd=str(REPO),
+                    stdout=detect_log,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+            _write_job_progress(
+                job_dir,
+                {
+                    "stage": "audio",
+                    "message": (
+                        "Using cached audio analysis…"
+                        if detect_cached
+                        else (
+                            "Detecting note attacks…"
+                            if has_midi
+                            else "Transcribing with MuScriptor and detecting note attacks…"
+                        )
+                    ),
+                    "tab": "",
+                },
+            )
         if has_midi:
             midi_upload.save(midi_path)
             if midi_path.stat().st_size == 0:
@@ -561,63 +824,234 @@ def convert():
             if _size_mb(midi_path) > MAX_MIDI_MB:
                 raise ValueError(f"The MIDI transcription is larger than {MAX_MIDI_MB} MB.")
         else:
-            try:
-                _local_transcribe(normalized_audio, midi_path)
-            except MuscriptorUnavailable as exc:
-                raise MuscriptorUnavailable(str(exc)) from exc
-            except RuntimeError as exc:
-                raise RuntimeError(f"MuScriptor transcription failed: {exc}") from exc
+            midi_signature = (
+                f"{CACHE_VERSION}:{audio_digest}:{MUSCRIPTOR_MODEL}:"
+                f"quantize={int(MUSCRIPTOR_QUANTIZE)}:grid={MUSCRIPTOR_GRID}"
+            )
+            midi_key = hashlib.sha1(midi_signature.encode("utf-8")).hexdigest()
+            midi_cache = _cache_file("muscriptor", midi_key, ".mid")
+            if not _cache_restore(midi_cache, midi_path):
+                try:
+                    _local_transcribe(normalized_audio, midi_path)
+                except MuscriptorUnavailable as exc:
+                    raise MuscriptorUnavailable(str(exc)) from exc
+                except RuntimeError as exc:
+                    raise RuntimeError(f"MuScriptor transcription failed: {exc}") from exc
+                _cache_store(midi_path, midi_cache)
     except MuscriptorUnavailable as exc:
+        _stop_process(detect_proc)
+        if detect_log is not None:
+            detect_log.close()
         shutil.rmtree(job_dir, ignore_errors=True)
         return _error("Local MuScriptor is not available.", 500, str(exc))
     except (OSError, ValueError, RuntimeError) as exc:
+        _stop_process(detect_proc)
+        if detect_log is not None:
+            detect_log.close()
         shutil.rmtree(job_dir, ignore_errors=True)
         return _error(str(exc) or "The upload could not be saved.", 400)
     except Exception as exc:  # noqa: BLE001 - surfaced as a local error
+        _stop_process(detect_proc)
+        if detect_log is not None:
+            detect_log.close()
         shutil.rmtree(job_dir, ignore_errors=True)
         return _error("The upload could not be saved.", 500, str(exc))
 
     title = Path(audio_name or midi_name).stem or "Untitled take"
     started = time.time()
 
+    tab_proc: subprocess.Popen | None = None
+    tab_log = None
     if audio_mode:
-        command = [
-            PYTHON, str(REPO / "scripts" / "stitch_tab.py"),
-            "--audio", str(normalized_audio),
-            "--midi", str(midi_path),
-            "--out-dir", str(out_dir),
-            "--stage", "all",
-            "--checkpoint", str(CHECKPOINT),
-            "--vocab", str(VOCAB),
-            "--title", title,
-            "--beam", "4",
-            "--width", "120",
-            "--force",
-        ]
+        tab_log = (job_dir / "tab.log").open("w", encoding="utf-8")
+        tab_proc = subprocess.Popen(
+            [
+                PYTHON, str(REPO / "scripts" / "stitch_tab.py"),
+                "--audio", str(normalized_audio),
+                "--midi", str(midi_path),
+                "--out-dir", str(out_dir),
+                "--stage", "tab",
+                "--checkpoint", str(CHECKPOINT),
+                "--vocab", str(VOCAB),
+                "--beam", str(beam),
+                "--capo", capo,
+                "--max-capo", str(MAX_CAPO),
+                "--force",
+            ],
+            cwd=str(REPO),
+            stdout=tab_log,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        # Wait for the tab decoder first.  The draft score can be published
+        # while the audio onset detector is still running.
+        try:
+            tab_rc = tab_proc.wait(timeout=CONVERT_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            _stop_process(detect_proc)
+            _stop_process(tab_proc)
+            if detect_log is not None and not detect_log.closed:
+                detect_log.close()
+            if tab_log is not None:
+                tab_log.close()
+            return _error(
+                "The conversion timed out.",
+                504,
+                f"The take did not finish within {CONVERT_TIMEOUT} seconds.",
+            )
+        finally:
+            if tab_log is not None and not tab_log.closed:
+                tab_log.close()
+        if tab_rc != 0:
+            _stop_process(detect_proc)
+            if detect_log is not None and not detect_log.closed:
+                detect_log.close()
+            log = _log_tail(job_dir / "tab.log")
+            return _error("The tab could not be built.", 500, log or f"Exit code {tab_rc}")
+
+        try:
+            progress_path = out_dir / "tabula" / "progress.json"
+            progress = _load_json(progress_path) if progress_path.is_file() else {}
+            if isinstance(progress, dict):
+                progress["duration"] = round(float(_audio_duration(normalized_audio)), 3)
+                _write_job_progress(job_dir, progress)
+        except Exception:  # noqa: BLE001 - draft metadata is optional
+            pass
+
+        preview_log = (job_dir / "preview.log").open("w", encoding="utf-8")
+        try:
+            subprocess.run(
+                [
+                    PYTHON, str(REPO / "scripts" / "stitch_tab.py"),
+                    "--audio", str(normalized_audio),
+                    "--midi", str(midi_path),
+                    "--out-dir", str(out_dir),
+                    "--stage", "provisional",
+                    "--title", title,
+                    "--capo", capo,
+                ],
+                cwd=str(REPO),
+                stdout=preview_log,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=CONVERT_TIMEOUT,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        finally:
+            preview_log.close()
+
+        # Only now wait for the audio detector; the draft score is already
+        # available in progress.json.
+        if detect_cached:
+            detect_rc = 0
+        else:
+            try:
+                detect_rc = detect_proc.wait(timeout=CONVERT_TIMEOUT) if detect_proc else 1
+            except subprocess.TimeoutExpired:
+                _stop_process(detect_proc)
+                if detect_log is not None and not detect_log.closed:
+                    detect_log.close()
+                return _error(
+                    "The conversion timed out.",
+                    504,
+                    f"The take did not finish within {CONVERT_TIMEOUT} seconds.",
+                )
+            finally:
+                if detect_log is not None and not detect_log.closed:
+                    detect_log.close()
+        if detect_rc != 0:
+            log = _log_tail(job_dir / "detect.log")
+            return _error("Audio analysis failed.", 500, log or f"Exit code {detect_rc}")
+        if detect_cache is not None and not detect_cached:
+            _cache_store(out_dir / "audio_events.json", detect_cache)
+
+        align_log = (job_dir / "align.log").open("w", encoding="utf-8")
+        try:
+            align_result = subprocess.run(
+                [
+                    PYTHON, str(REPO / "scripts" / "stitch_tab.py"),
+                    "--audio", str(normalized_audio),
+                    "--midi", str(midi_path),
+                    "--out-dir", str(out_dir),
+                    "--stage", "align",
+                ],
+                cwd=str(REPO),
+                stdout=align_log,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=CONVERT_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            align_log.close()
+            return _error(
+                "The conversion timed out.",
+                504,
+                f"The take did not finish within {CONVERT_TIMEOUT} seconds.",
+            )
+        finally:
+            if not align_log.closed:
+                align_log.close()
+        if align_result.returncode != 0:
+            log = _log_tail(job_dir / "align.log")
+            return _error(
+                "Audio/MIDI alignment failed.",
+                500,
+                log or f"Exit code {align_result.returncode}",
+            )
+
+        stitch_log = (job_dir / "stitch.log").open("w", encoding="utf-8")
+        try:
+            result = subprocess.run(
+                [
+                    PYTHON, str(REPO / "scripts" / "stitch_tab.py"),
+                    "--audio", str(normalized_audio),
+                    "--midi", str(midi_path),
+                    "--out-dir", str(out_dir),
+                    "--stage", "stitch",
+                    "--title", title,
+                    "--width", "120",
+                    "--capo", capo,
+                ],
+                cwd=str(REPO),
+                stdout=stitch_log,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=CONVERT_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            stitch_log.close()
+            return _error(
+                "The conversion timed out.",
+                504,
+                f"The take did not finish within {CONVERT_TIMEOUT} seconds.",
+            )
+        finally:
+            if not stitch_log.closed:
+                stitch_log.close()
     else:
         command = [
             PYTHON, str(REPO / "scripts" / "midi2tab.py"), str(midi_path),
             "--checkpoint", str(CHECKPOINT),
             "--vocab", str(VOCAB),
             "--out-dir", str(out_dir),
-            "--beam", "4",
+            "--beam", str(beam),
             "--max-fret", "6",
-            "--capo", "auto",
-            "--max-capo", "6",
+            "--capo", capo,
+            "--max-capo", str(MAX_CAPO),
             "--width", "120",
             "--no-audio",
         ]
-
-    try:
-        result = _run_conversion(command)
-    except subprocess.TimeoutExpired:
-        return _error(
-            "The conversion timed out.",
-            504,
-            f"The take did not finish within {CONVERT_TIMEOUT} seconds.",
-        )
-    except OSError as exc:
-        return _error("The conversion process could not start.", 500, str(exc))
+        try:
+            result = _run_conversion(command)
+        except subprocess.TimeoutExpired:
+            return _error(
+                "The conversion timed out.",
+                504,
+                f"The take did not finish within {CONVERT_TIMEOUT} seconds.",
+            )
+        except OSError as exc:
+            return _error("The conversion process could not start.", 500, str(exc))
 
     if result.returncode != 0:
         log = (result.stderr or "") + ("\n" + result.stdout if result.stdout else "")
@@ -726,6 +1160,8 @@ _ALLOWED_FILES = {
     "report.json": (("report.json", "out/report.json"), "application/json"),
     "upload.mid": (("transcribed.mid", "transcribed.midi", "upload.mid"), "audio/midi"),
     "source.wav": (("source.wav",), "audio/wav"),
+    "progress.json": (("out/tabula/progress.json",), "application/json"),
+    "provisional.gp5": (("out/provisional.gp5",), "application/x-guitar-pro"),
 }
 
 

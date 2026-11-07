@@ -91,9 +91,9 @@ def test_apply_predictions_relabels_one_chord_member() -> None:
         {"note_id": "g000000:n2", "tick": 0, "pitch": 52},
     ]
     predictions = [
-        {"note_id": "g000000:n0", "score": 0.2, "dead": False},
-        {"note_id": "g000000:n1", "score": 0.91, "dead": True},
-        {"note_id": "g000000:n2", "score": 0.1, "dead": False},
+        {"note_id": "g000000:n0", "score": 0.2, "label": "pitched"},
+        {"note_id": "g000000:n1", "score": 0.91, "label": "dead"},
+        {"note_id": "g000000:n2", "score": 0.1, "label": "pitched"},
     ]
     result, dead, decisions, stats = apply_predictions(
         final_notes, predictions, input_notes
@@ -105,6 +105,19 @@ def test_apply_predictions_relabels_one_chord_member() -> None:
     assert not result[2].get("_drop")
     assert stats["dead"] == 1
     assert all(item["matched"] for item in decisions)
+
+
+def test_apply_predictions_drops_noise_without_dead_note() -> None:
+    final_notes = [{"t": 0, "dur": 240, "pitch": 55, "s": 3, "f": 5}]
+    input_notes = [{"note_id": "g000000:n0", "tick": 0, "pitch": 55}]
+    result, dead, _decisions, stats = apply_predictions(
+        final_notes,
+        [{"note_id": "g000000:n0", "score": 0.9, "label": "noise"}],
+        input_notes,
+    )
+    assert result[0].get("_drop") is True
+    assert dead == []
+    assert stats["noise"] == 1
 
 
 def test_gp5_renders_classifier_dead_note(tmp_path: Path) -> None:
@@ -132,12 +145,141 @@ def test_gp5_renders_classifier_dead_note(tmp_path: Path) -> None:
     assert types.count(gp.NoteType.dead) == 1
 
 
+def test_gp5_rounds_boundary_notes_without_duplicate_strings(
+    tmp_path: Path,
+) -> None:
+    import guitarpro as gp
+
+    from tabfeatures.gp5 import build_gp5
+
+    timing = tmp_path / "timing.mid"
+    pm = pretty_midi.PrettyMIDI(initial_tempo=120.0)
+    inst = pretty_midi.Instrument(program=24)
+    inst.notes.append(
+        pretty_midi.Note(velocity=90, pitch=60, start=0.0, end=3.0)
+    )
+    pm.instruments.append(inst)
+    pm.write(str(timing))
+
+    # The first note ends 10 ticks after measure 2 starts; the next note on
+    # the same string starts 10 ticks later.  Both round into the first grid
+    # slot, and writing both used to corrupt the GP5 beat stream.
+    notes = [
+        {"t": 3820, "dur": 30, "pitch": 58, "s": 4, "f": 3},
+        {"t": 3860, "dur": 500, "pitch": 59, "s": 4, "f": 4},
+    ]
+    output = tmp_path / "score.gp5"
+    build_gp5(notes, timing, output, capo=0, title="boundary")
+
+    song = gp.parse(str(output))
+    assert len(song.measureHeaders) == 2
+    for measure in song.tracks[0].measures:
+        for voice in measure.voices:
+            for beat in voice.beats:
+                strings = [note.string for note in beat.notes]
+                assert len(strings) == len(set(strings))
+
+
+def test_gp5_short_notes_are_not_tied_across_beats(tmp_path: Path) -> None:
+    import guitarpro as gp
+
+    from tabfeatures.gp5 import build_gp5
+
+    timing = tmp_path / "timing.mid"
+    pm = pretty_midi.PrettyMIDI(initial_tempo=120.0)
+    inst = pretty_midi.Instrument(program=24)
+    inst.notes.append(
+        pretty_midi.Note(velocity=90, pitch=60, start=0.0, end=3.0)
+    )
+    pm.instruments.append(inst)
+    pm.write(str(timing))
+
+    short = tmp_path / "short.gp5"
+    build_gp5(
+        [{"t": 3800, "dur": 460, "pitch": 45, "s": 2, "f": 0}],
+        timing,
+        short,
+        capo=0,
+        title="short",
+    )
+    short_song = gp.parse(str(short))
+    assert not any(
+        note.type == gp.NoteType.tie
+        for measure in short_song.tracks[0].measures
+        for voice in measure.voices
+        for beat in voice.beats
+        for note in beat.notes
+    )
+
+    long = tmp_path / "long.gp5"
+    build_gp5(
+        [{"t": 0, "dur": 5000, "pitch": 47, "s": 2, "f": 2}],
+        timing,
+        long,
+        capo=0,
+        title="long",
+    )
+    long_song = gp.parse(str(long))
+    assert any(
+        note.type == gp.NoteType.tie
+        for measure in long_song.tracks[0].measures
+        for voice in measure.voices
+        for beat in voice.beats
+        for note in beat.notes
+    )
+
+
+def test_gp5_suppresses_small_tempo_drifts(tmp_path: Path) -> None:
+    import mido
+    import guitarpro as gp
+
+    from tabfeatures.gp5 import build_gp5
+
+    midi = mido.MidiFile(ticks_per_beat=960)
+    track = mido.MidiTrack()
+    midi.tracks.append(track)
+    previous = 0
+    for tick, bpm in ((0, 120), (960, 125), (1920, 135), (2880, 140), (3840, 150)):
+        track.append(
+            mido.MetaMessage(
+                "set_tempo",
+                tempo=mido.bpm2tempo(bpm),
+                time=tick - previous,
+            )
+        )
+        previous = tick
+    track.append(mido.MetaMessage("end_of_track", time=0))
+    timing = tmp_path / "tempo.mid"
+    midi.save(str(timing))
+
+    output = tmp_path / "score.gp5"
+    build_gp5(
+        [{"t": 0, "dur": 4000, "pitch": 47, "s": 2, "f": 2}],
+        timing,
+        output,
+        capo=0,
+        title="tempo",
+    )
+    song = gp.parse(str(output))
+    tempos = {
+        beat.effect.mixTableChange.tempo.value
+        for measure in song.tracks[0].measures
+        for voice in measure.voices
+        for beat in voice.beats
+        if beat.effect.mixTableChange is not None
+        and beat.effect.mixTableChange.tempo is not None
+    }
+    assert 125 not in tempos
+    assert 140 not in tempos
+    assert {120, 135, 150}.issubset(tempos)
+
+
 def test_apply_predictions_skips_unmatched_model_drop() -> None:
     final_notes = [{"t": 480, "dur": 240, "pitch": 55, "s": 3, "f": 5}]
     input_notes = [{"note_id": "g000000:n0", "tick": 0, "pitch": 55}]
     result, dead, _decisions, stats = apply_predictions(
         final_notes,
-        [{"note_id": "g000000:n0", "score": 0.99, "dead": True}],
+        [{"note_id": "g000000:n0", "score": 0.99, "label": "dead"}],
         input_notes,
     )
     assert dead == []

@@ -19,6 +19,8 @@ _SESSION_RE = re.compile(r"^[0-9a-f]{32}$")
 _META = "meta.json"
 _CANDIDATES = "candidates.json"
 _LABELS = "labels.jsonl"
+NOTE_LABELS = frozenset({"pitched", "dead", "noise", "ignore"})
+TRAINING_LABELS = frozenset({"pitched", "dead", "noise"})
 
 
 def now_iso() -> str:
@@ -104,7 +106,7 @@ def append_labels(
         for item in labels:
             note_id = str(item.get("note_id") or "")
             label = str(item.get("label") or "")
-            if not note_id or label not in {"pitched", "dead"}:
+            if not note_id or label not in NOTE_LABELS:
                 continue
             record = {
                 "note_id": note_id,
@@ -133,7 +135,7 @@ def latest_labels(
             continue
         note_id = str(record.get("note_id") or "")
         label = str(record.get("label") or "")
-        if note_id and label in {"pitched", "dead"}:
+        if note_id and label in NOTE_LABELS:
             latest[note_id] = label
     return latest
 
@@ -144,12 +146,18 @@ def label_state(session_id: str) -> dict[str, Any]:
     labels = latest_labels(session_id)
     groups = candidates.get("groups", [])
     dead = 0
+    noise = 0
+    ignore = 0
     for group in groups:
         for note in group.get("notes", []):
             note_id = str(note.get("note_id") or "")
             note["label"] = labels.get(note_id, "pitched")
             if note["label"] == "dead":
                 dead += 1
+            elif note["label"] == "noise":
+                noise += 1
+            elif note["label"] == "ignore":
+                ignore += 1
     return {
         "id": session_id,
         "meta": meta,
@@ -163,6 +171,8 @@ def label_state(session_id: str) -> dict[str, Any]:
             "notes": sum(len(group.get("notes", [])) for group in groups),
             "groups": len(groups),
             "dead": dead,
+            "noise": noise,
+            "ignore": ignore,
             "reviewed": bool(meta.get("reviewed")),
         },
     }
@@ -222,6 +232,8 @@ def list_sessions(root: str | Path | None = None) -> list[dict[str, Any]]:
                 "reviewed": bool(meta.get("reviewed")),
                 "notes": int(meta.get("note_count") or 0),
                 "dead": int(meta.get("dead_count") or 0),
+                "noise": int(meta.get("noise_count") or 0),
+                "ignore": int(meta.get("ignore_count") or 0),
             }
         )
     sessions.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)

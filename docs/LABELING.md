@@ -1,8 +1,8 @@
 # Dead-note labelling
 
-The labeller creates training data for the per-note dead-note classifier.  It
-is MIDI-anchored: audio only describes the attack, it never decides which
-notes exist.
+The labeller creates training data for the per-note pitched/dead/noise
+classifier.  It is MIDI-anchored: audio only describes the attack, it never
+decides which notes exist.
 
 Open `http://127.0.0.1:8000/label`.  Recent sessions are listed on the same
 page; click one to resume, or use **New** to start another.  **Delete** removes
@@ -36,22 +36,36 @@ additional offset.  MIDI ticks stay unchanged for the tab model.
 
 ## Piano roll
 
-Pitched is the default.  You only mark the dead notes.
+Pitched is the default.  Choose **Dead**, **Noise** or **Ignore** mode, then
+mark the notes.
 
-- Click a note to toggle dead.
-- Drag a rectangle to mark every note intersecting it dead.
+- Click a note to toggle the selected class.  It does not start playback.
+- Drag a rectangle to paint the selected class on every intersecting note.
 - Alt-drag a rectangle to clear everything inside back to pitched.
-- Right-click a dead note to clear it.
-- Space plays/pauses; U undoes; Escape cancels a drag.
+- Right-click a dead, noise or ignore note to clear it.
+- **Dead** becomes an `x` in the tab and GP5. **Noise** is a spurious note and is
+  removed from the tab output. **Ignore** is for ambiguous notes: it stays
+  pitched in the output, but is excluded from classifier training.
+- `1` / `2` / `3` switch to Dead / Noise / Ignore.
+- Space plays/pauses; Ctrl+Z undoes; Escape cancels a drag.
 - Mouse wheel zooms around the cursor; `+`/`−` and the slider zoom around the
   visible centre.
 - Shift-wheel or the bottom scrollbar scrolls horizontally.  Drag the scrollbar
   thumb, or click its track to jump.
+- The **Mix** slider crossfades the original recording with a live note-level
+  MIDI monitor.  Pitched notes use a cached FluidSynth sample; dead notes play
+  a short muted-string thump; noise notes are silent.  Changes apply the next
+  time you press Play, and to already-scheduled notes during playback.  Keep
+  the original audio dominant for attack decisions; use more MIDI to hear the
+  transcription.
 - Clicking an empty spot seeks the audio.
 
-Playback uses a Web Audio `AudioBufferSourceNode` and `AudioContext.currentTime`,
-the same clock strategy as MuScriptor's web player.  This avoids the small
-media-element clock drift that made the playhead lag the audio.
+Playback uses Web Audio `AudioBufferSourceNode` nodes and
+`AudioContext.currentTime`, the same clock strategy as MuScriptor's web player.
+The original recording and the note-level MIDI monitor share the same clock, so
+the playhead does not lag the audio.  The monitor schedules a short lookahead;
+toggling a note stops its currently sounding voice immediately and future notes
+pick up the new label.
 
 The playhead and bar lines come from the MIDI tempo map.  No fixed BPM is
 assumed.  MuScriptor's `muscriptor:bar_offset=` marker is subtracted from the
@@ -59,9 +73,11 @@ audio-facing times used by the roll, playback, classifier features and
 inference; the MIDI tick stays unchanged for the tab model.
 
 When you have checked a take, press the small **Mark reviewed** toggle.  Only
-reviewed sessions contribute implicit "pitched" negatives to training.  Without that flag, only
-explicit dead/keep records are used, so a partially labelled song cannot teach
-the model that an unmarked dead note is pitched.
+reviewed sessions contribute implicit "pitched" negatives to training.  Without
+that flag, only explicit dead/keep records are used, so a partially labelled
+song cannot teach the model that an unmarked dead note is pitched.  Explicit
+`ignore` notes are skipped entirely, so they neither train a class nor become
+implicit pitched negatives.
 
 ## Training
 
@@ -70,9 +86,15 @@ PYTHONPATH=src .venv/bin/python3 scripts/train_dead_classifier.py \
   --holdout-session <session_id>
 ```
 
-The script prints train and holdout precision/recall/confusion at the selected
-threshold.  The default threshold search maximizes dead recall subject to a
-minimum dead precision (default 0.95) using leave-one-session-out predictions.
+The script trains a three-class `pitched` / `dead` / `noise` model and prints
+per-class precision, recall, F1 and the confusion matrix for the training and
+holdout sessions.  Inference thresholds default to `0.80` for both dead and
+noise and can be changed with `--dead-threshold` / `--noise-threshold`.
+
+A practical starting set is roughly 200–300 dead positives, 50–100 noise
+positives and 2,500+ reviewed notes across at least 8–10 songs, with 2–3 whole
+songs held out.  More song diversity matters more than piling all positives
+into one recording.
 
 Output:
 

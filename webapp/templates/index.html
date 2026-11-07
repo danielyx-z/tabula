@@ -64,6 +64,31 @@
 
             <p class="pair-note">Add a recording. The local MuScriptor small model transcribes it on this PC, then Tabula builds the tab.</p>
 
+            <label class="capo-control" for="capo-select">
+              <span class="capo-copy">
+                <span class="capo-label">Capo</span>
+                <span class="capo-hint">Auto chooses the best position; pick a fret to fix it.</span>
+              </span>
+              <select id="capo-select" class="capo-select">
+                <option value="auto" selected>Auto</option>
+                <option value="off">Off (0)</option>
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+                <option value="5">5</option>
+                <option value="6">6</option>
+              </select>
+            </label>
+
+            <label class="fast-control" for="fast-mode">
+              <input id="fast-mode" type="checkbox" checked>
+              <span class="fast-copy">
+                <span class="fast-label">Fast draft</span>
+                <span class="fast-hint">Greedy decode; uncheck for beam search.</span>
+              </span>
+            </label>
+
             <button type="submit" id="convert-button" class="button button-primary" disabled>
               <span class="button-spinner" aria-hidden="true"></span>
               <span id="convert-label">Make tab</span>
@@ -225,6 +250,14 @@
           </div>
           <h2>Reading the take.</h2>
           <p>Transcribing and validating note attacks, placing dead notes, choosing a capo, and writing the tab. This can take a minute on the first run.</p>
+          <div id="stream-preview" class="stream-preview" hidden>
+            <div class="stream-preview-head">
+              <span>Live tab preview</span>
+              <span id="stream-meta" class="stream-meta"></span>
+            </div>
+            <div id="stream-status" class="stream-status">Waiting for the transcription…</div>
+            <pre id="stream-tab" class="stream-tab" hidden></pre>
+          </div>
         </div>
 
         <div id="error-state" class="state error-state" hidden>

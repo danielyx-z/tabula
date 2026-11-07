@@ -222,9 +222,12 @@ If `data/models/dead_notes/metadata.json` exists, the classifier is enabled
 automatically.  Disable it with `--no-dead-model`.
 
 For every MIDI note the classifier sees the original audio around the MIDI
-onset.  Pitched is the default; notes above the dead threshold are relabelled
-in place as `x` on the string `final.json` assigned.  No note is deleted: the
-pitched event becomes one dead note.  `dead_decisions.json` records every
+onset.  Pitched is the default.  A **dead** prediction relabels the note as
+`x` on the string `final.json` assigned; a **noise** prediction drops the note
+from the tab because it is a spurious transcription, not a dead-note
+performance.  Labelling sessions may also mark a note `ignore`: that note stays
+pitched in the output but is omitted from classifier training, because the MIDI
+transcription cannot separate its pitched and dead content.  `dead_decisions.json` records every
 score, and `dead_notes.json` is what the GP5 renderer consumes.
 
 The old audio heuristic remains available as a fallback when no model exists.
@@ -245,9 +248,10 @@ An inferred H/P requires all of the following:
 
 * same string,
 * adjacent notes in time with a positive gap,
-* gap at most `--hp-max-gap-beats` quarter notes (default `0.5`),
-* the first note still ringing (`gap <= first.dur + --ring-tolerance`),
-* interval 1..`--hp-max-interval` semitones (default 7),
+* gap at most `--hp-max-gap-beats` quarter notes (default `0.35`),
+* the first note still ringing (`gap <= first.dur + --ring-tolerance`,
+  default `40`),
+* interval 1..`--hp-max-interval` semitones (default 5),
 * both notes fretted (open strings skipped),
 * no chord at either onset (unless `--allow-hp-in-chords`).
 
@@ -262,7 +266,7 @@ audio gate:
 
 The gate is conservative: a strong second attack, a decayed first note, a weak
 second pitch, or a low combined confidence rejects the candidate.  The default
-threshold is `--hp-min-confidence 0.70`.  Use `--no-hp-audio` for the old
+threshold is `--hp-min-confidence 0.85`.  Use `--no-hp-audio` for the old
 model-only rules.  Every candidate, accepted or rejected, is written to
 `hp_review.json` with its metrics and rejection reason.  Disable inference
 entirely with `--no-auto-hp`.
@@ -318,8 +322,8 @@ entirely with `--no-auto-hp`.
 * `--dead-strings lowest|nearest|all`.
 * `--dead-model PATH`, `--no-dead-model`, `--dead-threshold` — classifier controls.
 * `--audio-extra-dead` — also insert unmatched audio onsets in classifier mode.
-* `--hp-max-gap-beats 0.5`, `--hp-max-interval 7`, `--ring-tolerance 60`.
-* `--hp-min-confidence 0.70`, `--no-hp-audio` — tune or disable the audio gate.
+* `--hp-max-gap-beats 0.35`, `--hp-max-interval 5`, `--ring-tolerance 40`.
+* `--hp-min-confidence 0.85`, `--no-hp-audio` — tune or disable the audio gate.
 * `--no-auto-hp`, `--no-gp5`, `--keep-intermediate`.
 * `--onset-delta`, `--onset-wait`, `--window-before`, `--window-after` for the
   onset detector.
@@ -341,6 +345,15 @@ A voice cannot sound two notes on one string at once.  If `final.json` contains
 a sustained note and a later attack on the same string, the exporter ends the
 earlier note at that attack (and drops exact same-tick duplicates) so the
 written GP5 stays valid.  The count is reported as `gp5.overlap_trimmed`.
+
+Ties are conservative: only notes at least a quarter note long (960 ticks)
+get tie destinations.  Shorter notes that merely cross a beat are re-articulated,
+so a tie cannot silently remove an attack.  Continuation fragments shorter
+than 240 ticks are omitted rather than written as ties.
+
+Tempo changes smaller than 10 BPM from the last retained tempo are suppressed
+when writing GP5.  MuScriptor emits small tempo drifts for expressive playing;
+these are not useful notation tempo changes and make the score look unstable.
 
 ## Tests
 

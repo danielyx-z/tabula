@@ -7,6 +7,7 @@ from typing import Any
 
 from tabfeatures.labeling.store import (
     LABEL_ROOT,
+    TRAINING_LABELS,
     latest_labels,
     list_sessions,
     read_candidates,
@@ -46,6 +47,8 @@ def session_rows(
         elif reviewed or include_unreviewed:
             label = "pitched"
         else:
+            continue
+        if label not in TRAINING_LABELS:
             continue
         labelled.append(
             {

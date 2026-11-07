@@ -95,12 +95,23 @@ On the machine that has the checkpoint and vocabulary:
 .venv/bin/python -m webapp.server --host 0.0.0.0 --port 8000
 ```
 
-Open <http://127.0.0.1:8000>, upload a recording, and wait for the score. The dead-note labeller is at <http://127.0.0.1:8000/label>.
+Open <http://127.0.0.1:8000>, upload a recording, and wait for the score. The
+main workbench has a **Capo** selector: Auto (default), Off, or a fixed 1–6,
+plus a **Fast draft** toggle (greedy decode). While the tab decoder runs, it
+streams a partial ASCII tab into the loading pane; once decoding finishes it
+shows a provisional score while dead notes and articulations are added. The
+preview uses the selected capo; with Auto it shows a capo-0 preview until the
+final capo is chosen. MuScriptor and audio onset analysis run concurrently,
+and cached MIDI/audio events are reused for repeated takes. The dead-note labeller is at
+<http://127.0.0.1:8000/label>.
 
-The labeller is a MIDI-anchored piano roll. Pitched is the default; click a
-note or drag a rectangle to mark dead notes. It supports resuming recent
-sessions, deleting a session, a bottom scrollbar, zoom controls, and a reviewed
-flag. Playback uses the Web Audio clock (the same approach as MuScriptor's own
+The labeller is a MIDI-anchored piano roll. Pitched is the default; choose
+**Dead**, **Noise** or **Ignore** mode, then click or drag to mark notes. Dead
+becomes an `x`; noise is removed from the tab; ignore stays pitched but is
+left out of training. `1` / `2` / `3` switch label mode. It supports resuming recent sessions,
+deleting a session, a bottom scrollbar, zoom controls, a mix slider that
+crossfades the original recording with a live note-level MIDI monitor (dead
+notes thump, noise is silent), and a reviewed flag. Playback uses the Web Audio clock (the same approach as MuScriptor's own
 player), and MuScriptor's `muscriptor:bar_offset=` marker is subtracted from
 labelling/classifier audio times so the roll matches the recording. MIDI ticks
 are left untouched for the tab model. See [`docs/LABELING.md`](docs/LABELING.md).
@@ -150,7 +161,7 @@ vocab/
 | Tuning | standard only, `(40, 45, 50, 55, 59, 64)` |
 | Pitch | `pitch = tuning[s-1] + capo + fret`, frets 0–24 |
 | Chords | notes at same onset sorted ascending by string (s=1..6) |
-| Capo | auto 0–6; frets are capo-relative |
+| Capo | auto 0–6 or fixed 0–6 in the workbench; frets are capo-relative |
 | Pitch names | Scientific notation: MIDI 60 = C4 (middle C) |
 
 `src/core/fretboard.py` is the only place pitch ↔ (string, fret) happens;

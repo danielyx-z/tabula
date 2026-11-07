@@ -28,6 +28,7 @@ import json
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import pretty_midi
@@ -115,6 +116,7 @@ def generate(
     device: str,
     max_fret: int | None = None,
     fret_penalty: float = 0.0,
+    on_progress: Callable[[int, int, list[dict]], None] | None = None,
 ) -> list[dict]:
     # Quantise input notes to training distribution (20-tick grid, 40-tick chord window).
     notes = quantise_notes(notes)
@@ -123,7 +125,7 @@ def generate(
     raw: list[dict] = []
     all_tokens: list[str] = []
 
-    for chunk in chunks:
+    for chunk_index, chunk in enumerate(chunks, start=1):
         enc = torch.tensor([chunk.enc_tokens], dtype=torch.long, device=device)
         attn = (enc != pad_id).long()
         prompt = torch.tensor([chunk.dec_tokens], dtype=torch.long, device=device)
@@ -168,6 +170,8 @@ def generate(
         chunk_notes = [n for n in chunk_notes if n["t"] <= last_t]
 
         raw.extend(chunk_notes)
+        if on_progress is not None:
+            on_progress(chunk_index, len(chunks), raw)
 
     return raw, all_tokens
 
@@ -423,6 +427,11 @@ def main() -> int:
         help="skip WAV synthesis (MIDI, JSON and text tab are still written)",
     )
     ap.add_argument(
+        "--progress-file",
+        default=None,
+        help="write partial decoding progress as JSON (for live preview)",
+    )
+    ap.add_argument(
         "--fret-penalty",
         type=float,
         default=0.3,
@@ -445,6 +454,51 @@ def main() -> int:
     # Quantise input to training grid so the model sees familiar timings.
     notes = quantise_notes(notes)
 
+    progress_path = Path(args.progress_file) if args.progress_file else None
+    preview_capo = 0
+    if str(args.capo).strip().lower() not in {"auto", "off"}:
+        try:
+            preview_capo = int(args.capo)
+        except (TypeError, ValueError):
+            preview_capo = 0
+
+    def write_progress(payload: dict) -> None:
+        if progress_path is None:
+            return
+        progress_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = progress_path.with_name(f".{progress_path.name}.tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+        tmp.replace(progress_path)
+
+    def on_chunk(done: int, total: int, partial: list[dict]) -> None:
+        preview_inputs = [
+            DecodedNote(t=n["t"], dur=n["dur"], pitch=n["pitch"], s=n["s"], f=n["f"])
+            for n in partial
+        ]
+        preview = final_from_input(
+            partial,
+            preview_inputs,
+            max_fret=args.max_fret,
+            capo=preview_capo,
+        )
+        nodes = [
+            DecodedNote(t=n["t"], dur=n["dur"], pitch=n["pitch"], s=n["s"], f=n["f"])
+            for n in preview
+        ]
+        write_progress(
+            {
+                "stage": "tab",
+                "final": False,
+                "chunks_done": done,
+                "chunks_total": total,
+                "notes": len(partial),
+                "capo": preview_capo,
+                "auto_capo": str(args.capo).strip().lower() == "auto",
+                "message": f"Decoded chunk {done}/{total}…",
+                "tab": render_tab(nodes, width=args.width, capo=preview_capo),
+            }
+        )
+
     raw, gen_tokens = generate(
         model,
         vocab,
@@ -455,6 +509,7 @@ def main() -> int:
         device,
         max_fret=args.max_fret,
         fret_penalty=args.fret_penalty,
+        on_progress=on_chunk if progress_path is not None else None,
     )
     # Capo scan.  A capo at c raises the lowest open string to 40+c, so a note
     # below that would need downtuning; only capos up to min_pitch-40 are
@@ -536,6 +591,18 @@ def main() -> int:
     nodes = [DecodedNote(t=n["t"], dur=n["dur"], pitch=n["pitch"], s=n["s"], f=n["f"]) for n in final]
     tab_text = render_tab(nodes, width=args.width, capo=capo)
     (out / "final_tab.txt").write_text(tab_text + "\n", encoding="utf-8")
+    write_progress(
+        {
+            "stage": "tab",
+            "final": True,
+            "chunks_done": len(make_inference_chunks(notes, vocab, "input", ChunkConfig(max_tokens=args.max_len))),
+            "notes": len(final),
+            "capo": capo,
+            "auto_capo": str(args.capo).strip().lower() == "auto",
+            "message": "Finalising the tab…",
+            "tab": tab_text,
+        }
+    )
 
     raw_nodes = [DecodedNote(t=n["t"], dur=n["dur"], pitch=n["pitch"], s=n["s"], f=n["f"]) for n in raw]
     (out / "raw_tab.txt").write_text(render_tab(raw_nodes, width=args.width) + "\n", encoding="utf-8")

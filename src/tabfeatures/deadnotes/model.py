@@ -1,4 +1,4 @@
-"""Small gradient-boosted model for per-note dead-note prediction."""
+"""Small gradient-boosted model for per-note pitch/dead/noise prediction."""
 
 from __future__ import annotations
 
@@ -17,7 +17,9 @@ REPO = Path(__file__).resolve().parents[3]
 DEFAULT_MODEL_DIR = Path(
     os.environ.get("TABULA_DEAD_MODEL", str(REPO / "data" / "models" / "dead_notes"))
 ).expanduser()
-DEFAULT_THRESHOLD = 0.80
+CLASS_NAMES = ("pitched", "dead", "noise")
+CLASS_TO_INDEX = {name: index for index, name in enumerate(CLASS_NAMES)}
+DEFAULT_THRESHOLDS = {"dead": 0.80, "noise": 0.80}
 
 
 def _utc_now() -> str:
@@ -45,10 +47,16 @@ def feature_matrix(rows: list[dict[str, Any]]) -> np.ndarray:
     return np.vstack([feature_vector(row.get("features", row)) for row in rows])
 
 
+def label_index(label: Any) -> int:
+    return CLASS_TO_INDEX.get(str(label), 0)
+
+
 @dataclass
 class DeadNoteModel:
     booster: Any
-    threshold: float = DEFAULT_THRESHOLD
+    thresholds: dict[str, float] = field(
+        default_factory=lambda: dict(DEFAULT_THRESHOLDS)
+    )
     feature_names: tuple[str, ...] = FEATURE_NAMES
     config: FeatureConfig = field(default_factory=FeatureConfig)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -57,27 +65,57 @@ class DeadNoteModel:
         import xgboost as xgb
 
         if not rows:
-            return np.zeros(0, dtype=float)
+            return np.zeros((0, len(CLASS_NAMES)), dtype=float)
         matrix = feature_matrix(rows)
         data = xgb.DMatrix(
             matrix,
             feature_names=list(self.feature_names),
             missing=np.nan,
         )
-        return np.asarray(self.booster.predict(data), dtype=float).reshape(-1)
+        scores = np.asarray(self.booster.predict(data), dtype=float)
+        if scores.ndim == 1:
+            scores = scores.reshape(-1, 1)
+        if scores.shape[1] != len(CLASS_NAMES):
+            raise ValueError(
+                f"model returned {scores.shape[1]} classes, expected {len(CLASS_NAMES)}"
+            )
+        return scores
 
-    def predict(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        scores = self.predict_proba(rows)
+    def predict(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        thresholds: dict[str, float] | None = None,
+    ) -> list[dict[str, Any]]:
+        probs = self.predict_proba(rows)
+        limits = {**self.thresholds, **(thresholds or {})}
         out: list[dict[str, Any]] = []
-        for row, score in zip(rows, scores):
+        for row, scores in zip(rows, probs):
+            pitched, dead, noise = (float(value) for value in scores)
+            if (
+                noise >= float(limits.get("noise", 0.8))
+                and noise >= dead
+            ):
+                label = "noise"
+            elif dead >= float(limits.get("dead", 0.8)):
+                label = "dead"
+            else:
+                label = "pitched"
             out.append(
                 {
                     "note_id": (row.get("note") or {}).get("note_id"),
                     "group_id": (row.get("note") or {}).get("group_id"),
                     "tick": (row.get("note") or {}).get("tick"),
                     "pitch": (row.get("note") or {}).get("pitch"),
-                    "score": float(score),
-                    "dead": bool(score >= float(self.threshold)),
+                    "label": label,
+                    "dead": label == "dead",
+                    "noise": label == "noise",
+                    "score": max(dead, noise),
+                    "scores": {
+                        "pitched": pitched,
+                        "dead": dead,
+                        "noise": noise,
+                    },
                 }
             )
         return out
@@ -88,11 +126,12 @@ class DeadNoteModel:
         model_path = target / "model.json"
         self.booster.save_model(str(model_path))
         payload = {
-            "version": 1,
+            "version": 2,
             "trained_at": _utc_now(),
             "model": model_path.name,
+            "classes": list(CLASS_NAMES),
             "feature_names": list(self.feature_names),
-            "threshold": float(self.threshold),
+            "thresholds": {key: float(value) for key, value in self.thresholds.items()},
             "feature_config": self.config.to_dict(),
             **self.metadata,
         }
@@ -113,6 +152,8 @@ def load_model(path: str | Path | None = None) -> DeadNoteModel | None:
     if not metadata_path.is_file():
         return None
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if int(metadata.get("version", 1)) < 2:
+        raise ValueError("dead-note model is behind the noisy-note schema; retrain it")
     model_name = str(metadata.get("model") or "model.json")
     model_path = target / model_name
     if not model_path.is_file():
@@ -134,9 +175,16 @@ def load_model(path: str | Path | None = None) -> DeadNoteModel | None:
             if key in FeatureConfig.__dataclass_fields__
         }
     )
+    thresholds = {
+        **DEFAULT_THRESHOLDS,
+        **{
+            str(key): float(value)
+            for key, value in (metadata.get("thresholds") or {}).items()
+        },
+    }
     return DeadNoteModel(
         booster=booster,
-        threshold=float(metadata.get("threshold", DEFAULT_THRESHOLD)),
+        thresholds=thresholds,
         feature_names=feature_names,
         config=config,
         metadata=metadata,
@@ -147,7 +195,7 @@ def train_model(
     rows: list[dict[str, Any]],
     *,
     out_dir: str | Path = DEFAULT_MODEL_DIR,
-    threshold: float = DEFAULT_THRESHOLD,
+    thresholds: dict[str, float] | None = None,
     num_boost_round: int = 300,
     max_depth: int = 3,
     learning_rate: float = 0.04,
@@ -155,25 +203,36 @@ def train_model(
     config: FeatureConfig | None = None,
     extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Train one binary XGBoost booster from labelled feature rows."""
+    """Train a three-class ``pitched``/``dead``/``noise`` XGBoost booster."""
     import xgboost as xgb
 
     if not rows:
         raise ValueError("no training rows")
     labels = np.asarray(
-        [1.0 if str(row.get("label")) == "dead" else 0.0 for row in rows],
-        dtype=np.float32,
+        [label_index(row.get("label")) for row in rows],
+        dtype=np.int64,
     )
-    positives = int(labels.sum())
-    negatives = int(len(labels) - positives)
-    if positives == 0 or negatives == 0:
+    counts = np.bincount(labels, minlength=len(CLASS_NAMES))
+    present = [index for index, count in enumerate(counts) if count > 0]
+    if len(present) < 2:
         raise ValueError(
-            f"need both classes to train (dead={positives}, pitched={negatives})"
+            "need at least two classes to train "
+            f"(pitched={counts[0]}, dead={counts[1]}, noise={counts[2]})"
         )
     matrix = feature_matrix(rows)
+    # Keep the many pitched rows from overwhelming the rare classes without
+    # letting a tiny noise set dominate.
+    weights = np.asarray(
+        [
+            max(0.5, min(8.0, len(labels) / (len(present) * max(1, counts[label]))))
+            for label in labels
+        ],
+        dtype=np.float32,
+    )
     params = {
-        "objective": "binary:logistic",
-        "eval_metric": "aucpr",
+        "objective": "multi:softprob",
+        "num_class": len(CLASS_NAMES),
+        "eval_metric": "mlogloss",
         "max_depth": int(max_depth),
         "eta": float(learning_rate),
         "subsample": 0.85,
@@ -183,23 +242,27 @@ def train_model(
         "seed": int(seed),
         "nthread": 4,
         "tree_method": "hist",
-        "scale_pos_weight": float(negatives / max(1, positives)),
     }
     dtrain = xgb.DMatrix(
         matrix,
         label=labels,
+        weight=weights,
         feature_names=list(FEATURE_NAMES),
         missing=np.nan,
     )
     booster = xgb.train(params, dtrain, num_boost_round=int(num_boost_round))
     model = DeadNoteModel(
         booster=booster,
-        threshold=float(threshold),
+        thresholds={
+            **DEFAULT_THRESHOLDS,
+            **(thresholds or {}),
+        },
         config=config or FeatureConfig(),
         metadata={
             "rows": len(rows),
-            "positives": positives,
-            "negatives": negatives,
+            "class_counts": {
+                name: int(counts[index]) for index, name in enumerate(CLASS_NAMES)
+            },
             "params": {
                 "num_boost_round": int(num_boost_round),
                 "max_depth": int(max_depth),

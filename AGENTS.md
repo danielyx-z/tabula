@@ -184,11 +184,17 @@ is off by default; enable it only if memory becomes tight.
   audio onset detection.
 - `src/tabfeatures/labeling/` — `data/labels_dead` sessions, per-note labels,
   reviewed flag, JSONL export.
-- `src/tabfeatures/deadnotes/` — MIDI-anchored features, XGBoost model,
-  per-note inference. It runs after `midi2tab` and writes `dead_notes.json` for
-  `tabfeatures/gp5.py` (`NoteType.dead`). `raw.mid` is untouched.
+- `src/tabfeatures/deadnotes/` — MIDI-anchored features and a three-class
+  XGBoost model (`pitched` / `dead` / `noise`). It runs after `midi2tab`; dead
+  notes go to `dead_notes.json` for `tabfeatures/gp5.py`, noise notes are
+  dropped from the tab. `raw.mid` is untouched.
 - `webapp/templates/label.html`, `webapp/static/label.js` — piano-roll
-  labeller; pitched is default, click/box-select marks dead.
+  labeller; pitched is default, switch between dead/noise/ignore, click/box-select
+  marks the active class. `ignore` stays pitched in the output but is excluded
+  from training. Includes session resume/delete, bottom scrollbar,
+  zoom controls, and an original-audio/live MIDI-monitor mix. The monitor is
+  note-level: dead notes thump, noise is silent, and labels apply live during
+  playback. Clicking a label does not audition.
 - `scripts/train_dead_classifier.py` — trains from reviewed sessions and prints
   holdout precision/recall/confusion.
 
@@ -262,6 +268,21 @@ is off by default; enable it only if memory becomes tight.
   tab gets a `Capo: N` header; `raw.*` stays at capo 0. Valentine picks capo
   1: 237/729 open (32.5%), 47 notes above 6 (6.4%), mean fret 2.23, max 7,
   score 58.8 vs 42.8 at capo 0.
+- **Tempo-change suppression** — the GP5 writer drops tempo changes smaller
+  than 10 BPM from the last retained tempo.  MuScriptor's small expressive
+  drifts therefore do not clutter the score; meaningful tempo shifts remain.
+- **Conservative ties/H-P** — GP5 tie destinations are only written for
+  genuinely sustained notes (>= 960 ticks). Short notes crossing a beat are
+  re-articulated instead of tied, so they do not lose their attack. Automatic
+  H/P now defaults to confidence 0.85, gap 0.35 beats, interval 5 semitones and
+  ring tolerance 40; chord H/P remains off.
+- **GP5 grid-boundary collision** — a sustained note ending just after a
+  measure boundary and the next note on the same string starting a few ticks
+  later could round into the same grid slot. Both were written into the same
+  beat, putting two notes on one string; alphaTab then reported a bogus
+  `'beat count' ... exceeded ... safety threshold` while reading the corrupt
+  stream. The GP5 writer now keeps at most one note per string per slot,
+  preferring the later attack (and a pitched note on ties).
 - **Nylon/classical lead** — all output MIDI string tracks and the synthesis
   temp MIDI use GM program 24 (Acoustic Guitar (nylon) / Live HQ "Concert
   Nylon Guitar") instead of program 25 steel, so the WAVs are nylon.
