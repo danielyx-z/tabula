@@ -3,7 +3,7 @@
 ### Why?
 I'd frequently listen to guitar covers on Youtube but many would have paid or no sheets, so I built this to help me transcribe audio into guitar tabs.
 
-### How
+### How?
 A small T5 encoder-decoder (2.79M params) reads symbolic MIDI note events (`NOTE_ON`, `NOTE_OFF`, `TIME_SHIFT`) and writes tablature events (`TAB`, `TIME_SHIFT`). A local web app wraps the model: download audio from Youtube with yd-dlp, transcribe audio with MuScriptor, label dead notes from the recording, export Guitar Pro 5 scores.
 
 **Pipeline:** audio → MuScriptor → MIDI → T5 → tab events → playability pass (string assignment, capo, collision fixing) → audio onset analysis (dead notes, articulations) → export (.gp5, .mid, .wav, ASCII tab).
