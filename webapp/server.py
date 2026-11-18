@@ -1,9 +1,16 @@
-"""Local web app: source audio + MIDI transcription -> Guitar Pro tab."""
+"""Web app: source audio + MIDI transcription -> Guitar Pro tab.
+
+FastAPI serves the workbench and labeller, and the pipeline runs in
+subprocesses. ``main()`` binds to the Tailscale address by default so other
+tailnet machines can reach it.
+"""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
+import ipaddress
 import json
 import mimetypes
 import os
@@ -16,9 +23,19 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from flask import Flask, abort, jsonify, render_template, request, send_file
-from werkzeug.utils import secure_filename
+import uvicorn
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    PlainTextResponse,
+    Response,
+)
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 _EARLY_REPO = Path(__file__).resolve().parents[1]
 if str(_EARLY_REPO / "src") not in sys.path:
@@ -67,10 +84,15 @@ MAX_UPLOAD_MB = int(
 )
 CONVERT_TIMEOUT = int(os.environ.get("TABULA_CONVERT_TIMEOUT", "900"))
 AUDIO_TIMEOUT = int(os.environ.get("TABULA_AUDIO_TIMEOUT", "180"))
+DOWNLOAD_TIMEOUT = int(os.environ.get("TABULA_DOWNLOAD_TIMEOUT", "300"))
+ALLOW_URLS = os.environ.get("TABULA_ALLOW_URLS", "1") != "0"
 MUSCRIPTOR_MODEL = os.environ.get("TABULA_MUSCRIPTOR_MODEL", "small")
-MUSCRIPTOR_INSTRUMENTS = os.environ.get(
-    "TABULA_MUSCRIPTOR_INSTRUMENTS", "acoustic_guitar"
-)
+MUSCRIPTOR_INSTRUMENTS = os.environ.get("TABULA_MUSCRIPTOR_INSTRUMENTS", "").strip()
+GUITAR_INSTRUMENTS = {
+    "acoustic": "acoustic_guitar",
+    "electric": "clean_electric_guitar",
+}
+DEFAULT_GUITAR = "acoustic"
 MUSCRIPTOR_GRID = int(os.environ.get("TABULA_MUSCRIPTOR_GRID", "8"))
 MUSCRIPTOR_QUANTIZE = os.environ.get("TABULA_MUSCRIPTOR_QUANTIZE", "0") != "0"
 MAX_CAPO = min(6, int(os.environ.get("TABULA_MAX_CAPO", "6")))
@@ -89,13 +111,14 @@ MONITOR_SAMPLE_ROOT = _project_path(
 CACHE_ROOT = _project_path(os.environ.get("TABULA_CACHE", "data/cache"))
 CACHE_VERSION = "v1"
 
-app = Flask(
-    __name__,
-    static_folder=str(WEB / "static"),
-    static_url_path="/static",
-    template_folder=str(WEB / "templates"),
+app = FastAPI(
+    title="Tabula",
+    description="Audio + MIDI to Guitar Pro tablature.",
+    docs_url="/api/docs",
+    redoc_url=None,
+    openapi_url="/api/openapi.json",
 )
-app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
+templates = Jinja2Templates(directory=str(WEB / "templates"))
 
 # Python's mimetypes table is missing a few types used by the vendored player.
 for suffix, mime in (
@@ -214,13 +237,32 @@ def _normalize_audio(source: Path, destination: Path) -> Path:
     return destination
 
 
-def _local_transcribe(audio_path: Path, out_path: Path) -> None:
+def _parse_guitar(value: str) -> str:
+    """Validate the workbench guitar choice and return its short key."""
+    key = str(value or "").strip().lower() or DEFAULT_GUITAR
+    if key not in GUITAR_INSTRUMENTS:
+        raise ValueError("Choose the acoustic or electric guitar.")
+    return key
+
+
+def _guitar_instrument(guitar: str) -> str:
+    """Map a guitar key to the MuScriptor instrument name."""
+    if MUSCRIPTOR_INSTRUMENTS:
+        return MUSCRIPTOR_INSTRUMENTS
+    return GUITAR_INSTRUMENTS.get(guitar, GUITAR_INSTRUMENTS[DEFAULT_GUITAR])
+
+
+def _local_transcribe(
+    audio_path: Path,
+    out_path: Path,
+    guitar: str = DEFAULT_GUITAR,
+) -> None:
     """Run the local small MuScriptor model, preserving the tempo map."""
     transcribe_audio(
         audio_path,
         out_path,
         model=MUSCRIPTOR_MODEL,
-        instrument=MUSCRIPTOR_INSTRUMENTS,
+        instrument=_guitar_instrument(guitar),
         quantize=MUSCRIPTOR_QUANTIZE,
         grid=MUSCRIPTOR_GRID,
         timeout=CONVERT_TIMEOUT,
@@ -244,21 +286,32 @@ def _run_conversion(command: list[str]) -> subprocess.CompletedProcess:
         )
 
 
+def _error(message: str, status: int = 400, detail: str | None = None):
+    payload = {"error": message}
+    if detail:
+        payload["detail"] = detail
+    return JSONResponse(payload, status_code=status)
+
+
 @app.get("/")
-def index():
-    return render_template(
-        "index.html",
-        max_audio_mb=MAX_AUDIO_MB,
-        max_midi_mb=MAX_MIDI_MB,
-        max_upload_mb=MAX_UPLOAD_MB,
-        checkpoint_ready=CHECKPOINT.exists(),
-        vocab_ready=VOCAB.exists(),
+def index(request: Request):
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={
+            "max_audio_mb": MAX_AUDIO_MB,
+            "max_midi_mb": MAX_MIDI_MB,
+            "max_upload_mb": MAX_UPLOAD_MB,
+            "checkpoint_ready": CHECKPOINT.exists(),
+            "vocab_ready": VOCAB.exists(),
+            "url_downloads": ALLOW_URLS and _ytdlp_available(),
+        },
     )
 
 
 @app.get("/api/health")
 def health():
-    return jsonify({
+    return {
         "ok": True,
         "checkpoint": str(CHECKPOINT),
         "checkpoint_ready": CHECKPOINT.exists(),
@@ -267,14 +320,8 @@ def health():
         "jobs": len([p for p in JOBS.iterdir() if p.is_dir()]),
         "max_audio_mb": MAX_AUDIO_MB,
         "max_midi_mb": MAX_MIDI_MB,
-    })
-
-
-def _error(message: str, status: int = 400, detail: str | None = None):
-    payload = {"error": message}
-    if detail:
-        payload["detail"] = detail
-    return jsonify(payload), status
+        "url_downloads": ALLOW_URLS and _ytdlp_available(),
+    }
 
 
 def _stop_process(process: subprocess.Popen | None) -> None:
@@ -364,43 +411,185 @@ def _parse_capo(value: object) -> str:
 
 
 def _validate_upload(
-    upload,
+    upload: UploadFile | None,
     *,
     label: str,
     suffixes: set[str],
     max_mb: int,
 ) -> tuple[Path, str] | None:
+    if upload is None:
+        return None
     name = Path(upload.filename or "").name
     suffix = Path(name).suffix.lower()
     if suffix not in suffixes:
         if ".mid" in suffixes:
             raise ValueError(f"Choose a MIDI (.mid or .midi) file for the {label}.")
         raise ValueError(f"Choose an audio file for the {label}.")
-    # FileStorage streams are rewindable; reject before writing when the
-    # browser supplied a length.
-    length = getattr(upload, "content_length", None)
+    # Starlette records the part size while parsing; reject before copying when
+    # the browser supplied a length.
+    length = getattr(upload, "size", None)
     if length and length > max_mb * 1024 * 1024:
         raise ValueError(f"The {label} is larger than {max_mb} MB.")
-    safe = secure_filename(name) or f"{label}{suffix}"
+    safe = _secure_filename(name) or f"{label}{suffix}"
     return Path(safe), suffix
 
 
+def _secure_filename(name: str) -> str:
+    """Reduce an uploaded file name to a safe basename."""
+    name = name.replace("\\", "/").rsplit("/", 1)[-1]
+    name = re.sub(r"[^A-Za-z0-9_. -]+", "", name)
+    name = name.strip(" .")
+    return name or ""
+
+
+def _save_upload(upload: UploadFile, destination: Path) -> None:
+    upload.file.seek(0)
+    with destination.open("wb") as handle:
+        shutil.copyfileobj(upload.file, handle)
+
+
+class DownloadError(RuntimeError):
+    """The link could not be downloaded."""
+
+
+class DownloadUnavailable(DownloadError):
+    """yt-dlp is not installed or link downloads are disabled."""
+
+
+def _ytdlp_available() -> bool:
+    return importlib.util.find_spec("yt_dlp") is not None
+
+
+def _validate_url(raw: str) -> str:
+    """Accept an http(s) link that does not point back into the local network."""
+    value = str(raw or "").strip()
+    if not value:
+        raise ValueError("Paste a link to a recording.")
+    if not ALLOW_URLS:
+        raise ValueError("Link downloads are disabled on this server.")
+    if len(value) > 2048:
+        raise ValueError("That link is too long.")
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("Paste an http:// or https:// link.")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        raise ValueError("That link is missing a host.")
+    if host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
+        raise ValueError("That link points to a local address.")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is not None:
+        tailnet = ipaddress.ip_network("100.64.0.0/10")
+        if (
+            address.is_private
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_reserved
+            or address.is_multicast
+            or address.is_unspecified
+            or address in tailnet
+        ):
+            raise ValueError("That link points to a local address.")
+    return value
+
+
+def _download_audio(url: str, job_dir: Path) -> tuple[Path, str]:
+    """Fetch the audio behind a link with yt-dlp and return (path, name)."""
+    if not ALLOW_URLS:
+        raise DownloadUnavailable("Link downloads are disabled on this server.")
+    if not _ytdlp_available():
+        raise DownloadUnavailable(
+            "yt-dlp is not installed. Install it with `pip install yt-dlp`."
+        )
+
+    output_template = job_dir / "%(title).120B.%(ext)s"
+    command = [
+        PYTHON, "-m", "yt_dlp",
+        "--no-playlist",
+        "--no-progress",
+        "--format", "bestaudio/best",
+        "--output", str(output_template),
+        "--print", "after_move:filepath",
+        "--socket-timeout", "20",
+        "--retries", "2",
+        "--max-filesize", f"{MAX_AUDIO_MB}M",
+        url,
+    ]
+    _write_job_progress(
+        job_dir,
+        {"stage": "download", "message": "Downloading audio from the link…", "tab": ""},
+    )
+    try:
+        result = subprocess.run(
+            command,
+            cwd=str(REPO),
+            text=True,
+            capture_output=True,
+            timeout=DOWNLOAD_TIMEOUT,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise DownloadError(
+            f"The download did not finish within {DOWNLOAD_TIMEOUT} seconds."
+        ) from exc
+    except OSError as exc:
+        raise DownloadError(f"yt-dlp could not start: {exc}") from exc
+    if result.returncode != 0:
+        log = (result.stderr or result.stdout or "").strip()
+        raise DownloadError(log[-2000:] or f"yt-dlp exited with {result.returncode}.")
+
+    reported: list[Path] = []
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        candidate = Path(stripped)
+        if candidate.is_file() and candidate.is_relative_to(job_dir):
+            reported.append(candidate)
+    if reported:
+        path = reported[-1]
+    else:
+        candidates = [
+            path
+            for path in job_dir.iterdir()
+            if path.is_file() and not path.name.endswith((".part", ".ytdl"))
+        ]
+        if not candidates:
+            log = (result.stderr or result.stdout or "").strip()
+            raise DownloadError(
+                log[-2000:] or "The link did not produce an audio file."
+            )
+        path = max(candidates, key=lambda item: item.stat().st_mtime)
+    if not path.is_file() or path.stat().st_size == 0:
+        raise DownloadError("The link produced an empty audio file.")
+    if _size_mb(path) > MAX_AUDIO_MB:
+        path.unlink(missing_ok=True)
+        raise DownloadError(f"The linked audio is larger than {MAX_AUDIO_MB} MB.")
+    return path, path.name
+
+
 @app.get("/label")
-def label_page():
-    return render_template(
-        "label.html",
-        max_audio_mb=MAX_AUDIO_MB,
-        max_midi_mb=MAX_MIDI_MB,
-        muscriptor_model=MUSCRIPTOR_MODEL,
-        label_root=str(LABEL_ROOT),
+def label_page(request: Request):
+    return templates.TemplateResponse(
+        request=request,
+        name="label.html",
+        context={
+            "max_audio_mb": MAX_AUDIO_MB,
+            "max_midi_mb": MAX_MIDI_MB,
+            "muscriptor_model": MUSCRIPTOR_MODEL,
+            "label_root": str(LABEL_ROOT),
+        },
     )
 
 
 def _label_session_or_404(session_id: str) -> None:
     if not re.fullmatch(r"[0-9a-f]{32}", session_id):
-        abort(404)
+        raise HTTPException(status_code=404)
     if not (LABEL_ROOT / session_id).is_dir():
-        abort(404)
+        raise HTTPException(status_code=404)
 
 
 def _audio_duration(path: Path) -> float:
@@ -414,34 +603,39 @@ def _audio_duration(path: Path) -> float:
 
 @app.get("/api/label/sessions")
 def label_list():
-    return jsonify({"sessions": list_sessions()})
+    return {"sessions": list_sessions()}
 
 
 @app.post("/api/label/sessions")
-def label_create():
-    audio_upload = request.files.get("audio")
-    midi_upload = request.files.get("midi")
-    if audio_upload is None or not audio_upload.filename:
+def label_create(
+    audio: UploadFile | None = File(None),
+    midi: UploadFile | None = File(None),
+):
+    if audio is None or not audio.filename:
         return _error("Choose a recording to label.")
     try:
-        audio_original, audio_suffix = _validate_upload(
-            audio_upload,
+        validated = _validate_upload(
+            audio,
             label="label audio",
             suffixes=AUDIO_SUFFIXES,
             max_mb=MAX_AUDIO_MB,
         )
+        assert validated is not None
+        audio_original, audio_suffix = validated
     except ValueError as exc:
         return _error(str(exc))
 
     midi_original = None
-    if midi_upload is not None and midi_upload.filename:
+    if midi is not None and midi.filename:
         try:
-            midi_original, _midi_suffix = _validate_upload(
-                midi_upload,
+            validated = _validate_upload(
+                midi,
                 label="label MIDI",
                 suffixes=MIDI_SUFFIXES,
                 max_mb=MAX_MIDI_MB,
             )
+            if validated is not None:
+                midi_original, _midi_suffix = validated
         except ValueError as exc:
             return _error(str(exc))
 
@@ -450,14 +644,14 @@ def label_create():
     audio_path = directory / "audio.wav"
     midi_path = directory / "transcribed.mid"
     try:
-        audio_upload.save(upload_path)
+        _save_upload(audio, upload_path)
         if not upload_path.stat().st_size:
             raise ValueError("That recording is empty.")
         normalized = _normalize_audio(upload_path, audio_path)
         if normalized != audio_path:
             shutil.copy2(normalized, audio_path)
-        if midi_original is not None:
-            midi_upload.save(midi_path)
+        if midi_original is not None and midi is not None:
+            _save_upload(midi, midi_path)
             source = "uploaded"
         else:
             _local_transcribe(audio_path, midi_path)
@@ -499,13 +693,13 @@ def label_create():
     finally:
         upload_path.unlink(missing_ok=True)
 
-    return jsonify(label_state(session_id))
+    return label_state(session_id)
 
 
-@app.get("/api/label/sessions/<session_id>")
+@app.get("/api/label/sessions/{session_id}")
 def label_get(session_id: str):
     _label_session_or_404(session_id)
-    return jsonify(label_state(session_id))
+    return label_state(session_id)
 
 
 def _monitor_sample_dir() -> Path:
@@ -558,19 +752,25 @@ def _ensure_monitor_sample(kind: str, pitch: int = 0) -> Path:
     return path
 
 
-@app.get("/api/monitor/samples/pitched/<int:pitch>.wav")
-def monitor_pitched_sample(pitch: int):
-    if pitch < 0 or pitch > 127:
-        abort(404)
+_MONITOR_CACHE_HEADERS = {"Cache-Control": "public, max-age=31536000"}
+
+
+@app.get("/api/monitor/samples/pitched/{pitch}.wav")
+def monitor_pitched_sample(pitch: str):
     try:
-        path = _ensure_monitor_sample("pitched", pitch)
+        value = int(pitch)
+    except ValueError as exc:
+        raise HTTPException(status_code=404) from exc
+    if value < 0 or value > 127:
+        raise HTTPException(status_code=404)
+    try:
+        path = _ensure_monitor_sample("pitched", value)
     except Exception as exc:  # noqa: BLE001 - optional monitoring aid
         return _error("The MIDI monitor sample could not be rendered.", 500, str(exc))
-    return send_file(
+    return FileResponse(
         path,
-        mimetype="audio/wav",
-        conditional=True,
-        max_age=31536000,
+        media_type="audio/wav",
+        headers=_MONITOR_CACHE_HEADERS,
     )
 
 
@@ -580,43 +780,47 @@ def monitor_dead_sample():
         path = _ensure_monitor_sample("dead")
     except Exception as exc:  # noqa: BLE001 - optional monitoring aid
         return _error("The dead-note monitor sample could not be rendered.", 500, str(exc))
-    return send_file(
+    return FileResponse(
         path,
-        mimetype="audio/wav",
-        conditional=True,
-        max_age=31536000,
+        media_type="audio/wav",
+        headers=_MONITOR_CACHE_HEADERS,
     )
 
 
-@app.get("/api/label/sessions/<session_id>/synth")
+@app.get("/api/label/sessions/{session_id}/synth")
 def label_synth(session_id: str):
     _label_session_or_404(session_id)
     directory = LABEL_ROOT / session_id
     midi_path = directory / "transcribed.mid"
     synth_path = directory / "synth.wav"
     if not midi_path.is_file():
-        abort(404)
+        raise HTTPException(status_code=404)
     if not synth_path.is_file():
         try:
             render_midi_file_to_wav(midi_path, synth_path)
         except Exception as exc:  # noqa: BLE001 - optional monitoring aid
             return _error("The MIDI monitor track could not be rendered.", 500, str(exc))
-    return send_file(synth_path, mimetype="audio/wav", conditional=True)
+    return FileResponse(synth_path, media_type="audio/wav")
 
 
-@app.get("/api/label/sessions/<session_id>/audio")
+@app.get("/api/label/sessions/{session_id}/audio")
 def label_audio(session_id: str):
     _label_session_or_404(session_id)
     path = LABEL_ROOT / session_id / "audio.wav"
     if not path.is_file():
-        abort(404)
-    return send_file(path, mimetype="audio/wav", conditional=True)
+        raise HTTPException(status_code=404)
+    return FileResponse(path, media_type="audio/wav")
 
 
-@app.post("/api/label/sessions/<session_id>/labels")
-def label_append(session_id: str):
+@app.post("/api/label/sessions/{session_id}/labels")
+async def label_append(session_id: str, request: Request):
     _label_session_or_404(session_id)
-    payload = request.get_json(silent=True) or {}
+    try:
+        payload = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        return _error("labels must be a list.")
     raw = payload.get("labels")
     if raw is None:
         raw = [payload]
@@ -631,39 +835,53 @@ def label_append(session_id: str):
     meta["noise_count"] = int(summary.get("noise", 0))
     meta["ignore_count"] = int(summary.get("ignore", 0))
     write_meta(session_id, meta)
-    return jsonify(state)
+    return state
 
 
-@app.post("/api/label/sessions/<session_id>/reviewed")
-def label_reviewed(session_id: str):
+@app.post("/api/label/sessions/{session_id}/reviewed")
+async def label_reviewed(session_id: str, request: Request):
     _label_session_or_404(session_id)
-    payload = request.get_json(silent=True) or {}
+    try:
+        payload = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
     mark_reviewed(session_id, bool(payload.get("reviewed", True)))
-    return jsonify(label_state(session_id))
+    return label_state(session_id)
 
 
-@app.get("/api/label/sessions/<session_id>/labels.jsonl")
+@app.get("/api/label/sessions/{session_id}/labels.jsonl")
 def label_export(session_id: str):
     _label_session_or_404(session_id)
     body = export_labels(session_id)
-    return app.response_class(
-        body,
-        mimetype="application/x-ndjson",
+    return Response(
+        content=body,
+        media_type="application/x-ndjson",
         headers={
             "Content-Disposition": f'attachment; filename="{session_id}-labels.jsonl"'
         },
     )
 
 
-@app.delete("/api/label/sessions/<session_id>")
+@app.delete("/api/label/sessions/{session_id}")
 def label_delete(session_id: str):
     _label_session_or_404(session_id)
     remove_session(session_id)
-    return jsonify({"ok": True})
+    return {"ok": True}
 
 
 @app.post("/api/convert")
-def convert():
+def convert(
+    midi: UploadFile | None = File(None),
+    file: UploadFile | None = File(None),
+    audio: UploadFile | None = File(None),
+    url: str = Form(""),
+    capo: str = Form("auto"),
+    guitar: str = Form("acoustic"),
+    fast: str = Form("1"),
+    job_id: str = Form(""),
+):
     if not CHECKPOINT.exists():
         return _error(
             "The tab model checkpoint is missing.",
@@ -677,50 +895,59 @@ def convert():
             f"Expected: {VOCAB}",
         )
 
-    midi_upload = request.files.get("midi") or request.files.get("file")
-    audio_upload = request.files.get("audio")
+    midi_upload = midi if (midi is not None and midi.filename) else file
+    audio_upload = audio
+    link = ""
     try:
-        capo = _parse_capo(request.form.get("capo", "auto"))
+        capo = _parse_capo(capo)
+        guitar = _parse_guitar(guitar)
+        if str(url or "").strip():
+            link = _validate_url(url)
     except ValueError as exc:
         return _error(str(exc))
-    fast_mode = str(request.form.get("fast", "1")).strip().lower() in {
+    fast_mode = str(fast or "1").strip().lower() in {
         "1", "true", "on", "yes"
     }
     beam = 1 if fast_mode else 4
 
     has_midi = bool(midi_upload and midi_upload.filename)
     has_audio = bool(audio_upload and audio_upload.filename)
-    if not has_midi and not has_audio:
-        return _error("Choose a recording, a MIDI transcription, or both.")
+    has_link = bool(link) and not has_audio
+    if not has_midi and not has_audio and not has_link:
+        return _error("Choose a recording, a MIDI transcription, or paste a link.")
 
     midi_original = None
     midi_suffix = ".mid"
     if has_midi:
         try:
-            midi_original, midi_suffix = _validate_upload(
+            validated = _validate_upload(
                 midi_upload,
                 label="MIDI transcription",
                 suffixes=MIDI_SUFFIXES,
                 max_mb=MAX_MIDI_MB,
             )
+            assert validated is not None
+            midi_original, midi_suffix = validated
         except ValueError as exc:
             return _error(str(exc))
 
-    audio_mode = has_audio
+    audio_mode = has_audio or has_link
     audio_original = None
     audio_suffix = ""
-    if audio_mode:
+    if has_audio:
         try:
-            audio_original, audio_suffix = _validate_upload(
+            validated = _validate_upload(
                 audio_upload,
                 label="source recording",
                 suffixes=AUDIO_SUFFIXES,
                 max_mb=MAX_AUDIO_MB,
             )
+            assert validated is not None
+            audio_original, audio_suffix = validated
         except ValueError as exc:
             return _error(str(exc))
 
-    requested_job = str(request.form.get("job_id") or "").strip()
+    requested_job = str(job_id or "").strip()
     if requested_job:
         if not re.fullmatch(r"[0-9a-f]{32}", requested_job):
             return _error("The job id is invalid.")
@@ -738,30 +965,30 @@ def convert():
     _write_job_progress(
         job_dir,
         {
-            "stage": "transcribe",
+            "stage": "download" if has_link else "transcribe",
             "message": (
                 "Preparing the uploaded MIDI…"
                 if has_midi
-                else "Transcribing the recording with MuScriptor…"
+                else (
+                    "Downloading audio from the link…"
+                    if has_link
+                    else "Transcribing the recording with MuScriptor…"
+                )
             ),
             "tab": "",
         },
     )
 
-    midi_name = (
-        midi_original.name
-        if midi_original is not None
-        else f"{Path(audio_original.name).stem}.mid"
-    )
     midi_path = job_dir / "transcribed.mid"
     audio_path = None
     normalized_audio = None
-    if audio_mode:
+    audio_name = None
+    if has_audio:
         audio_name = audio_original.name if audio_original else f"recording{audio_suffix}"
         audio_path = job_dir / f"upload_audio{audio_suffix}"
         normalized_audio = job_dir / "source.wav"
-    else:
-        audio_name = None
+    elif has_link:
+        normalized_audio = job_dir / "source.wav"
 
     detect_proc: subprocess.Popen | None = None
     detect_log = None
@@ -771,12 +998,16 @@ def convert():
     midi_cache: Path | None = None
     try:
         if audio_mode:
-            audio_upload.save(audio_path)
-            if audio_path.stat().st_size == 0:
-                raise ValueError("That recording is empty.")
-            if _size_mb(audio_path) > MAX_AUDIO_MB:
-                raise ValueError(f"The source recording is larger than {MAX_AUDIO_MB} MB.")
-            normalized_audio = _normalize_audio(audio_path, normalized_audio)
+            if has_audio:
+                _save_upload(audio_upload, audio_path)
+                if audio_path.stat().st_size == 0:
+                    raise ValueError("That recording is empty.")
+                if _size_mb(audio_path) > MAX_AUDIO_MB:
+                    raise ValueError(f"The source recording is larger than {MAX_AUDIO_MB} MB.")
+                source_audio = audio_path
+            else:
+                source_audio, audio_name = _download_audio(link, job_dir)
+            normalized_audio = _normalize_audio(source_audio, normalized_audio)
             audio_digest = _file_digest(normalized_audio)
             detect_signature = (
                 f"{CACHE_VERSION}:{audio_digest}:"
@@ -818,7 +1049,7 @@ def convert():
                 },
             )
         if has_midi:
-            midi_upload.save(midi_path)
+            _save_upload(midi_upload, midi_path)
             if midi_path.stat().st_size == 0:
                 raise ValueError("That MIDI file is empty.")
             if _size_mb(midi_path) > MAX_MIDI_MB:
@@ -826,13 +1057,14 @@ def convert():
         else:
             midi_signature = (
                 f"{CACHE_VERSION}:{audio_digest}:{MUSCRIPTOR_MODEL}:"
+                f"instrument={_guitar_instrument(guitar)}:"
                 f"quantize={int(MUSCRIPTOR_QUANTIZE)}:grid={MUSCRIPTOR_GRID}"
             )
             midi_key = hashlib.sha1(midi_signature.encode("utf-8")).hexdigest()
             midi_cache = _cache_file("muscriptor", midi_key, ".mid")
             if not _cache_restore(midi_cache, midi_path):
                 try:
-                    _local_transcribe(normalized_audio, midi_path)
+                    _local_transcribe(normalized_audio, midi_path, guitar=guitar)
                 except MuscriptorUnavailable as exc:
                     raise MuscriptorUnavailable(str(exc)) from exc
                 except RuntimeError as exc:
@@ -844,6 +1076,18 @@ def convert():
             detect_log.close()
         shutil.rmtree(job_dir, ignore_errors=True)
         return _error("Local MuScriptor is not available.", 500, str(exc))
+    except DownloadUnavailable as exc:
+        _stop_process(detect_proc)
+        if detect_log is not None:
+            detect_log.close()
+        shutil.rmtree(job_dir, ignore_errors=True)
+        return _error("Link downloads are not available.", 500, str(exc))
+    except DownloadError as exc:
+        _stop_process(detect_proc)
+        if detect_log is not None:
+            detect_log.close()
+        shutil.rmtree(job_dir, ignore_errors=True)
+        return _error("The link could not be downloaded.", 400, str(exc))
     except (OSError, ValueError, RuntimeError) as exc:
         _stop_process(detect_proc)
         if detect_log is not None:
@@ -857,6 +1101,12 @@ def convert():
         shutil.rmtree(job_dir, ignore_errors=True)
         return _error("The upload could not be saved.", 500, str(exc))
 
+    if midi_original is not None:
+        midi_name = midi_original.name
+    elif audio_name:
+        midi_name = f"{Path(audio_name).stem}.mid"
+    else:
+        midi_name = "transcribed.mid"
     title = Path(audio_name or midi_name).stem or "Untitled take"
     started = time.time()
 
@@ -1140,7 +1390,7 @@ def convert():
     }
     if audio_mode:
         urls["audio"] = f"{base}/source.wav"
-    return jsonify({
+    return {
         "id": job_id,
         "title": title,
         "capo": capo,
@@ -1148,7 +1398,7 @@ def convert():
         "files": files,
         "summary": summary,
         "urls": urls,
-    })
+    }
 
 
 # Each logical file name can resolve to a new-pipeline artifact or a legacy
@@ -1165,69 +1415,144 @@ _ALLOWED_FILES = {
 }
 
 
-@app.get("/api/jobs/<job_id>/<name>")
+@app.get("/api/jobs/{job_id}/{name}")
 def job_file(job_id: str, name: str):
     if not re.fullmatch(r"[0-9a-f]{32}", job_id):
-        abort(404)
+        raise HTTPException(status_code=404)
     allowed = _ALLOWED_FILES.get(name)
     if allowed is None:
-        abort(404)
+        raise HTTPException(status_code=404)
     relative_names, mime = allowed
     job_dir = JOBS / job_id
     for relative in relative_names:
         path = job_dir / relative
         if path.is_file():
-            return send_file(
+            return FileResponse(
                 path,
-                mimetype=mime,
-                as_attachment=name != "score.gp5",
-                download_name=name,
-                conditional=True,
+                media_type=mime,
+                filename=None if name == "score.gp5" else name,
             )
-    abort(404)
+    raise HTTPException(status_code=404)
 
 
-@app.errorhandler(413)
-def too_large(_exc):
-    return jsonify({
-        "error": (
+@app.middleware("http")
+async def _limit_upload_size(request: Request, call_next):
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MAX_UPLOAD_MB * 1024 * 1024:
+        return _error(
             f"That take is larger than the {MAX_UPLOAD_MB} MB upload limit. "
             f"Keep the recording under {MAX_AUDIO_MB} MB and the MIDI under "
-            f"{MAX_MIDI_MB} MB."
-        ),
-    }), 413
+            f"{MAX_MIDI_MB} MB.",
+            413,
+        )
+    return await call_next(request)
 
 
-@app.errorhandler(404)
-def not_found(_exc):
-    if request.path.startswith("/api/"):
-        return jsonify({"error": "Not found."}), 404
-    return "Not found", 404
+@app.exception_handler(StarletteHTTPException)
+async def _http_exception(request: Request, exc: StarletteHTTPException):
+    if exc.status_code == 404:
+        if request.url.path.startswith("/api/"):
+            return JSONResponse({"error": "Not found."}, status_code=404)
+        return PlainTextResponse("Not found", status_code=404)
+    if request.url.path.startswith("/api/"):
+        return JSONResponse({"error": str(exc.detail)}, status_code=exc.status_code)
+    return PlainTextResponse(str(exc.detail), status_code=exc.status_code)
+
+
+app.mount("/static", StaticFiles(directory=str(WEB / "static")), name="static")
+
+
+def _tailscale_ip() -> str | None:
+    """Return this machine's Tailscale IPv4 address, if Tailscale is running."""
+    exe = shutil.which("tailscale")
+    if exe is None:
+        return None
+    try:
+        result = subprocess.run(
+            [exe, "ip", "-4"],
+            text=True,
+            capture_output=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        address = line.strip()
+        if address:
+            return address
+    return None
+
+
+def _tailscale_dns() -> str | None:
+    """Return the MagicDNS name for this node, if available."""
+    exe = shutil.which("tailscale")
+    if exe is None:
+        return None
+    try:
+        result = subprocess.run(
+            [exe, "status", "--json"],
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except ValueError:
+        return None
+    name = (payload.get("Self") or {}).get("DNSName") or ""
+    return name.rstrip(".") or None
+
+
+def _resolve_host(value: str) -> str:
+    if value in {"auto", "tailnet", "tailscale"}:
+        return _tailscale_ip() or "127.0.0.1"
+    return value
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Local audio + MIDI to tab web app")
-    parser.add_argument("--host", default="127.0.0.1",
-                        help="interface to bind (default: 127.0.0.1; use 0.0.0.0 for LAN)")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("TABULA_HOST", "auto"),
+        help=(
+            "interface to bind (default: auto — the Tailscale IPv4 address when "
+            "Tailscale is running, else 127.0.0.1; use 0.0.0.0 for all interfaces)"
+        ),
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("TABULA_PORT", "8000")),
+    )
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
     _cleanup_jobs()
-    shown_host = args.host
-    if shown_host in {"0.0.0.0", "::"}:
-        shown_host = socket.gethostname()
-    print(f"Tabula web app: http://{shown_host}:{args.port}")
-    print(f"Checkpoint: {CHECKPOINT}")
-    print(f"Vocab:      {VOCAB}")
+    host = _resolve_host(args.host)
+    dns = _tailscale_dns()
+    print("Tabula web app")
+    if host in {"0.0.0.0", "::"}:
+        print(f"  Local:   http://{socket.gethostname()}:{args.port}")
+    else:
+        print(f"  Local:   http://{host}:{args.port}")
+    if host.startswith("100.") and dns:
+        print(f"  Tailnet: http://{dns}:{args.port}")
+    print(f"  API:     http://{host}:{args.port}/api/docs")
+    print(f"  Checkpoint: {CHECKPOINT}")
+    print(f"  Vocab:      {VOCAB}")
     if not CHECKPOINT.exists() or not VOCAB.exists():
         print("WARNING: checkpoint or vocabulary is missing; conversions will fail.")
-    app.run(
-        host=args.host,
+    uvicorn.run(
+        app,
+        host=host,
         port=args.port,
-        debug=args.debug,
-        threaded=True,
-        use_reloader=False,
+        log_level="debug" if args.debug else "info",
     )
     return 0
 

@@ -13,11 +13,15 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   const audioMeta = byId("audio-meta");
   const audioAction = byId("audio-action");
   const audioClear = byId("audio-clear");
+  const audioUrlRow = byId("audio-url-row");
+  const audioUrlInput = byId("audio-url");
+  const audioUrlClear = byId("audio-url-clear");
   const convertButton = byId("convert-button");
   const convertLabel = byId("convert-label");
   const cancelButton = byId("cancel-button");
   const formStatus = byId("form-status");
   const capoSelect = byId("capo-select");
+  const guitarSelect = byId("guitar-select");
   const fastMode = byId("fast-mode");
 
   const emptyState = byId("empty-state");
@@ -326,6 +330,10 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     slot.meta.textContent = `${formatBytes(file.size)} · ready`;
     slot.action.textContent = "Replace";
     slot.clear.hidden = false;
+    if (kind === "audio") {
+      clearLink();
+      syncLinkState();
+    }
     setStatus("");
     if (!errorState.hidden && !scoreReady) {
       setState("empty");
@@ -356,12 +364,45 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     }
   }
 
+  function linkValue() {
+    return audioUrlInput ? audioUrlInput.value.trim() : "";
+  }
+
+  function validLink(value) {
+    if (!value) {
+      return true;
+    }
+    try {
+      const parsed = new URL(value);
+      return parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function clearLink() {
+    if (!audioUrlInput) return;
+    audioUrlInput.value = "";
+    audioUrlClear.hidden = true;
+    audioUrlRow.classList.remove("is-filled");
+  }
+
+  function syncLinkState() {
+    if (!audioUrlInput) return;
+    const value = linkValue();
+    audioUrlClear.hidden = !value;
+    audioUrlRow.classList.toggle("is-filled", Boolean(value));
+    updateConvertAvailability();
+  }
+
   function updateConvertAvailability() {
-    const ready = Boolean(slots.audio.file);
-    convertButton.disabled = busy || !serverReady || !ready;
+    const hasSource = Boolean(slots.audio.file) || Boolean(linkValue());
+    convertButton.disabled = busy || !serverReady || !hasSource;
     convertLabel.textContent = busy
-      ? "Transcribing + making tab"
-      : lastConverted && ready
+      ? linkValue() && !slots.audio.file
+        ? "Downloading + making tab"
+        : "Transcribing + making tab"
+      : lastConverted && hasSource
         ? "Convert again"
         : "Transcribe + make tab";
   }
@@ -371,7 +412,12 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     convertButton.classList.toggle("is-loading", value);
     audioInput.disabled = value;
     audioClear.disabled = value;
+    if (audioUrlInput) {
+      audioUrlInput.disabled = value;
+      audioUrlClear.disabled = value;
+    }
     capoSelect.disabled = value;
+    if (guitarSelect) guitarSelect.disabled = value;
     fastMode.disabled = value;
     cancelButton.disabled = !value;
     cancelButton.hidden = !value;
@@ -1087,12 +1133,20 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     if (busy || !serverReady) {
       return;
     }
-    if (!slots.audio.file) {
-      setStatus("Add the recording first. MuScriptor can transcribe it locally.");
+    const file = slots.audio.file;
+    const link = linkValue();
+    if (!file && !link) {
+      setStatus("Add a recording or paste a link first.");
+      return;
+    }
+    if (!file && !validLink(link)) {
+      setStatus("Paste a full http:// or https:// link.");
       return;
     }
 
-    lastFileName = slots.audio.file.name.replace(/\.[^.]+$/, "") || "take";
+    lastFileName = file
+      ? file.name.replace(/\.[^.]+$/, "") || "take"
+      : "Linked take";
     setStatus("");
     if (api) {
       try {
@@ -1108,8 +1162,13 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
     const jobId = makeJobId();
     const body = new FormData();
-    body.append("audio", slots.audio.file, slots.audio.file.name);
+    if (file) {
+      body.append("audio", file, file.name);
+    } else {
+      body.append("url", link);
+    }
     body.append("capo", capoSelect.value);
+    body.append("guitar", guitarSelect ? guitarSelect.value : "acoustic");
     body.append("fast", fastMode.checked ? "1" : "0");
     body.append("job_id", jobId);
     startStreamProgress(jobId);
@@ -1197,6 +1256,8 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     }
     setPlaying(false);
     resetSlot("audio");
+    clearLink();
+    syncLinkState();
     setStatus("");
     lastConverted = false;
     lastFileName = "";
@@ -1344,6 +1405,40 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
   audioClear.addEventListener("click", () => clearSlot("audio"));
 
+  if (audioUrlInput) {
+    audioUrlInput.addEventListener("input", () => {
+      if (busy) return;
+      if (linkValue() && slots.audio.file) {
+        resetSlot("audio");
+      }
+      syncLinkState();
+      if (!linkValue()) {
+        setStatus("");
+      } else if (!validLink(linkValue())) {
+        setStatus("Paste a full http:// or https:// link.", "info");
+      } else {
+        setStatus("");
+      }
+      if (!scoreReady && !errorState.hidden) {
+        setState("empty");
+      }
+    });
+    audioUrlInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        convertFile();
+      }
+    });
+    audioUrlClear.addEventListener("click", () => {
+      clearLink();
+      syncLinkState();
+      setStatus("");
+      if (!scoreReady && !errorState.hidden) {
+        setState("empty");
+      }
+    });
+  }
+
   Object.values(slots).forEach((slot) => {
     ["dragenter", "dragover"].forEach((type) => {
       slot.row.addEventListener(type, (event) => {
@@ -1374,8 +1469,14 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   window.addEventListener("drop", (event) => event.preventDefault());
 
   retryButton.addEventListener("click", () => {
+    const previousLink = linkValue();
     startOver();
-    audioInput.click();
+    if (previousLink && audioUrlInput) {
+      audioUrlInput.value = previousLink;
+      syncLinkState();
+    } else {
+      audioInput.click();
+    }
   });
 
   startOverButton.addEventListener("click", startOver);

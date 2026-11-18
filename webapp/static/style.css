@@ -205,18 +205,6 @@ a:hover {
   white-space: nowrap;
 }
 
-.topbar-link {
-  margin-right: 10px;
-  color: var(--accent-ink);
-  font-weight: 600;
-  text-decoration: none;
-  text-underline-offset: 3px;
-}
-
-.topbar-link:hover {
-  text-decoration: underline;
-}
-
 .server-dot {
   width: 7px;
   height: 7px;
@@ -853,38 +841,138 @@ a:hover {
   animation: scan 2.5s ease-in-out infinite;
 }
 
-.error-state .button-quiet {
-  align-self: center;
+.error-state {
+  justify-content: safe center;
+  padding: clamp(24px, 5vh, 48px) 28px;
+  overflow-y: auto;
+  text-align: left;
+}
+
+.error-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: min(660px, 100%);
+}
+
+.error-mark {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  margin-bottom: 16px;
+  color: var(--red);
+  background: rgba(163, 69, 47, 0.07);
+  border-radius: 50%;
+  place-items: center;
+}
+
+.error-mark svg {
+  width: 30px;
+  height: 30px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+
+.error-mark .error-dot {
+  fill: currentColor;
+  stroke: none;
+}
+
+.error-state h2 {
+  margin: 0 0 9px;
+}
+
+.error-state p {
+  max-width: 56ch;
 }
 
 .error-message {
-  max-width: 50ch;
+  max-width: 56ch;
 }
 
 .error-details {
-  width: min(620px, 100%);
-  margin-top: 22px;
+  width: 100%;
+  margin-top: 20px;
+  overflow: hidden;
   text-align: left;
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
+  background: rgba(255, 253, 248, 0.42);
+  border: 1px solid var(--line);
+  border-radius: 3px;
 }
 
 .error-details summary {
-  padding: 10px 0;
-  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 13px;
+  color: var(--ink-soft);
   font-size: 11.5px;
+  font-weight: 550;
   cursor: pointer;
+  list-style: none;
+}
+
+.error-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.error-details summary:hover {
+  color: var(--ink);
+  background: rgba(244, 227, 207, 0.35);
+}
+
+.error-details summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.error-chevron {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 140ms ease;
+}
+
+.error-details[open] .error-chevron {
+  transform: rotate(180deg);
+}
+
+.error-details[open] summary {
+  border-bottom: 1px solid var(--line);
 }
 
 .error-details pre {
-  max-height: 180px;
-  margin: 0 0 12px;
+  max-height: min(260px, 38vh);
+  margin: 0;
+  padding: 12px 13px 14px;
   overflow: auto;
   color: var(--ink-soft);
+  background: rgba(42, 34, 28, 0.03);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11.5px;
-  line-height: 1.5;
+  font-size: 11px;
+  line-height: 1.55;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-gutter: stable;
+}
+
+.error-details pre:empty {
+  display: none;
+}
+
+.error-state .button-quiet {
+  align-self: flex-start;
+  margin-top: 22px;
 }
 
 .score-view {
@@ -1127,6 +1215,18 @@ a:hover {
 
 .site-footer p {
   margin: 0;
+}
+
+.footer-link {
+  color: var(--muted);
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+}
+
+.footer-link:hover {
+  color: var(--accent-ink);
+  text-decoration-color: currentColor;
 }
 
 .footer-sep {
@@ -1671,6 +1771,93 @@ a:hover {
   line-height: 1.45;
 }
 
+.link-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 10px;
+  padding: 0 5px 0 12px;
+  background: rgba(255, 253, 248, 0.38);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+
+.link-row:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.link-row.is-filled {
+  border-color: var(--line-strong);
+}
+
+.link-icon {
+  display: grid;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  color: var(--accent-ink);
+  place-items: center;
+}
+
+.link-icon svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.link-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 11px 0;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  background: transparent;
+  border: 0;
+}
+
+.link-input::placeholder {
+  color: var(--muted);
+}
+
+.link-input:focus {
+  outline: none;
+}
+
+.link-clear {
+  display: grid;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  color: var(--muted);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 2px;
+  place-items: center;
+  transition: color 150ms ease, background-color 150ms ease;
+}
+
+.link-clear:hover {
+  color: var(--red);
+  background: rgba(163, 69, 47, 0.07);
+}
+
+.link-clear svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+
 .form-status[data-kind="info"] {
   color: var(--ink-soft);
 }
@@ -2125,8 +2312,9 @@ a:hover {
   border-top-color: var(--accent-ink);
 }
 
-/* ---------- Capo choice and live tab preview ---------- */
-.capo-control {
+/* ---------- Guitar choice, capo choice and live tab preview ---------- */
+.capo-control,
+.guitar-control {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2138,26 +2326,30 @@ a:hover {
   border-radius: 3px;
 }
 
-.capo-copy {
+.capo-copy,
+.guitar-copy {
   display: flex;
   flex-direction: column;
   gap: 2px;
   min-width: 0;
 }
 
-.capo-label {
+.capo-label,
+.guitar-label {
   color: var(--ink-soft);
   font-size: 12px;
   font-weight: 600;
 }
 
-.capo-hint {
+.capo-hint,
+.guitar-hint {
   color: var(--muted);
   font-size: 10.5px;
   line-height: 1.35;
 }
 
-.capo-select {
+.capo-select,
+.guitar-select {
   flex: 0 0 auto;
   min-width: 72px;
   padding: 6px 8px;
@@ -2170,7 +2362,8 @@ a:hover {
   cursor: pointer;
 }
 
-.capo-select:disabled {
+.capo-select:disabled,
+.guitar-select:disabled {
   cursor: default;
   opacity: 0.55;
 }
