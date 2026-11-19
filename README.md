@@ -3,6 +3,28 @@
 ### Why?
 I'd frequently listen to guitar covers on Youtube but many would have paid or no sheets, so I built this to help me transcribe audio into guitar tabs.
 
+### Comparison Against Leading Models (Songscription, Muscriptor, Klang.io)
+Original Audio:
+https://github.com/user-attachments/assets/7d3c8f6d-d76f-4b57-ab0d-2ddc98687e3a
+
+(Lover Girl by Laufey, played by matthewnjee on YouTube)
+
+Tabula
+
+Songscription
+[song.webm](https://github.com/user-attachments/assets/74406efc-1eb8-42cc-bd11-878d48d8fe02)
+
+
+Klang.io
+https://github.com/user-attachments/assets/c6ee543f-7d3c-4c04-9379-67cf58fa3828
+
+
+Muscriptor (no sheet playback feature)
+<img width="1483" height="1009" alt="muscriptorimage" src="https://github.com/user-attachments/assets/a12ca3ce-4700-4a97-8605-7d526d0b1bd7" />
+
+
+
+
 ### How?
 A small T5 encoder-decoder (2.79M params) reads symbolic MIDI note events (`NOTE_ON`, `NOTE_OFF`, `TIME_SHIFT`) and writes tablature events (`TAB`, `TIME_SHIFT`). A local web app wraps the model: download audio from Youtube with yd-dlp, transcribe audio with MuScriptor, label dead notes from the recording, export Guitar Pro 5 scores.
 
