@@ -4,25 +4,28 @@
 I'd frequently listen to guitar covers on Youtube but many would have paid or no sheets, so I built this to help me transcribe audio into guitar tabs.
 
 ### Comparison Against Leading Models (Songscription, Muscriptor, Klang.io)
-Original Audio:
+**Original Audio:** *Lover Girl* by Laufey, played by matthewnjee on YouTube
+
 https://github.com/user-attachments/assets/7d3c8f6d-d76f-4b57-ab0d-2ddc98687e3a
 
-(Lover Girl by Laufey, played by matthewnjee on YouTube)
+**Tabula**
 
-Tabula
+(your Tabula video here)
 
-Songscription
-[song.webm](https://github.com/user-attachments/assets/74406efc-1eb8-42cc-bd11-878d48d8fe02)
+**Songscription**
 
+https://github.com/user-attachments/assets/74406efc-1eb8-42cc-bd11-878d48d8fe02
 
-Klang.io
+**Klang.io**
+
 https://github.com/user-attachments/assets/c6ee543f-7d3c-4c04-9379-67cf58fa3828
 
+**MuScriptor** (no sheet playback feature)
 
-Muscriptor (no sheet playback feature)
 <img width="1483" height="1009" alt="muscriptorimage" src="https://github.com/user-attachments/assets/a12ca3ce-4700-4a97-8605-7d526d0b1bd7" />
 
 
+Overall, Songscription is the best out of the available models, but it is not tailored for guitar tablature. Only Tabula correctly identifies the percussive dead-notes at the beginning of the song. Klang.io does an okay job, but it strips away some complexity (and sound-good-ability) of the original song, making it boring to listen to. Muscriptor is the base model used in part of Tabula to derive MIDI from audio, but it's outputted tablature offers very little practical use.
 
 
 ### How?
