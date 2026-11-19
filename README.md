@@ -6,26 +6,29 @@ I'd frequently listen to guitar covers on Youtube but many would have paid or no
 ### Comparison Against Leading Models (Songscription, Muscriptor, Klang.io)
 **Original Audio:** *Lover Girl* by Laufey, played by matthewnjee on YouTube
 
-https://github.com/user-attachments/assets/7d3c8f6d-d76f-4b57-ab0d-2ddc98687e3a
+https://github.com/user-attachments/assets/1c53f549-2176-48d3-8766-60d2aff74caf
 
-**Tabula**
+**Tabula:** Correctly identifies dead notes
 
-(your Tabula video here)
+https://github.com/user-attachments/assets/b8bcb013-845f-485a-9496-07aff17de8b7
 
-**Songscription**
+**Songscription** Fails to identify dead notes.
 
-https://github.com/user-attachments/assets/74406efc-1eb8-42cc-bd11-878d48d8fe02
+https://github.com/user-attachments/assets/58a79516-ab12-4169-a119-5717edb3888e
 
-**Klang.io**
+**Klang.io** Fails to identify dead notes and excessively simplifies the tab
 
-https://github.com/user-attachments/assets/c6ee543f-7d3c-4c04-9379-67cf58fa3828
+https://github.com/user-attachments/assets/0290b27f-cfa7-4730-ad33-2c6129cc495e
 
-**MuScriptor** (no sheet playback feature)
+
+**MuScriptor** Output is illegible
 
 <img width="1483" height="1009" alt="muscriptorimage" src="https://github.com/user-attachments/assets/a12ca3ce-4700-4a97-8605-7d526d0b1bd7" />
 
 
-Overall, Songscription is the best out of the available models, but it is not tailored for guitar tablature. Only Tabula correctly identifies the percussive dead-notes at the beginning of the song. Klang.io does an okay job, but it strips away some complexity (and sound-good-ability) of the original song, making it boring to listen to. Muscriptor is the base model used in part of Tabula to derive MIDI from audio, but it's outputted tablature offers very little practical use.
+Overall, Songscription is the best out of the available models, but it is not tailored for guitar tablature. Only Tabula correctly identifies the percussive dead-notes at the beginning of the song. 
+
+Klang.io transcription quality is technically correct, but it strips away the detail of the original song, making it boring to listen to. Muscriptor is the base model used in part of Tabula to derive MIDI from audio, but its outputted tablature offers very little practical use.
 
 
 ### How?
