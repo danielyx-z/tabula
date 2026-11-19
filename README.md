@@ -1,6 +1,5 @@
 # Tabula
 
-### Why?
 I'd frequently listen to guitar covers on Youtube but many would have paid or no sheets, so I built this to help me transcribe audio into guitar tabs.
 
 ### Comparison Against Leading Models (Songscription, Muscriptor, Klang.io)
@@ -31,7 +30,7 @@ Overall, Songscription is the best out of the available models, but it is not ta
 Klang.io transcription quality is technically correct, but it strips away the detail of the original song, making it boring to listen to. Muscriptor is the base model used in part of Tabula to derive MIDI from audio, but its outputted tablature offers very little practical use.
 
 
-### How?
+### How does it work?
 A small T5 encoder-decoder (2.79M params) reads symbolic MIDI note events (`NOTE_ON`, `NOTE_OFF`, `TIME_SHIFT`) and writes tablature events (`TAB`, `TIME_SHIFT`). A local web app wraps the model: download audio from Youtube with yd-dlp, transcribe audio with MuScriptor, label dead notes from the recording, export Guitar Pro 5 scores.
 
 **Pipeline:** audio → MuScriptor → MIDI → T5 → tab events → playability pass (string assignment, capo, collision fixing) → audio onset analysis (dead notes, articulations) → export (.gp5, .mid, .wav, ASCII tab).
