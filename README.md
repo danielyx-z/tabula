@@ -2,16 +2,16 @@
 
 I'd frequently listen to guitar covers on Youtube but many would have paid or no sheets, so I built this to help me transcribe audio into guitar tabs.
 
-### Comparison Against Leading Models (Songscription, Muscriptor, Klang.io)
+### Comparison Against Leading Models (Songscription (paid), Klang.io (paid), Muscriptor (free))
 **Original Audio:** *Lover Girl* by Laufey, played by matthewnjee on YouTube
 
 https://github.com/user-attachments/assets/1c53f549-2176-48d3-8766-60d2aff74caf
 
-**Tabula:** Correctly identifies dead notes
+**Tabula** Identifies dead notes correctly
 
 https://github.com/user-attachments/assets/b8bcb013-845f-485a-9496-07aff17de8b7
 
-**Songscription** Fails to identify dead notes.
+**Songscription** Fails to identify dead notes
 
 https://github.com/user-attachments/assets/58a79516-ab12-4169-a119-5717edb3888e
 
