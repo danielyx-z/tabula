@@ -498,6 +498,7 @@ def test_dead_notes_ignore_dropped_notes_for_occupancy() -> None:
             {"t": 480, "s": 5, "confidence": 0.8},
         ]
     )
+    # A muted chord is one percussive x on the lowest string.
     assert len(chord) == 1
     assert chord[0]["s"] == 1
 
@@ -605,6 +606,29 @@ def test_reconcile_audio_onsets_to_midi(tmp_path: Path) -> None:
         shifted, pm, midi_onsets, grid_ticks=240, auto_offset=True
     )
     assert alignment["applied_offset_sec"] == pytest.approx(-0.1, abs=0.002)
+    assert all(event["matched"] for event in aligned)
+
+
+def test_reconcile_recovers_large_av_offset(tmp_path: Path) -> None:
+    """A clip with ~1.2 s of extra lead-in must still align.
+
+    The old estimator only refined from a zero-offset pass with a coarse
+    tolerance of a couple of grid cells, so a shift larger than that left
+    every onset unmatched and the dead-note stage refused the take.
+    """
+    midi = tmp_path / "notes.mid"
+    _write_midi(midi, [0.0, 0.5, 1.0])
+    pm, midi_onsets = read_midi_notes(midi)
+
+    shifted = [
+        {"time": 1.2, "class": "dead", "confidence": 0.9},
+        {"time": 1.7, "class": "dead", "confidence": 0.9},
+        {"time": 2.2, "class": "dead", "confidence": 0.9},
+    ]
+    aligned, alignment = align_events(
+        shifted, pm, midi_onsets, grid_ticks=240, auto_offset=True
+    )
+    assert alignment["applied_offset_sec"] == pytest.approx(-1.2, abs=0.01)
     assert all(event["matched"] for event in aligned)
 
 

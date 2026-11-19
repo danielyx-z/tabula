@@ -36,6 +36,21 @@ def _resolve_default_sf2() -> str:
 DEFAULT_SF2 = _resolve_default_sf2()
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+# FluidSynth mix settings.  A small amount of room glues a solo guitar
+# together; chorus on a nylon patch sounds watery, so it stays off.  The gain
+# leaves headroom because a six-note chord peaks far above a single pluck.
+SF2_REVERB = _env_float("TABULA_SF2_REVERB", 0.18)
+SF2_CHORUS = _env_float("TABULA_SF2_CHORUS", 0.0)
+SF2_GAIN = max(0.05, min(1.0, _env_float("TABULA_SF2_GAIN", 0.75)))
+
+
 def _to_dict(note) -> dict:
     """Convert note-like object to dict with t, dur, pitch, s, f keys."""
     # numpy structured array record
@@ -108,6 +123,89 @@ def _write_temp_midi(
     return Path(tmp.name)
 
 
+def _fluidsynth_wav(
+    midi_path: Path,
+    *,
+    sf2_path: str,
+    sr: int,
+    gain: float,
+    reverb: float,
+    chorus: float,
+) -> np.ndarray:
+    """Render a MIDI file with FluidSynth and return mono float32 audio.
+
+    FluidSynth writes stereo; the interleaved L/R stream is downmixed to mono
+    before anything else touches it, otherwise frames are read as consecutive
+    mono samples and the take plays at half speed.
+    """
+    import wave
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        wav_path = Path(tmp.name)
+    try:
+        result = subprocess.run(
+            [
+                "fluidsynth", "-ni", str(sf2_path), str(midi_path),
+                "-F", str(wav_path),
+                "-r", str(int(sr)),
+                "-g", f"{gain:.3f}",
+                "-R", f"{reverb:.3f}",
+                "-C", f"{chorus:.3f}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"FluidSynth failed: {result.stderr.strip()}")
+        with wave.open(str(wav_path), "rb") as handle:
+            nchan = handle.getnchannels()
+            width = handle.getsampwidth()
+            frames = handle.readframes(handle.getnframes())
+    finally:
+        try:
+            wav_path.unlink()
+        except OSError:
+            pass
+
+    if width == 2:
+        audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+    elif width == 4:
+        audio = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
+    else:
+        raise RuntimeError(f"Unsupported WAV sample width {width}")
+    if nchan > 1:
+        audio = audio.reshape(-1, nchan).mean(axis=1)
+    return audio
+
+
+def _finish_take(
+    audio: np.ndarray,
+    sr: int,
+    *,
+    samples: int | None = None,
+    peak_target: float = 0.89,
+) -> np.ndarray:
+    """Trim or pad, normalise, and fade a rendered guitar take."""
+    if samples is not None:
+        if len(audio) > samples:
+            audio = audio[:samples]
+        elif len(audio) < samples:
+            audio = np.pad(audio, (0, samples - len(audio)))
+
+    peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
+    if peak > 1e-6:
+        audio = audio * (peak_target / peak)
+
+    fade_in = min(int(0.004 * sr), len(audio) // 2)
+    fade_out = min(int(0.030 * sr), len(audio) // 2)
+    if fade_in > 1:
+        audio[:fade_in] *= np.linspace(0.0, 1.0, fade_in, dtype=np.float32)
+    if fade_out > 1:
+        audio[-fade_out:] *= np.linspace(1.0, 0.0, fade_out, dtype=np.float32)
+    return audio.astype(np.float32, copy=False)
+
+
 def synthesize(
     notes,
     bpm: float,
@@ -149,65 +247,20 @@ def synthesize(
         render_dur = midi_dur + release_tail
         max_samples = int(render_dur * sr)
 
-        # Render with FluidSynth
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            wav_path = Path(tmp.name)
-
-        result = subprocess.run([
-            "fluidsynth", "-ni", sf2_path, str(mid_path),
-            "-F", str(wav_path), "-r", str(sr),
-            "-g", "1.0",      # gain
-            "-R", "0",        # no reverb
-            "-C", "0",        # no chorus
-        ], capture_output=True, text=True, timeout=60)
-
-        if result.returncode != 0:
-            raise RuntimeError(f"FluidSynth failed: {result.stderr}")
-
-        # Read and trim to render duration.
-        # FluidSynth writes stereo; downmix to mono before trimming so we
-        # don't interpret interleaved L/R frames as twice as many samples.
-        import wave
-        with wave.open(str(wav_path), "rb") as w:
-            nchan = w.getnchannels()
-            sw = w.getsampwidth()
-            frames = w.readframes(w.getnframes())
-        if sw == 2:
-            audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-        elif sw == 4:
-            audio = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
-        else:
-            raise RuntimeError(f"Unsupported WAV sample width {sw}")
-        if nchan > 1:
-            audio = audio.reshape(-1, nchan).mean(axis=1)
-
-        # Trim or pad to exact render duration
-        if len(audio) > max_samples:
-            audio = audio[:max_samples]
-        elif len(audio) < max_samples:
-            audio = np.pad(audio, (0, max_samples - len(audio)))
-
-        # Normalize peak
-        peak = float(np.max(np.abs(audio)))
-        if peak > 1e-6:
-            audio *= 0.89 / peak
-
-        # Quick fade in/out
-        fade = min(int(0.005 * sr), len(audio) // 2)
-        if fade > 1:
-            audio[:fade] *= np.linspace(0.0, 1.0, fade, dtype=np.float32)
-            audio[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
-
-        return audio.astype(np.float32, copy=False)
+        audio = _fluidsynth_wav(
+            mid_path,
+            sf2_path=str(sf2_path),
+            sr=int(sr),
+            gain=SF2_GAIN,
+            reverb=SF2_REVERB,
+            chorus=SF2_CHORUS,
+        )
+        return _finish_take(audio, int(sr), samples=max_samples)
 
     finally:
         # Cleanup temp files
         try:
             mid_path.unlink()
-        except OSError:
-            pass
-        try:
-            wav_path.unlink()
         except OSError:
             pass
 
@@ -216,7 +269,7 @@ def render_midi_file_to_wav(
     midi_path: str | Path,
     out_wav: str | Path,
     *,
-    sr: int = 22050,
+    sr: int = 44100,
     sf2_path: str = DEFAULT_SF2,
     release_tail: float = 0.5,
 ) -> Path:
@@ -227,7 +280,6 @@ def render_midi_file_to_wav(
     so both audio sources share the same timeline.
     """
     import mido
-    import wave
 
     source = Path(midi_path)
     output = Path(out_wav)
@@ -255,56 +307,31 @@ def render_midi_file_to_wav(
             note.end = max(note.start + 0.01, float(note.end) - offset)
 
     tmp_midi = tempfile.NamedTemporaryFile(suffix=".mid", delete=False)
-    tmp_wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     tmp_midi_path = Path(tmp_midi.name)
-    tmp_wav_path = Path(tmp_wav.name)
     tmp_midi.close()
-    tmp_wav.close()
     try:
         pm.write(str(tmp_midi_path))
         render_duration = max(0.1, float(pm.get_end_time()) + float(release_tail))
-        result = subprocess.run(
-            [
-                "fluidsynth", "-ni", sf2_path, str(tmp_midi_path),
-                "-F", str(tmp_wav_path), "-r", str(sr),
-                "-g", "1.0", "-R", "0", "-C", "0",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=120,
+        audio = _fluidsynth_wav(
+            tmp_midi_path,
+            sf2_path=str(sf2_path),
+            sr=int(sr),
+            gain=SF2_GAIN,
+            reverb=SF2_REVERB,
+            chorus=SF2_CHORUS,
         )
-        if result.returncode != 0:
-            raise RuntimeError(f"FluidSynth failed: {result.stderr}")
-        with wave.open(str(tmp_wav_path), "rb") as handle:
-            nchan = handle.getnchannels()
-            width = handle.getsampwidth()
-            frames = handle.readframes(handle.getnframes())
-        if width == 2:
-            audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-        elif width == 4:
-            audio = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
-        else:
-            raise RuntimeError(f"Unsupported WAV sample width {width}")
-        if nchan > 1:
-            audio = audio.reshape(-1, nchan).mean(axis=1)
-        max_samples = max(1, int(render_duration * sr))
-        if len(audio) > max_samples:
-            audio = audio[:max_samples]
-        elif len(audio) < max_samples:
-            audio = np.pad(audio, (0, max_samples - len(audio)))
-        peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
-        if peak > 1e-6:
-            audio *= 0.89 / peak
+        audio = _finish_take(
+            audio, int(sr), samples=max(1, int(render_duration * sr))
+        )
         import soundfile as sf
 
-        sf.write(str(output), audio.astype(np.float32), sr, subtype="PCM_16")
+        sf.write(str(output), audio, sr, subtype="PCM_16")
         return output
     finally:
-        for path in (tmp_midi_path, tmp_wav_path):
-            try:
-                path.unlink()
-            except OSError:
-                pass
+        try:
+            tmp_midi_path.unlink()
+        except OSError:
+            pass
 
 
 def render_note_sample(

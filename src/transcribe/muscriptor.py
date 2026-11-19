@@ -26,6 +26,58 @@ class MuscriptorUnavailable(RuntimeError):
     """Raised when no local MuScriptor installation can be found."""
 
 
+# Weight sets, smallest first.  The CLI's own default is ``medium``; the app
+# starts on ``small`` because it is the only one that works offline, and
+# upgrades automatically once a larger set is present in the HF cache.
+MODEL_SIZES = ("small", "medium", "large")
+
+
+def _hub_roots() -> list[Path]:
+    roots: list[Path] = []
+    for name in ("HUGGINGFACE_HUB_CACHE", "HF_HUB_CACHE"):
+        value = os.environ.get(name)
+        if value:
+            roots.append(Path(value).expanduser())
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        roots.append(Path(hf_home).expanduser() / "hub")
+    roots.append(Path.home() / ".cache" / "huggingface" / "hub")
+    roots.append(Path.home() / "Projects" / ".cache" / "huggingface" / "hub")
+    seen: list[Path] = []
+    for root in roots:
+        if root not in seen:
+            seen.append(root)
+    return seen
+
+
+def _weights_present(size: str) -> bool:
+    """True when a complete ``muscriptor-<size>`` snapshot is on disk."""
+    for root in _hub_roots():
+        repo = root / f"models--MuScriptor--muscriptor-{size}"
+        snapshots = repo / "snapshots"
+        if not snapshots.is_dir():
+            continue
+        for snapshot in snapshots.iterdir():
+            for path in snapshot.rglob("*.safetensors"):
+                try:
+                    if path.stat().st_size > 1024 * 1024:
+                        return True
+                except OSError:
+                    continue
+    return False
+
+
+def default_model() -> str:
+    """Best locally available model: env override, else the largest cached one."""
+    override = os.environ.get("TABULA_MUSCRIPTOR_MODEL")
+    if override:
+        return override
+    for size in reversed(MODEL_SIZES):
+        if _weights_present(size):
+            return size
+    return "small"
+
+
 def _as_executable(value: str | Path) -> Path | None:
     path = Path(value).expanduser()
     if path.is_file() and os.access(path, os.X_OK):

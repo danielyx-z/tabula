@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 import pretty_midi
 
-from .ticks import PPQ, seconds_to_tick, snap_tick
+from .ticks import PPQ, seconds_to_tick, snap_tick, tick_to_seconds
 
 
 def read_midi_notes(
@@ -104,6 +104,92 @@ def _match_pass(
     return out
 
 
+def _nearest_distances(times: np.ndarray, reference: np.ndarray) -> np.ndarray:
+    """Distance from each time to the closest value in a sorted reference."""
+    if reference.size == 0:
+        return np.full(times.shape, np.inf)
+    idx = np.searchsorted(reference, times)
+    left = reference[np.clip(idx - 1, 0, reference.size - 1)]
+    right = reference[np.clip(idx, 0, reference.size - 1)]
+    return np.minimum(np.abs(times - left), np.abs(times - right))
+
+
+def _estimate_offset(
+    events: list[dict[str, Any]],
+    pm: pretty_midi.PrettyMIDI,
+    midi_onsets: list[dict[str, Any]],
+    *,
+    tolerance_ticks: int,
+    max_offset_sec: float,
+) -> tuple[float, int]:
+    """Find the global audio/MIDI time shift that matches the most onsets.
+
+    A clip and its MIDI can differ by far more than one grid cell: a MIDI
+    exported with extra leading silence, or an audio clip trimmed at a
+    different point, can be shifted by a second or more.  Refining from a
+    zero-offset first pass cannot recover that, because no onset initially
+    matches.  Scan the whole allowed range instead and keep the shift with the
+    most matches.
+    """
+    audio = np.asarray(sorted(float(e["time"]) for e in events), dtype=float)
+    midi = np.asarray(
+        sorted(float(o["time"]) for o in midi_onsets), dtype=float
+    )
+    if audio.size == 0 or midi.size == 0:
+        return 0.0, 0
+
+    tolerance_sec = max(
+        1e-3,
+        float(tick_to_seconds(pm, tolerance_ticks))
+        - float(tick_to_seconds(pm, 0)),
+    )
+    # Search in seconds, where the onset trains can be compared with a vector
+    # operation.  The peak of this count is the global shift that lines the
+    # largest number of onsets up.
+    limit = float(max_offset_sec)
+
+    def score(offsets: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        counts = np.empty(offsets.size, dtype=np.int64)
+        spreads = np.empty(offsets.size, dtype=float)
+        for index, offset in enumerate(offsets):
+            dist = _nearest_distances(audio + float(offset), midi)
+            inside = dist <= tolerance_sec
+            counts[index] = int(inside.sum())
+            spreads[index] = float(dist[inside].sum()) if inside.any() else np.inf
+        return counts, spreads
+
+    def pick(offsets: np.ndarray, counts: np.ndarray, spreads: np.ndarray) -> int:
+        best = int(counts.max()) if counts.size else 0
+        candidates = np.where(counts == best)[0]
+        # Among equally good shifts, take the one that centres the matched
+        # onsets most tightly; otherwise a whole plateau of offsets matches
+        # the same count and the smallest absolute shift wins arbitrarily.
+        return int(candidates[np.argmin(spreads[candidates])])
+
+    step = max(0.01, tolerance_sec / 2.0)
+    coarse = np.arange(-limit, limit + step / 2.0, step)
+    counts, spreads = score(coarse)
+    top = int(counts.max()) if counts.size else 0
+    if top == 0:
+        return 0.0, 0
+    best_index = pick(coarse, counts, spreads)
+    best_offset = float(coarse[best_index])
+
+    fine = np.arange(
+        max(-limit, best_offset - step),
+        min(limit, best_offset + step) + 1e-9,
+        0.005,
+    )
+    fine_counts, fine_spreads = score(fine)
+    best_count = int(fine_counts.max()) if fine_counts.size else 0
+    if best_count >= top:
+        best_index = pick(fine, fine_counts, fine_spreads)
+        best_offset = float(fine[best_index])
+        top = best_count
+
+    return best_offset, top
+
+
 def align_events(
     events: list[dict[str, Any]],
     pm: pretty_midi.PrettyMIDI,
@@ -130,33 +216,21 @@ def align_events(
     offset_sec = 0.0
     warnings: list[str] = []
 
-    # Use a coarse tolerance for the offset-estimation pass.  A MIDI rendered
-    # with a leading-silence trim can be shifted by more than half a grid cell,
-    # which would otherwise make every onset look unmatched.
-    coarse_tolerance = max(tolerance, 2 * int(grid_ticks))
-    first_pass = _match_pass(
-        events,
-        pm,
-        midi_onsets,
-        offset_sec=offset_sec,
-        tolerance_ticks=coarse_tolerance,
-    )
-    matched_first = [item for item in first_pass if item["matched"]]
-
-    if auto_offset and matched_first:
-        offsets = [
-            float(item["event"]["time"]) - float(item["nearest"]["time"])
-            for item in matched_first
-        ]
-        # ``offsets`` are audio_time - midi_time.  The correction added to the
-        # audio timeline is the negative of that.
-        candidate = -float(np.median(offsets)) if offsets else 0.0
-        if abs(candidate) <= float(max_offset_sec):
-            offset_sec = candidate
-        else:
+    if auto_offset and events and midi_onsets:
+        offset_sec, matched_first = _estimate_offset(
+            events,
+            pm,
+            midi_onsets,
+            tolerance_ticks=tolerance,
+            max_offset_sec=float(max_offset_sec),
+        )
+        if matched_first < 3:
             warnings.append(
-                f"estimated offset {candidate:.3f}s exceeds limit "
-                f"{float(max_offset_sec):.3f}s; not applied"
+                f"only {matched_first} matched onset(s); offset estimate is weak"
+            )
+        if abs(offset_sec) > 0.05:
+            warnings.append(
+                f"applied global audio/MIDI offset of {offset_sec:+.3f}s"
             )
 
     matched_pass = _match_pass(
@@ -213,14 +287,6 @@ def align_events(
         warnings.append(
             f"low audio/MIDI match rate ({matched_count}/{total}); "
             "check that the audio and MIDI cover the same performance"
-        )
-    if abs(offset_sec) > 0.05:
-        warnings.append(
-            f"applied global audio/MIDI offset of {offset_sec:+.3f}s"
-        )
-    if len(matched_first) < 3 and auto_offset:
-        warnings.append(
-            f"only {len(matched_first)} matched onset(s); offset estimate is weak"
         )
 
     alignment = {

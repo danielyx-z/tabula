@@ -38,6 +38,36 @@ def read_bar_offset(midi_path: str | Path) -> float:
     return 0.0
 
 
+def normalise_bar_offset(
+    midi_path: str | Path,
+    *,
+    min_shift_s: float = 0.02,
+) -> float:
+    """Fold MuScriptor's bar shift into the MIDI and drop the marker.
+
+    The score, Guitar Pro file and dead-note alignment all work on the audio
+    timeline.  Leaving the shift baked into the note ticks makes the tab open
+    with a phantom silent bar and puts every note ``bar_offset`` seconds late
+    against the recording.  Rewriting the file once at intake keeps every
+    downstream consumer on one timeline and stops anyone subtracting the
+    marker a second time.
+
+    Returns the shift that was removed (0.0 when there was nothing to do).
+    """
+    path = Path(midi_path)
+    offset = read_bar_offset(path)
+    if offset < float(min_shift_s):
+        return 0.0
+    pm = pretty_midi.PrettyMIDI(str(path))
+    for instrument in pm.instruments:
+        for note in instrument.notes:
+            start = max(0.0, float(note.start) - offset)
+            note.start = start
+            note.end = max(start + 0.005, float(note.end) - offset)
+    pm.write(str(path))
+    return offset
+
+
 def _project_tick(pm: pretty_midi.PrettyMIDI, seconds: float) -> int:
     """Convert a MIDI-file time to the project's PPQ-960 tick grid."""
     return int(round(float(pm.time_to_tick(float(seconds))) * PPQ / pm.resolution))

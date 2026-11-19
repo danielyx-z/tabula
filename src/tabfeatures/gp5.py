@@ -17,10 +17,8 @@ import mido
 
 PPQ = 960
 GP_START = 960
-GRID_MAX = 240
-# MuScriptor emits many small expressive tempo drifts; only meaningful changes
-# are written to the score.
-MIN_TEMPO_DELTA = 10.0
+GRID_MAX = 120
+GRID_FINE = 120
 
 _DURATIONS = (
     (3840, 1, False),
@@ -80,13 +78,12 @@ def read_timing(
         elif message.type == "time_signature":
             if message.numerator > 0 and message.denominator > 0:
                 signatures[scaled] = (message.numerator, message.denominator)
-    # MuScriptor writes a tempo event for every small expressive drift.  The
-    # score only needs meaningful tempo changes; suppress changes below 10 BPM
-    # from the last retained value.
+    # Playback stays at one tempo: MuScriptor's expressive drifts are dropped
+    # so the score does not drift against itself.
     retained: dict[int, float] = {}
     last_bpm: float | None = None
     for tick, bpm in sorted(tempi.items()):
-        if last_bpm is None or abs(float(bpm) - last_bpm) >= MIN_TEMPO_DELTA:
+        if last_bpm is None or abs(float(bpm) - last_bpm) >= 10.0:
             retained[int(tick)] = float(bpm)
             last_bpm = float(bpm)
     return retained, dict(sorted(signatures.items()))
@@ -115,6 +112,115 @@ def _grid_for(length: int) -> int:
     if grid < 20:
         grid = math.gcd(length, 20) or 20
     return grid
+
+
+def _fit_grid(length: int, onsets: list[int], start: int) -> int:
+    """16th-note grid, dropping to 32nds only when a note needs it.
+
+    Onsets land on the coarsest grid that can hold them: if every attack sits
+    within a quarter of a 16th of a 16th-note slot the measure stays on 16ths,
+    which keeps the sheet simple.  A single stray onset switches that measure
+    to 32nds so it is not dragged a long way out of time.
+    """
+    coarse = _grid_for(length)
+    fine = max(20, math.gcd(length, GRID_FINE))
+    if fine >= coarse:
+        return coarse
+    # 16ths unless quantising would put two separate attacks in one slot; only
+    # then is the measure written on 32nds so both survive.
+    slots: dict[int, set[int]] = {}
+    for onset in onsets:
+        slot = int(round((onset - start) / coarse))
+        slots.setdefault(slot, set()).add(int(onset))
+    if any(len(onsets_at_slot) > 1 for onsets_at_slot in slots.values()):
+        return fine
+    return coarse
+
+
+_PLAIN_DURATIONS = (
+    (3840, 1),
+    (1920, 2),
+    (960, 4),
+    (480, 8),
+    (240, 16),
+    (120, 32),
+    (60, 64),
+)
+
+
+def _split_plain(slots: int, grid: int) -> list[tuple[gp.Duration, int]]:
+    """Split a span into values without dots (used for silent rests)."""
+    remaining = slots * grid
+    result: list[tuple[gp.Duration, int]] = []
+    for ticks, denominator in _PLAIN_DURATIONS:
+        if ticks % grid != 0:
+            continue
+        while ticks <= remaining:
+            result.append((gp.Duration(denominator), ticks // grid))
+            remaining -= ticks
+    if remaining:
+        raise ValueError(f"cannot represent {remaining} ticks on a {grid}-tick grid")
+    return result
+
+
+def _undot_rests(voice, grid: int) -> None:
+    """Rebuild dotted rests without dots.
+
+    Rests are hidden in the app, but a dotted rest leaves its augmentation dot
+    behind (a separate glyph).  Splitting into plain values keeps the sheet
+    free of stray dots without touching any note value.
+    """
+    beats = list(voice.beats)
+    if not beats:
+        return
+    rebuilt = []
+    for beat in beats:
+        if beat.status is not gp.BeatStatus.rest or not beat.duration.isDotted:
+            rebuilt.append(beat)
+            continue
+        cursor = beat.start
+        for duration, part_slots in _split_plain(
+            int(beat.duration.time) // grid, grid
+        ):
+            fresh = gp.Beat(voice, duration=duration, start=cursor)
+            fresh.status = gp.BeatStatus.rest
+            rebuilt.append(fresh)
+            cursor += part_slots * grid
+    voice.beats = rebuilt
+
+
+def _merge_rest_beats(voice, grid: int) -> None:
+    """Collapse adjacent rest beats and split them again greedily.
+
+    Runs are split independently, so two 32nd rests can end up side by side
+    where one 16th rest belongs.  Merging the span first and re-splitting from
+    the longest value gives the fewest, largest rests.
+    """
+    beats = list(voice.beats)
+    if not beats:
+        return
+    merged = []
+    index = 0
+    while index < len(beats):
+        beat = beats[index]
+        if beat.status != gp.BeatStatus.rest:
+            merged.append(beat)
+            index += 1
+            continue
+        total = 0
+        cursor = beat.start
+        while index < len(beats) and beats[index].status == gp.BeatStatus.rest:
+            total += int(beats[index].duration.time)
+            index += 1
+        slots = total // grid
+        if slots <= 0:
+            continue
+        for duration, part_slots in _split_durations(slots, grid):
+            fresh = gp.Beat(voice, duration=duration, start=cursor)
+            fresh.status = gp.BeatStatus.rest
+            merged.append(fresh)
+            cursor += part_slots * grid
+    voice.beats = merged
 
 
 def _split_durations(slots: int, grid: int) -> list[tuple[gp.Duration, int]]:
@@ -300,11 +406,12 @@ def build_gp5(
         if string not in _TUNING_BY_CANONICAL_STRING or tick < 0:
             skipped += 1
             continue
-        # A dead note is a single percussive slot, not a sustained pitch.
+        # Dead notes keep the source note's length; alphaTab turns that into a
+        # thump of the same duration.
         records.append(
             {
                 "t": tick,
-                "dur": 1,
+                "dur": max(480, int(raw.get("dur", 480))),
                 "pitch": None,
                 "s": string,
                 "f": 0,
@@ -364,6 +471,25 @@ def build_gp5(
     track.channel.instrument = 24
     song.tracks.append(track)
 
+    # A note that starts within one grid step of a bar line and keeps sounding
+    # past it is moved onto the bar.  Left in place it becomes a stray 32nd
+    # (or a 32nd plus a re-strike), which reads and sounds like a note that is
+    # too fast; as an attack on the bar it is clean and still in time.
+    snap_grid = _grid_for(max(entry[1] for entry in plan))
+    bar_starts = [entry[0] for entry in plan]
+    bar_starts.append(plan[-1][0] + plan[-1][1])
+    adjusted = []
+    for record in records:
+        onset = int(record["t"])
+        length = int(record["dur"])
+        for bar in bar_starts:
+            if bar - snap_grid < onset < bar and onset + length > bar:
+                shift = bar - onset
+                record = dict(record, t=bar, dur=max(snap_grid, length - shift))
+                break
+        adjusted.append(record)
+    records = adjusted
+
     total_beats = 0
     total_notes = 0
     for number, (start, length, numerator, denominator) in enumerate(plan, 1):
@@ -379,7 +505,11 @@ def build_gp5(
         absolute_start = lead_start + start
         end = start + length
         absolute_end = absolute_start + length
-        grid = _grid_for(length)
+        grid = _fit_grid(
+            length,
+            [int(note["t"]) for note in records if start <= note["t"] < end],
+            start,
+        )
         slots = length // grid
 
         local: list[tuple[int, int, int, bool]] = []
@@ -394,7 +524,9 @@ def build_gp5(
             last = int(
                 round((min(note_end, absolute_end) - absolute_start) / grid)
             )
-            first = max(0, min(slots, first))
+            # A note in the last half-grid of a measure rounds up to one slot
+            # past the bar; keep it in the last slot rather than dropping it.
+            first = max(0, min(max(0, slots - 1), first))
             last = max(first + 1, min(slots, last))
             info = (first, last, note["t"] < absolute_start)
             local.append((index, *info))
@@ -402,6 +534,10 @@ def build_gp5(
 
         tempo_by_slot: dict[int, float] = {}
         for change_tick, bpm in tempi.items():
+            if change_tick == 0:
+                # The opening tempo is the song header; repeating it as an
+                # automation on bar 1 is redundant.
+                continue
             if not (absolute_start <= change_tick < absolute_end):
                 continue
             slot = int(round((change_tick - absolute_start) / grid))
@@ -449,7 +585,6 @@ def build_gp5(
                 runs.append((run_start, slot, slot_active[slot - 1]))
                 run_start = slot
 
-        beat_by_slot: dict[int, gp.Beat] = {}
         for run_start, run_end, active in runs:
             part_start = run_start
             for duration, part_slots in _split_durations(
@@ -460,7 +595,6 @@ def build_gp5(
                     duration=duration,
                     start=GP_START + start + part_start * grid,
                 )
-                beat_by_slot.setdefault(part_start, beat)
                 if active:
                     beat.status = gp.BeatStatus.normal
                     for index in sorted(
@@ -490,11 +624,13 @@ def build_gp5(
                             total_notes += 1
                             continue
 
-                        # Ties are intentionally not written.  Re-articulate
-                        # continuation segments instead of emitting a silent
-                        # tie destination.
                         if is_tie:
-                            is_tie = False
+                            # One attack per MIDI note.  A continuation (the
+                            # note still sounding from an earlier beat or bar)
+                            # is never re-struck: a re-strike at a bar line is
+                            # a note the performance does not have.
+                            continue
+
                         gp_note = gp.Note(
                             beat,
                             value=record["f"],
@@ -508,14 +644,29 @@ def build_gp5(
                             )
                         beat.notes.append(gp_note)
                         total_notes += 1
+                    if active and not beat.notes:
+                        # Every active note was a continuation: keep the slot
+                        # silent rather than an empty "normal" beat.
+                        beat.status = gp.BeatStatus.rest
                 else:
                     beat.status = gp.BeatStatus.rest
                 voice.beats.append(beat)
                 total_beats += 1
                 part_start += part_slots
 
+        _merge_rest_beats(voice, grid)
+        _undot_rests(voice, grid)
+
         for slot, bpm in tempo_by_slot.items():
-            beat = beat_by_slot.get(slot)
+            tick = GP_START + start + slot * grid
+            beat = next(
+                (
+                    candidate
+                    for candidate in voice.beats
+                    if candidate.start <= tick < candidate.start + candidate.duration.time
+                ),
+                None,
+            )
             if beat is None:
                 continue
             beat.effect.mixTableChange = gp.MixTableChange(
@@ -527,6 +678,25 @@ def build_gp5(
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    # Dead notes are played with GM program 28 (muted electric guitar) so they
+    # sound like a damped chug rather than an open low string; the nylon
+    # program is restored on the next beat.
+    program = 24
+    for measure in track.measures:
+        for voice in measure.voices:
+            for beat in voice.beats:
+                wants = (
+                    28
+                    if any(note.type == gp.NoteType.dead for note in beat.notes)
+                    else 24
+                )
+                if wants == program:
+                    continue
+                change = beat.effect.mixTableChange or gp.MixTableChange()
+                change.instrument = gp.MixTableItem(value=wants, allTracks=True)
+                beat.effect.mixTableChange = change
+                program = wants
+
     gp.write(song, str(out_path), version=(5, 1, 0))
 
     return {

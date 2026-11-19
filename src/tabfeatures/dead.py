@@ -253,8 +253,8 @@ def merge_dead_notes(
             if previous is None or priority(note) > priority(previous):
                 merged[key] = note
 
-    # A chord of dead notes is one percussive event, not a six-string x
-    # cluster.  Keep the lowest string for each onset.
+    # A muted chord is one percussive event: keep the lowest string for each
+    # onset so the tab shows a single x.
     by_tick: dict[int, dict[str, Any]] = {}
     for note in merged.values():
         tick = int(note["t"])

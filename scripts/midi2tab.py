@@ -586,7 +586,12 @@ def main() -> int:
     from core.schema import Note
     gt_notes = [Note(t=n.t, dur=n.dur, pitch=n.pitch, s=n.s, f=n.f) for n in notes]
     pred_tabs = [(n["s"], n["f"]) for n in raw]
-    rhythm = compute_rhythm_metrics(pred_tabs, gen_tokens, gt_notes, vocab)
+    # Multi-chunk inference restarts TIME_SHIFT at each chunk's own base time,
+    # so the concatenated token stream cannot be decoded as one timeline.
+    # Measure rhythm from the chunk-stitched notes instead.
+    rhythm = compute_rhythm_metrics(
+        pred_tabs, gen_tokens, gt_notes, vocab, pred_notes=raw
+    )
 
     nodes = [DecodedNote(t=n["t"], dur=n["dur"], pitch=n["pitch"], s=n["s"], f=n["f"]) for n in final]
     tab_text = render_tab(nodes, width=args.width, capo=capo)

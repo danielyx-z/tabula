@@ -46,6 +46,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from transcribe import transcribe_audio  # noqa: E402
+from tabfeatures.midi_groups import normalise_bar_offset  # noqa: E402
 from model.chunk import ChunkConfig, make_inference_chunks  # noqa: E402
 from model.decode import constrained_beam_search, greedy_decode  # noqa: E402
 from tablature.metrics import decode_predictions, compute_rhythm_metrics  # noqa: E402
@@ -145,6 +146,9 @@ def audio_to_midi_notes(audio_path: str | Path):
             quantize=os.environ.get("TABULA_MUSCRIPTOR_QUANTIZE", "0") != "0",
             grid=int(os.environ.get("TABULA_MUSCRIPTOR_GRID", "8")),
         )
+        # MuScriptor writes its bars shifted forward and records the shift in a
+        # marker; fold it in so the tab shares the recording's timeline.
+        normalise_bar_offset(midi_path)
         midi_data = pretty_midi.PrettyMIDI(str(midi_path))
 
     # Convert pretty_midi notes to our internal Note format.  The project's

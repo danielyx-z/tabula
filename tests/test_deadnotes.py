@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import pretty_midi
+import pytest
 import soundfile as sf
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -180,66 +181,75 @@ def test_gp5_rounds_boundary_notes_without_duplicate_strings(
                 assert len(strings) == len(set(strings))
 
 
-def test_gp5_never_writes_ties_across_beats(tmp_path: Path) -> None:
+def test_gp5_does_not_restrike_at_a_bar_line(tmp_path: Path) -> None:
+    """No ties and no invented attacks: the note simply ends at the bar."""
     import guitarpro as gp
 
-    from tabfeatures.gp5 import build_gp5
-
-    timing = tmp_path / "timing.mid"
-    pm = pretty_midi.PrettyMIDI(initial_tempo=120.0)
-    inst = pretty_midi.Instrument(program=24)
-    inst.notes.append(
-        pretty_midi.Note(velocity=90, pitch=60, start=0.0, end=3.0)
+    written = _gp5_notes(
+        tmp_path,
+        [{"t": 3000, "dur": 2600, "pitch": 47, "s": 1, "f": 7}],
+        "sustain",
     )
-    pm.instruments.append(inst)
-    pm.write(str(timing))
-
-    short = tmp_path / "short.gp5"
-    build_gp5(
-        [{"t": 3800, "dur": 460, "pitch": 45, "s": 2, "f": 0}],
-        timing,
-        short,
-        capo=0,
-        title="short",
-    )
-    short_song = gp.parse(str(short))
-    assert not any(
-        note.type == gp.NoteType.tie
-        for measure in short_song.tracks[0].measures
-        for voice in measure.voices
-        for beat in voice.beats
-        for note in beat.notes
-    )
-
-    long = tmp_path / "long.gp5"
-    build_gp5(
-        [{"t": 0, "dur": 5000, "pitch": 47, "s": 2, "f": 2}],
-        timing,
-        long,
-        capo=0,
-        title="long",
-    )
-    long_song = gp.parse(str(long))
-    assert not any(
-        note.type == gp.NoteType.tie
-        for measure in long_song.tracks[0].measures
-        for voice in measure.voices
-        for beat in voice.beats
-        for note in beat.notes
-    )
+    assert len(written) == 1, written
+    assert written[0].type == gp.NoteType.normal
+    assert written[0].realValue == 47
 
 
-def test_gp5_suppresses_small_tempo_drifts(tmp_path: Path) -> None:
+def test_gp5_does_not_restrike_a_split_note(tmp_path: Path) -> None:
+    """A run split inside one bar (e.g. 600 ticks) is not re-struck."""
+    import guitarpro as gp
+
+    written = _gp5_notes(
+        tmp_path,
+        [{"t": 0, "dur": 600, "pitch": 52, "s": 3, "f": 2}],
+        "split",
+    )
+    assert len(written) == 1, written
+    assert written[0].type == gp.NoteType.normal
+
+
+def test_gp5_quantises_to_thirty_seconds(tmp_path: Path) -> None:
+    """Onsets snap to the 32nd grid, which keeps the groove closer to the MIDI."""
+    import guitarpro as gp
+
+    written = _gp5_notes(
+        tmp_path,
+        [
+            {"t": 1240, "dur": 480, "pitch": 47, "s": 1, "f": 7},
+            {"t": 1760, "dur": 480, "pitch": 52, "s": 3, "f": 2},
+        ],
+        "offsets",
+    )
+    ticks = sorted(note.beat.start - 960 for note in written)
+    assert ticks == [1200, 1800], ticks
+    assert all(note.type == gp.NoteType.normal for note in written)
+
+
+def test_gp5_uses_thirty_seconds_only_to_keep_two_attacks(tmp_path: Path) -> None:
+    """Two attacks a 32nd apart stay apart instead of merging into one slot."""
+    written = _gp5_notes(
+        tmp_path,
+        [
+            {"t": 1200, "dur": 120, "pitch": 47, "s": 1, "f": 7},
+            {"t": 1280, "dur": 120, "pitch": 52, "s": 3, "f": 2},
+        ],
+        "collision",
+    )
+    ticks = sorted(note.beat.start - 960 for note in written)
+    assert ticks == [1200, 1320], ticks
+
+
+def test_gp5_plays_at_one_tempo(tmp_path: Path) -> None:
+    """MuScriptor's tempo drifts are dropped so the score stays flat."""
     import mido
-    import guitarpro as gp
 
-    from tabfeatures.gp5 import build_gp5
+    from tabfeatures.gp5 import read_timing
 
     midi = mido.MidiFile(ticks_per_beat=960)
     track = mido.MidiTrack()
     midi.tracks.append(track)
     previous = 0
-    for tick, bpm in ((0, 120), (960, 125), (1920, 135), (2880, 140), (3840, 150)):
+    for tick, bpm in ((0, 163), (960, 157), (1920, 167), (2880, 175)):
         track.append(
             mido.MetaMessage(
                 "set_tempo",
@@ -252,26 +262,9 @@ def test_gp5_suppresses_small_tempo_drifts(tmp_path: Path) -> None:
     timing = tmp_path / "tempo.mid"
     midi.save(str(timing))
 
-    output = tmp_path / "score.gp5"
-    build_gp5(
-        [{"t": 0, "dur": 4000, "pitch": 47, "s": 2, "f": 2}],
-        timing,
-        output,
-        capo=0,
-        title="tempo",
-    )
-    song = gp.parse(str(output))
-    tempos = {
-        beat.effect.mixTableChange.tempo.value
-        for measure in song.tracks[0].measures
-        for voice in measure.voices
-        for beat in voice.beats
-        if beat.effect.mixTableChange is not None
-        and beat.effect.mixTableChange.tempo is not None
-    }
-    assert 125 not in tempos
-    assert 140 not in tempos
-    assert {120, 135, 150}.issubset(tempos)
+    tempi, _signatures = read_timing(timing)
+    # 157 and 167 are within 10 BPM of 163 and are dropped; 175 is kept.
+    assert [round(v) for v in tempi.values()] == [163, 175]
 
 
 def test_gp5_trims_leading_empty_measures(tmp_path: Path) -> None:
@@ -342,3 +335,98 @@ def test_load_note_groups_subtracts_muscriptor_bar_offset(tmp_path: Path) -> Non
     assert note["tick"] == start_tick
     assert note["time_s"] == 1.0
     assert payload["groups"][0]["time_s"] == 1.0
+
+
+def test_normalise_bar_offset_folds_shift_into_notes(tmp_path: Path) -> None:
+    """The tab must share the recording's timeline, not MuScriptor's bar grid."""
+    import mido
+
+    from tabfeatures.midi_groups import normalise_bar_offset, read_bar_offset
+
+    midi = mido.MidiFile(ticks_per_beat=960)
+    track = mido.MidiTrack()
+    midi.tracks.append(track)
+    tempo = mido.bpm2tempo(120)
+    track.append(mido.MetaMessage("set_tempo", tempo=tempo, time=0))
+    track.append(
+        mido.MetaMessage("marker", text="muscriptor:bar_offset=0.2000", time=0)
+    )
+    start_tick = int(mido.second2tick(1.2, 960, tempo))
+    track.append(mido.Message("program_change", program=24, channel=0, time=0))
+    track.append(mido.Message("note_on", note=52, velocity=90, time=start_tick))
+    track.append(mido.Message("note_off", note=52, velocity=0, time=240))
+    path = tmp_path / "offset.mid"
+    midi.save(str(path))
+
+    shift = normalise_bar_offset(path)
+    assert shift == pytest.approx(0.2, abs=1e-4)
+    assert read_bar_offset(path) == 0.0
+
+    notes = [
+        note
+        for instrument in pretty_midi.PrettyMIDI(str(path)).instruments
+        for note in instrument.notes
+    ]
+    assert len(notes) == 1
+    assert float(notes[0].start) == pytest.approx(1.0, abs=1e-3)
+    assert float(notes[0].end) == pytest.approx(1.125, abs=1e-3)
+
+    # Idempotent: a second pass has nothing left to remove.
+    assert normalise_bar_offset(path) == 0.0
+
+
+def test_normalise_bar_offset_ignores_plain_midi(tmp_path: Path) -> None:
+    from tabfeatures.midi_groups import normalise_bar_offset
+
+    pm = pretty_midi.PrettyMIDI(initial_tempo=120.0)
+    instrument = pretty_midi.Instrument(program=24)
+    instrument.notes.append(pretty_midi.Note(velocity=90, pitch=52, start=0.5, end=0.8))
+    pm.instruments.append(instrument)
+    path = tmp_path / "plain.mid"
+    pm.write(str(path))
+
+    before = path.read_bytes()
+    assert normalise_bar_offset(path) == 0.0
+    assert path.read_bytes() == before
+
+
+def _gp5_notes(tmp_path: Path, notes: list[dict], name: str) -> list:
+    import guitarpro as gp
+
+    from tabfeatures.gp5 import build_gp5
+
+    timing = tmp_path / "timing.mid"
+    pm = pretty_midi.PrettyMIDI(initial_tempo=120.0)
+    inst = pretty_midi.Instrument(program=24)
+    inst.notes.append(
+        pretty_midi.Note(velocity=90, pitch=60, start=0.0, end=6.0)
+    )
+    pm.instruments.append(inst)
+    pm.write(str(timing))
+
+    output = tmp_path / f"{name}.gp5"
+    build_gp5(notes, timing, output, capo=0, title=name)
+    song = gp.parse(str(output))
+    return [
+        note
+        for measure in song.tracks[0].measures
+        for voice in measure.voices
+        for beat in voice.beats
+        for note in beat.notes
+    ]
+
+
+def test_gp5_keeps_a_note_in_the_last_grid_slot(tmp_path: Path) -> None:
+    """A note that rounds past the bar is written on the bar, not dropped."""
+    import guitarpro as gp
+
+    written = _gp5_notes(
+        tmp_path,
+        [{"t": 3820, "dur": 40, "pitch": 52, "s": 3, "f": 2}],
+        "bar-end",
+    )
+    attacks = [n for n in written if n.type == gp.NoteType.normal]
+    assert len(attacks) == 1, written
+    assert attacks[0].value == 2
+    assert attacks[0].realValue == 52
+    assert attacks[0].beat.start - 960 == 3840

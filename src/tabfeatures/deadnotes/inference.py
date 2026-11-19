@@ -112,7 +112,10 @@ def apply_predictions(
         dead_notes.append(
             {
                 "t": int(final_note["t"]),
-                "dur": 1,
+                # Keep the MIDI note's own length: the app's synth derives the
+                # volume of a dead note from how long it is notated, so a
+                # one-tick thump is inaudible.
+                "dur": max(1, int(final_note.get("dur", 1))),
                 "s": int(final_note["s"]),
                 "f": 0,
                 "kind": "dead",
