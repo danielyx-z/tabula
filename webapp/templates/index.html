@@ -133,8 +133,12 @@
         <section id="session-panel" class="rail-section session-section" aria-labelledby="session-title" hidden>
           <div class="section-heading compact">
             <h2 id="session-title">This take</h2>
-            <p id="session-file" class="session-file"></p>
+            <label class="sr-only" for="take-title">Take title</label>
+            <input id="take-title" class="take-title-input" type="text"
+                   maxlength="80" placeholder="Untitled take"
+                   autocomplete="off" spellcheck="false">
             <p id="session-source" class="session-source"></p>
+            <span id="title-status" class="title-status" role="status" aria-live="polite"></span>
           </div>
 
           <dl class="facts">
@@ -200,6 +204,11 @@
           </div>
         </section>
       </aside>
+
+      <div id="rail-resizer" class="rail-resizer" role="separator"
+           aria-orientation="vertical" aria-label="Resize the session panel"
+           aria-valuemin="260" aria-valuemax="560" aria-valuenow="360"
+           tabindex="0" title="Drag to resize. Double-click to reset."></div>
 
       <section class="score-stage" aria-label="Tab and playback" aria-busy="false">
         <div id="empty-state" class="state empty-state">
@@ -322,6 +331,9 @@
               </button>
               <button type="button" id="follow-button" class="toolbar-button toolbar-toggle" aria-label="Follow playhead" aria-pressed="true" title="Auto-scroll to the current measure while playing">
                 <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M14 8l3 3-3 3M8 13h8M8 7h8"/></svg>
+              </button>
+              <button type="button" id="stave-button" class="toolbar-button toolbar-toggle" aria-label="Tab only" aria-pressed="false" title="Hide the notation staff and show tab only">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 8h14M3 11h14M3 14h14M3 17h14"/><path d="M7 5v12"/></svg>
               </button>
             </div>
 

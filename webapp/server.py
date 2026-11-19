@@ -25,6 +25,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import guitarpro
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import (
@@ -46,7 +47,7 @@ try:
 except ImportError:  # Allow ``python webapp/server.py`` as well as ``-m webapp.server``.
     from gp5 import build_gp5 as build_legacy_gp5
 
-from transcribe import MuscriptorUnavailable, transcribe_audio
+from transcribe import MuscriptorUnavailable, default_model, transcribe_audio
 from tabfeatures.labeling.store import (
     LABEL_ROOT,
     append_labels,
@@ -59,7 +60,7 @@ from tabfeatures.labeling.store import (
     write_candidates,
     write_meta,
 )
-from tabfeatures.midi_groups import load_note_groups
+from tabfeatures.midi_groups import load_note_groups, normalise_bar_offset
 from audio.synth import DEFAULT_SF2, render_midi_file_to_wav, render_note_sample
 
 REPO = Path(__file__).resolve().parents[1]
@@ -86,7 +87,7 @@ CONVERT_TIMEOUT = int(os.environ.get("TABULA_CONVERT_TIMEOUT", "900"))
 AUDIO_TIMEOUT = int(os.environ.get("TABULA_AUDIO_TIMEOUT", "180"))
 DOWNLOAD_TIMEOUT = int(os.environ.get("TABULA_DOWNLOAD_TIMEOUT", "300"))
 ALLOW_URLS = os.environ.get("TABULA_ALLOW_URLS", "1") != "0"
-MUSCRIPTOR_MODEL = os.environ.get("TABULA_MUSCRIPTOR_MODEL", "small")
+MUSCRIPTOR_MODEL = os.environ.get("TABULA_MUSCRIPTOR_MODEL") or default_model()
 MUSCRIPTOR_INSTRUMENTS = os.environ.get("TABULA_MUSCRIPTOR_INSTRUMENTS", "").strip()
 GUITAR_INSTRUMENTS = {
     "acoustic": "acoustic_guitar",
@@ -95,6 +96,11 @@ GUITAR_INSTRUMENTS = {
 DEFAULT_GUITAR = "acoustic"
 MUSCRIPTOR_GRID = int(os.environ.get("TABULA_MUSCRIPTOR_GRID", "8"))
 MUSCRIPTOR_QUANTIZE = os.environ.get("TABULA_MUSCRIPTOR_QUANTIZE", "0") != "0"
+# Dead-note classifier cutoff.  The model file ships 0.9, which leaves
+# confident-but-borderline muted plucks (0.6-0.9) sounding pitched; 0.65
+# matches what the ear hears.  Set TABULA_DEAD_THRESHOLD to change it, or an
+# empty string to fall back to the model's own threshold.
+DEAD_THRESHOLD = os.environ.get("TABULA_DEAD_THRESHOLD", "0.65").strip()
 MAX_CAPO = min(6, int(os.environ.get("TABULA_MAX_CAPO", "6")))
 
 AUDIO_SUFFIXES = {
@@ -389,6 +395,14 @@ def _write_job_progress(job_dir: Path, payload: dict) -> None:
 def _conversion_error_message(log: str, audio_mode: bool) -> str:
     lowered = log.lower()
     if "match rate" in lowered:
+        match = re.search(
+            r"match rate is ([\d.]+)%.*?min-match-rate ([\d.]+)%", log, re.IGNORECASE
+        )
+        if match:
+            return (
+                "The recording and MIDI only line up "
+                f"{match.group(1)}% (needs {match.group(2)}%)."
+            )
         return "The recording and MIDI do not line up."
     if audio_mode and ("audio" in lowered or "ffmpeg" in lowered):
         return "The recording could not be read."
@@ -1070,6 +1084,11 @@ def convert(
                 except RuntimeError as exc:
                     raise RuntimeError(f"MuScriptor transcription failed: {exc}") from exc
                 _cache_store(midi_path, midi_cache)
+        # MuScriptor writes its notes shifted forward so bar 1 lands on tick 0
+        # and records the shift in a marker.  Fold it in once, for both a fresh
+        # transcription and an uploaded MIDI, so the tab opens on the
+        # recording's timeline instead of a phantom silent bar.
+        normalise_bar_offset(midi_path)
     except MuscriptorUnavailable as exc:
         _stop_process(detect_proc)
         if detect_log is not None:
@@ -1262,6 +1281,11 @@ def convert(
                     "--title", title,
                     "--width", "120",
                     "--capo", capo,
+                    *(
+                        ["--dead-threshold", DEAD_THRESHOLD]
+                        if DEAD_THRESHOLD
+                        else []
+                    ),
                 ],
                 cwd=str(REPO),
                 stdout=stitch_log,
@@ -1305,6 +1329,13 @@ def convert(
 
     if result.returncode != 0:
         log = (result.stderr or "") + ("\n" + result.stdout if result.stdout else "")
+        if audio_mode:
+            # The audio path redirects the child's output to stitch.log, so
+            # ``result.stdout`` is empty. Read the real message from the file,
+            # otherwise every stitch failure shows a bare "Exit code 1".
+            tail = _log_tail(job_dir / "stitch.log")
+            if tail:
+                log = f"{log}\n{tail}" if log.strip() else tail
         log = log[-8000:].strip() or f"Exit code {result.returncode}"
         return _error(_conversion_error_message(log, audio_mode), 500, log)
 
@@ -1433,6 +1464,63 @@ def job_file(job_id: str, name: str):
                 filename=None if name == "score.gp5" else name,
             )
     raise HTTPException(status_code=404)
+
+
+@app.patch("/api/jobs/{job_id}/title")
+async def job_set_title(job_id: str, request: Request):
+    if not re.fullmatch(r"[0-9a-f]{32}", job_id):
+        raise HTTPException(status_code=404)
+    job_dir = JOBS / job_id
+    report_path = job_dir / "report.json"
+    if not report_path.is_file():
+        raise HTTPException(status_code=404)
+    try:
+        payload = await request.json()
+    except Exception:
+        return _error("The title could not be read.")
+    title = " ".join(str((payload or {}).get("title") or "").split())
+    if not title:
+        return _error("Give the take a title.")
+    if len(title) > 80:
+        return _error("Keep the title under 80 characters.")
+    try:
+        report = _load_json(report_path)
+    except (OSError, ValueError) as exc:
+        return _error("The take report could not be read.", 500, str(exc))
+    report["title"] = title
+    files = report.get("files")
+    if not isinstance(files, dict):
+        files = {}
+    files["title"] = title
+    report["files"] = files
+    summary = report.get("summary")
+    if isinstance(summary, dict):
+        exported = summary.get("exported")
+        if isinstance(exported, dict) and "title" in exported:
+            exported["title"] = title
+    try:
+        tmp = report_path.with_name(".report.json.tmp")
+        tmp.write_text(
+            json.dumps(report, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        tmp.replace(report_path)
+    except OSError as exc:
+        return _error("The title could not be saved.", 500, str(exc))
+    # Keep the sheet's own title in sync with the take title.  Both the legacy
+    # root file and the audio pipeline's out/song.gp5 are updated in place.
+    for gp5_path in (job_dir / "score.gp5", job_dir / "out" / "song.gp5"):
+        if not gp5_path.is_file():
+            continue
+        try:
+            song = guitarpro.parse(str(gp5_path))
+            song.title = title
+            guitarpro.write(song, str(gp5_path), version=(5, 1, 0))
+        except Exception:
+            # A title change should never break the take; the report still
+            # carries the new name even if this file cannot be rewritten.
+            pass
+    return {"id": job_id, "title": title}
 
 
 @app.middleware("http")

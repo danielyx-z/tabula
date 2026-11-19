@@ -197,14 +197,59 @@ is off by default; enable it only if memory becomes tight.
   playback. Clicking a label does not audition.
 - `scripts/train_dead_classifier.py` — trains from reviewed sessions and prints
   holdout precision/recall/confusion.
+- `webapp/templates/index.html`, `webapp/static/app.js`, `webapp/static/style.css`
+  — workbench. The session rail is resizable: `#rail-resizer` is a grid
+  column (`--rail-width`, 260–560 px, default 360) with pointer drag, keyboard
+  arrows/Home/End, double-click reset and `localStorage` key
+  `tabula:railWidth`; alphaTab re-renders 140 ms after the drag ends. It is
+  hidden below the mobile breakpoint, where `.workspace` is `display: block`.
+  `.app-shell` pins `grid-template-columns: minmax(0, 1fr)` so a wide alphaTab
+  surface cannot stretch the page sideways. Take titles are editable inline
+  (`#take-title`) and saved with `PATCH /api/jobs/{job_id}/title`, which
+  rewrites `report.json`, `files.title`, `summary.exported.title` and the GP5
+  metadata in place. `#stave-button` toggles tab-only view
+  (`display.staveProfile = StaveProfile.Tab`, `api.updateSettings()` +
+  `render()`), persisted as `tabula:tabOnly`. The score hides dynamics via
+  `notation.elements` (`NotationElement.EffectDynamics -> false`) and hides
+  rest glyphs in the rendered SVG (SMuFL U+E4E0..U+E4EF) after every render,
+  via a childList MutationObserver on the score element.
 
 ## Fixed bugs (recent)
 
-- **MuScriptor bar offset** — exported MIDI notes are shifted forward so bar 1
-  starts at tick 0 and a `muscriptor:bar_offset=` marker records the shift. The
-  labeller and dead-note classifier subtract that marker from audio-facing
-  times; MIDI ticks passed to `midi2tab` stay unchanged. Do not add an
-  estimated audio/MIDI offset on top.
+- **Large audio/MIDI offsets** — alignment used to refine from a zero-offset
+  pass with a coarse window of only two grid cells.  A clip whose MIDI carried
+  ~0.9 s of extra lead-in therefore matched 45.5% and `stitch_tab.py` refused
+  the take as "poorly aligned".  `align_events()` now scans the full
+  `--max-offset-sec` range (±10 s) and keeps the shift with the most matched
+  onsets, breaking ties by residual spread.  `clip_audio`: 45.5% → 75.8%,
+  7 dead notes.  The stitch error path now also reads `stitch.log` instead of
+  reporting a bare `Exit code 1`.  (The +0.93 s that estimator found was the
+  MuScriptor bar shift, since folded into the MIDI — see the next entry.  A
+  healthy pair now reports an offset near zero.)
+
+- **MuScriptor bar offset** — MuScriptor shifts every note forward and records
+  the shift in `muscriptor:bar_offset=`. That shift is now **folded into the
+  MIDI at intake** (`normalise_bar_offset` in `tabfeatures/midi_groups.py`, for
+  both a fresh transcription and an uploaded MIDI) and the marker is dropped,
+  so the tab, GP5, dead notes and labeller all sit on the recording's timeline.
+  Before this, `clip_audio` rendered a phantom empty first bar, started 0.965 s
+  late against the audio, and needed a +0.93 s alignment hack; now the
+  alignment offset is −0.03 s, the score is 14 bars instead of 15 and the whole
+  take is 20.6 s instead of 22.1 s. Do not subtract the marker anywhere else.
+- **Rhythm metrics reported 0 %** — `scripts/midi2tab.py` decoded the
+  concatenated multi-chunk token stream as one timeline, so `matched` was
+  always 0. It now passes the chunk-stitched notes (`pred_notes=raw`):
+  onset hit rate @20/60/120 = 97/98.5/100 %, mean onset error 2.4 ticks.
+- **Synthesis quality** — one shared `_fluidsynth_wav` renderer: 44.1 kHz for
+  file renders (was 22.05 kHz), reverb 0.18 and gain 0.75 for headroom, then
+  peak normalisation to 0.89 with short fades, so six-note chords no longer
+  clip and the nylon patch has a little room. Override with `TABULA_SF2_REVERB`,
+  `TABULA_SF2_CHORUS`, `TABULA_SF2_GAIN`.
+- **MuScriptor model choice** — `TABULA_MUSCRIPTOR_MODEL` still wins; with no
+  override the app picks the largest weight set already in the HF cache
+  (`default_model()`), else `small`. `medium`/`large` are gated on HuggingFace,
+  so `hf auth login` + accepting the licence is the one step needed to raise
+  transcriptions above what `small` can do.
 - **Labeller playback clock** — an `<audio>` element clock drifted by tens of
   milliseconds against the WAV. Playback now uses an `AudioBufferSourceNode`
   and `AudioContext.currentTime`, matching MuScriptor's own web player.
@@ -268,15 +313,54 @@ is off by default; enable it only if memory becomes tight.
   tab gets a `Capo: N` header; `raw.*` stays at capo 0. Valentine picks capo
   1: 237/729 open (32.5%), 47 notes above 6 (6.4%), mean fret 2.23, max 7,
   score 58.8 vs 42.8 at capo 0.
-- **Tempo-change suppression** — the GP5 writer drops tempo changes smaller
-  than 10 BPM from the last retained tempo.  MuScriptor's small expressive
-  drifts therefore do not clutter the score; meaningful tempo shifts remain.
-- **No ties / leading-bar trim** — the GP5 writer no longer emits tie
-  destinations; a note continuation after a beat or measure boundary is
-  re-articulated instead. Leading measures with no performance are dropped.
-  Automatic H/P
-  defaults to confidence 0.85, gap 0.35 beats, interval 5 semitones and ring
-  tolerance 40; chord H/P remains off.
+- **Dead notes use the muted-guitar program** — GM has a dedicated muted
+  electric guitar (program 28), so a dead beat now carries a program change to
+  28 and the next beat restores 24 (nylon). The single `x` on the lowest string
+  is kept (`merge_dead_notes` collapses a muted chord again), and it sounds for
+  its notated length at velocity 95 — a damped chug instead of a silent tick or
+  an open low E. Verified through alphaTab's MIDI generator: program changes at
+  8880/10560/12000 and notes of 480-543 ticks on channel 0.
+- **Dead notes are audible** — `apply_predictions` stores the source note's
+  `dur` (not `1`) and `gp5.build_gp5` writes it. alphaTab's
+  `MidiFileGenerator` turns a GP dead note into a fixed ~60-tick click whatever
+  the notated length, so the vendored `alphaTab.core.min.mjs` is patched —
+  `static $k` 30 -> 200 (now ~0.2-0.5 s). See `webapp/static/alphatab/README.md`;
+  re-apply on upgrade. Space in the workbench always toggles play/pause now,
+  even when a toolbar button holds focus (keydown + keyup are prevented).
+- **Dead-note threshold is 0.65 in the app** — `data/models/dead_notes` ships
+  a 0.9 cutoff, which left two muted plucks in `clip_audio` bar 4 sounding
+  pitched (classifier dead scores 0.84 and 0.67). `TABULA_DEAD_THRESHOLD`
+  defaults to 0.65 and is passed to `stitch_tab.py --dead-threshold`; set it
+  empty to use the model's own threshold. The classifier itself is unchanged —
+  the per-note scores are identical across builds.
+- **GP5 grid: 32nds, one flat tempo** — the grid is 120 ticks (a 32nd), so
+  onsets follow the MIDI within a 32nd (median 20 ticks, max 100) instead of
+  being dragged onto 16ths; nothing shorter than a 32nd is written. Rests use
+  plain values (no dots, `_undot_rests`) so a hidden rest cannot leave a stray
+  augmentation dot behind, and adjacent rests are merged first
+  (`_merge_rest_beats`). Playback stays at a single tempo: MuScriptor's
+  expressive drifts (< 10 BPM from the last kept value) are dropped, so the
+  score does not drift against itself. A note that starts in the last grid step
+  of a bar and rings past it is notated on the bar line.
+- **No ties / leading-bar trim** — the GP5 writer never emits ties and never
+  re-strikes a note. Each MIDI note is one attack at its own tick; a note still
+  sounding when a bar line arrives simply ends there (a beat cannot cross a
+  measure). Re-striking it invents an attack the performance does not have —
+  on `clip_audio` that put a phantom chord at the top of bar 2. Bar-crossing
+  sustains need ties to be exact, which are deliberately not written. Leading
+  measures with no performance are dropped. Automatic H/P defaults to
+  confidence 0.85, gap 0.35 beats, interval 5 semitones and ring tolerance 40;
+  chord H/P remains off.
+- **Rest beats are merged** — runs are split independently, so merging the
+  spans afterwards (`_merge_rest_beats`) and re-splitting greedily avoids two
+  32nd rests in a row where a 16th belongs. Adjacent rests inside a measure are
+  now maximal (960+240, 720+120); rests are never merged across a bar line.
+- **GP5 dropped end-of-bar notes** — a note starting in the last half of a
+  16th (it rounds up to `slots`, one past the final slot) matched no slot and
+  disappeared from the score; `clip_audio` lost 7 groups at bar ends. The
+  writer clamps the first slot to `slots - 1`, so those notes land on the last
+  16th of the bar. With that and the continuation fix, the GP5's pitched
+  attacks are exactly MuScriptor's, minus the dead-note onsets.
 - **GP5 grid-boundary collision** — a sustained note ending just after a
   measure boundary and the next note on the same string starting a few ticks
   later could round into the same grid slot. Both were written into the same

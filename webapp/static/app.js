@@ -54,13 +54,17 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   const nextBarButton = byId("next-bar");
   const loopButton = byId("loop-button");
   const followButton = byId("follow-button");
+  const staveButton = byId("stave-button");
   const speedSelect = byId("speed-select");
   const muteButton = byId("mute-button");
   const volumeSlider = byId("volume-slider");
 
   const sessionPanel = byId("session-panel");
-  const sessionFile = byId("session-file");
+  const takeTitleInput = byId("take-title");
+  const titleStatus = byId("title-status");
   const sessionSource = byId("session-source");
+  const workspace = document.querySelector(".workspace");
+  const railResizer = byId("rail-resizer");
   const factCapo = byId("fact-capo");
   const factNotes = byId("fact-notes");
   const factDead = byId("fact-dead");
@@ -91,6 +95,8 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
   const LayoutMode = AlphaTab && AlphaTab.LayoutMode;
   const ScrollMode = AlphaTab && AlphaTab.ScrollMode;
+  const StaveProfile = AlphaTab && AlphaTab.StaveProfile;
+  const NotationElement = AlphaTab && AlphaTab.NotationElement;
   const PlayerMode = AlphaTab
     ? AlphaTab.PlayerMode || (AlphaTab.synth && AlphaTab.synth.PlayerMode)
     : null;
@@ -103,6 +109,9 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   let provisionalLoaded = false;
   let lastConverted = false;
   let lastFileName = "";
+  let currentTitle = "";
+  let savingTitle = false;
+  let titleStatusTimer = 0;
 
   let api = null;
   let score = null;
@@ -130,6 +139,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   let isMuted = localStorage.getItem("tabula:isMuted") === "1";
   let followEnabled = localStorage.getItem("tabula:followEnabled") !== "0"; // on by default
   let loopEnabled = localStorage.getItem("tabula:loopEnabled") === "1";
+  let tabOnly = localStorage.getItem("tabula:tabOnly") === "1";
   let programmaticScrollUntil = 0;
 
   const MAX_RECENT = 5;
@@ -560,6 +570,55 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     updatePlayAvailability();
   }
 
+  // alphaTab always draws rest glyphs; the tab reads cleaner without them.
+  // They are plain <text> nodes in the SMuFL rest range (U+E4E0..U+E4EF).
+  function hideRestGlyphs() {
+    if (!alphaTabEl) return;
+    alphaTabEl.querySelectorAll("text").forEach((node) => {
+      const code = node.textContent ? node.textContent.codePointAt(0) : undefined;
+      if (
+        code !== undefined &&
+        code >= 0xe4e0 &&
+        code <= 0xe4ef &&
+        node.style.visibility !== "hidden"
+      ) {
+        node.style.visibility = "hidden";
+      }
+    });
+  }
+
+  let restObserver = null;
+
+  function installRestHiding() {
+    hideRestGlyphs();
+    if (restObserver || !alphaTabEl || typeof MutationObserver !== "function") {
+      return;
+    }
+    // Re-renders replace the SVG nodes; only watch childList so hiding a
+    // glyph (an attribute change) cannot retrigger the observer.
+    restObserver = new MutationObserver(() => hideRestGlyphs());
+    restObserver.observe(alphaTabEl, { childList: true, subtree: true });
+  }
+
+  function setTabOnly(enabled) {
+    tabOnly = Boolean(enabled);
+    staveButton.setAttribute("aria-pressed", tabOnly ? "true" : "false");
+    staveButton.classList.toggle("is-on", tabOnly);
+    try {
+      localStorage.setItem("tabula:tabOnly", tabOnly ? "1" : "0");
+    } catch {}
+    if (!api || !StaveProfile) return;
+    try {
+      api.settings.display.staveProfile = tabOnly
+        ? StaveProfile.Tab
+        : StaveProfile.Default;
+      api.updateSettings();
+      if (scoreReady) api.render();
+    } catch (error) {
+      // A player that is not ready yet picks the profile up on the next load.
+    }
+  }
+
   function setFollow(enabled) {
     followEnabled = enabled;
     followButton.setAttribute("aria-pressed", followEnabled ? "true" : "false");
@@ -599,6 +658,13 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
       display: {
         layoutMode: LayoutMode ? LayoutMode.Parchment : 2,
         scale: 0.98,
+        staveProfile: tabOnly && StaveProfile ? StaveProfile.Tab : 0,
+      },
+      // The score is for reading the tab: no dynamic (f, p, mf) markings.
+      notation: {
+        elements: NotationElement
+          ? new Map([[NotationElement.EffectDynamics, false]])
+          : new Map(),
       },
       player: {
         enablePlayer: true,
@@ -633,6 +699,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
     api.renderFinished.on(() => {
       scoreLoading.hidden = true;
+      installRestHiding();
       updateMeasure(lastTick, true);
       updatePlayAvailability();
     });
@@ -846,6 +913,34 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     renderRecent();
   }
 
+  function recentFromPayload(payload, id, name) {
+    const summary = payload.summary || {};
+    const exported = summary.exported || {};
+    return {
+      id: id,
+      name: name || "tabula",
+      date: Date.now(),
+      duration: Number(exported.duration) || 0,
+      notes: Number(summary.notes) || 0,
+      capo: Number(summary.capo) || 0,
+      open_notes: Number(summary.open_notes) || 0,
+      high_notes: Number(summary.high_notes) || 0,
+      dead_notes: Number(summary.dead_notes) || 0,
+      hp: Number(summary.hp) || 0,
+      match_rate: summary.match_rate,
+      offset_sec: summary.offset_sec,
+      dropped: Number(summary.dropped) || 0,
+      files: payload.files || {},
+      urls: {
+        gp5: payload.urls.gp5,
+        midi: payload.urls.midi,
+        tab: payload.urls.tab,
+        report: payload.urls.report,
+        audio: payload.urls.audio,
+      },
+    };
+  }
+
   function restoreRecent(entry) {
     if (busy) return;
     if (!entry.urls || !entry.urls.gp5) {
@@ -874,6 +969,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     };
     lastFileName = entry.name;
     lastConverted = true;
+    currentJobId = /^[0-9a-f]{32}$/.test(entry.id || "") ? entry.id : "";
     populateSession(payload, entry.name);
     setState("score");
     loadScore(payload);
@@ -881,6 +977,86 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   }
 
   // ---------- End recent takes ----------
+
+  function updateDownloadNames(title) {
+    const slug = slugify(title || "tabula");
+    downloadGp5.setAttribute("download", `${slug}.gp5`);
+    downloadMidi.setAttribute("download", `${slug}.mid`);
+    downloadTab.setAttribute("download", `${slug}_tab.txt`);
+    downloadReport.setAttribute("download", `${slug}_report.json`);
+    if (!downloadAudio.hidden) {
+      downloadAudio.setAttribute("download", `${slug}_recording.wav`);
+    }
+  }
+
+  function setTitleStatus(message) {
+    window.clearTimeout(titleStatusTimer);
+    titleStatus.textContent = message || "";
+    if (message) {
+      titleStatusTimer = window.setTimeout(() => {
+        titleStatus.textContent = "";
+      }, 2600);
+    }
+  }
+
+  function updateRecentName(id, name) {
+    const arr = getRecent();
+    const entry = arr.find((item) => item.id === id);
+    if (!entry) return;
+    entry.name = name;
+    setRecent(arr);
+    renderRecent();
+  }
+
+  async function saveTakeTitle() {
+    if (savingTitle) return;
+    if (!currentJobId) {
+      takeTitleInput.value = currentTitle;
+      setTitleStatus("This take cannot be renamed.");
+      return;
+    }
+    const title = takeTitleInput.value.trim().replace(/\s+/g, " ");
+    if (!title) {
+      takeTitleInput.value = currentTitle;
+      return;
+    }
+    if (title === currentTitle) return;
+    savingTitle = true;
+    try {
+      const response = await fetch(`/api/jobs/${currentJobId}/title`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ title }),
+      });
+      if (!response.ok) {
+        throw new Error(`The title could not be saved (HTTP ${response.status}).`);
+      }
+      const data = await response.json();
+      currentTitle = data.title || title;
+      lastFileName = currentTitle;
+      takeTitleInput.value = currentTitle;
+      takeTitleInput.title = currentTitle;
+      document.title = `${currentTitle} — Tabula`;
+      updateDownloadNames(currentTitle);
+      updateRecentName(currentJobId, currentTitle);
+      if (score) {
+        try {
+          score.title = currentTitle;
+          api.render();
+        } catch (error) {
+          // The file on disk is already updated; a reload will show it.
+        }
+      }
+      setTitleStatus("Title saved.");
+    } catch (error) {
+      takeTitleInput.value = currentTitle;
+      setTitleStatus(
+        error && error.message ? error.message : "The title could not be saved."
+      );
+    } finally {
+      savingTitle = false;
+    }
+  }
 
   function populateSession(payload, fileName) {
     const summary = payload.summary || {};
@@ -896,8 +1072,11 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     const capo = Number(summary.capo) || 0;
 
     const title = payload.title || fileName || "Take";
-    sessionFile.textContent = title;
-    sessionFile.title = title;
+    currentTitle = title;
+    takeTitleInput.value = title;
+    takeTitleInput.title = title;
+    document.title = `${title} — Tabula`;
+    setTitleStatus("");
     const sourceNames = [files.audio, files.midi].filter(Boolean);
     sessionSource.textContent = sourceNames.join("  +  ");
     sessionSource.title = sessionSource.textContent;
@@ -958,23 +1137,18 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     currentTimeEl.textContent = "0:00";
     seek.value = "0";
 
-    const slug = slugify(title || "tabula");
     downloadGp5.href = payload.urls.gp5;
-    downloadGp5.setAttribute("download", `${slug}.gp5`);
     downloadMidi.href = payload.urls.midi;
-    downloadMidi.setAttribute("download", `${slug}.mid`);
     downloadTab.href = payload.urls.tab;
-    downloadTab.setAttribute("download", `${slug}_tab.txt`);
     downloadReport.href = payload.urls.report;
-    downloadReport.setAttribute("download", `${slug}_report.json`);
     if (payload.urls.audio) {
       downloadAudio.href = payload.urls.audio;
-      downloadAudio.setAttribute("download", `${slug}_recording.wav`);
       downloadAudio.hidden = false;
     } else {
       downloadAudio.hidden = true;
       downloadAudio.removeAttribute("href");
     }
+    updateDownloadNames(title);
 
     const notesOut = [];
     const skipped = Number(exported.skipped) || 0;
@@ -1093,31 +1267,11 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     lastConverted = true;
     updateConvertAvailability();
 
-    const summary = payload.summary || {};
-    const exported = summary.exported || {};
-    addRecent({
-      id: payload.id || slugify(fileName),
-      name: fileName || "tabula",
-      date: Date.now(),
-      duration: Number(exported.duration) || 0,
-      notes: Number(summary.notes) || 0,
-      capo: Number(summary.capo) || 0,
-      open_notes: Number(summary.open_notes) || 0,
-      high_notes: Number(summary.high_notes) || 0,
-      dead_notes: Number(summary.dead_notes) || 0,
-      hp: Number(summary.hp) || 0,
-      match_rate: summary.match_rate,
-      offset_sec: summary.offset_sec,
-      dropped: Number(summary.dropped) || 0,
-      files: payload.files || {},
-      urls: {
-        gp5: payload.urls.gp5,
-        midi: payload.urls.midi,
-        tab: payload.urls.tab,
-        report: payload.urls.report,
-        audio: payload.urls.audio,
-      },
-    });
+    addRecent(recentFromPayload(
+      payload,
+      payload.id || slugify(fileName),
+      fileName || "tabula"
+    ));
 
     if (window.matchMedia("(max-width: 980px)").matches) {
       window.requestAnimationFrame(() => {
@@ -1262,6 +1416,10 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     lastConverted = false;
     lastFileName = "";
     currentJobId = "";
+    currentTitle = "";
+    takeTitleInput.value = "";
+    document.title = "Tabula — audio to tab";
+    setTitleStatus("");
     provisionalLoaded = false;
     scoreReady = false;
     audioProblem = "";
@@ -1360,10 +1518,12 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
       lastFileName = title;
       lastConverted = true;
+      currentJobId = jobId;
       populateSession(payload, title);
       setState("score");
       loadScore(payload);
       updateConvertAvailability();
+      addRecent(recentFromPayload(payload, jobId, title));
 
       const playParam = params.get("play");
       const seekParam = params.get("seek");
@@ -1513,6 +1673,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
   loopButton.addEventListener("click", () => setLoop(!loopEnabled));
   followButton.addEventListener("click", () => setFollow(!followEnabled));
+  staveButton.addEventListener("click", () => setTabOnly(!tabOnly));
 
   // Manual scrolling takes priority over follow mode.  Without this, the next
   // bar boundary yanks the score back and the scrollbar appears to flicker.
@@ -1574,18 +1735,20 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     }
   });
 
+  const isSpace = (event) => event.key === " " || event.code === "Space";
+
   window.addEventListener("keydown", (event) => {
     const active = document.activeElement;
-    const nativeSpace = event.key === " "
-      && active
-      && (active.tagName === "BUTTON" || active.tagName === "A" || active.tagName === "SUMMARY");
-    if (nativeSpace || isInteractiveInput(active)) return;
+    // Space always means play/pause, even if a toolbar button still has
+    // focus from the last click.  Typing in a field still gets its space.
+    if (isSpace(event) && !isInteractiveInput(active)) {
+      event.preventDefault();
+      playButton.click();
+      return;
+    }
+    if (isInteractiveInput(active)) return;
     const key = event.key.toLowerCase();
     switch (key) {
-      case " ":
-        event.preventDefault();
-        playButton.click();
-        break;
       case "arrowleft":
         event.preventDefault();
         seekBySeconds(-4);
@@ -1621,7 +1784,143 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     }
   });
 
+  // Stop the browser from re-activating a focused button on key release,
+  // which would undo the play/pause toggle above.
+  window.addEventListener("keyup", (event) => {
+    if (isSpace(event) && !isInteractiveInput(document.activeElement)) {
+      event.preventDefault();
+    }
+  });
+
+  takeTitleInput.addEventListener("change", saveTakeTitle);
+  takeTitleInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      takeTitleInput.blur();
+    } else if (event.key === "Escape") {
+      takeTitleInput.value = currentTitle;
+      takeTitleInput.blur();
+    }
+  });
+
+  // ---------- Resizable session rail ----------
+
+  const RAIL_DEFAULT = 360;
+  const RAIL_MIN = 260;
+  const RAIL_MAX = 560;
+  let railDrag = null;
+  let railRenderTimer = 0;
+
+  function railMaxWidth() {
+    return Math.max(RAIL_MIN, Math.min(RAIL_MAX, window.innerWidth - 420));
+  }
+
+  function currentRailWidth() {
+    const value = parseFloat(workspace.style.getPropertyValue("--rail-width"));
+    if (Number.isFinite(value) && value > 0) return value;
+    const rail = workspace.querySelector(".control-rail");
+    return rail ? rail.getBoundingClientRect().width : RAIL_DEFAULT;
+  }
+
+  function setRailWidth(width, persist) {
+    const clamped = Math.round(
+      Math.min(railMaxWidth(), Math.max(RAIL_MIN, width))
+    );
+    workspace.style.setProperty("--rail-width", `${clamped}px`);
+    railResizer.setAttribute("aria-valuenow", String(clamped));
+    railResizer.setAttribute("aria-valuemax", String(Math.round(railMaxWidth())));
+    if (persist) {
+      try {
+        localStorage.setItem("tabula:railWidth", String(clamped));
+      } catch {
+        // storage unavailable; the width still applies for this session
+      }
+    }
+  }
+
+  function scheduleRailRender() {
+    window.clearTimeout(railRenderTimer);
+    railRenderTimer = window.setTimeout(() => {
+      if (!api || !scoreReady) return;
+      try {
+        api.render();
+      } catch (error) {
+        // A render already in flight is harmless; leave the current layout.
+      }
+    }, 140);
+  }
+
+  const storedRail = Number(localStorage.getItem("tabula:railWidth"));
+  if (Number.isFinite(storedRail) && storedRail > 0) {
+    setRailWidth(storedRail, false);
+  } else {
+    setRailWidth(RAIL_DEFAULT, false);
+  }
+
+  railResizer.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    railDrag = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: currentRailWidth(),
+    };
+    try {
+      railResizer.setPointerCapture(event.pointerId);
+    } catch {}
+    railResizer.classList.add("is-dragging");
+    document.body.classList.add("is-resizing-rail");
+    event.preventDefault();
+  });
+
+  railResizer.addEventListener("pointermove", (event) => {
+    if (!railDrag || event.pointerId !== railDrag.pointerId) return;
+    setRailWidth(railDrag.startWidth + event.clientX - railDrag.startX, false);
+  });
+
+  function endRailDrag(event) {
+    if (!railDrag) return;
+    if (event && event.pointerId !== railDrag.pointerId) return;
+    try {
+      railResizer.releasePointerCapture(railDrag.pointerId);
+    } catch {}
+    railDrag = null;
+    railResizer.classList.remove("is-dragging");
+    document.body.classList.remove("is-resizing-rail");
+    setRailWidth(currentRailWidth(), true);
+    scheduleRailRender();
+  }
+
+  railResizer.addEventListener("pointerup", endRailDrag);
+  railResizer.addEventListener("pointercancel", endRailDrag);
+  railResizer.addEventListener("dblclick", () => {
+    setRailWidth(RAIL_DEFAULT, true);
+    scheduleRailRender();
+  });
+
+  railResizer.addEventListener("keydown", (event) => {
+    const step = event.shiftKey ? 48 : 16;
+    const current = currentRailWidth();
+    let next = null;
+    if (event.key === "ArrowLeft") next = current - step;
+    else if (event.key === "ArrowRight") next = current + step;
+    else if (event.key === "Home") next = RAIL_MIN;
+    else if (event.key === "End") next = railMaxWidth();
+    if (next === null) return;
+    event.preventDefault();
+    setRailWidth(next, true);
+    scheduleRailRender();
+  });
+
+  window.addEventListener("resize", () => {
+    if (railDrag) return;
+    if (currentRailWidth() > railMaxWidth()) {
+      setRailWidth(railMaxWidth(), true);
+    }
+    scheduleRailRender();
+  });
+
   setFollow(followEnabled);
+  setTabOnly(tabOnly);
   setLoop(loopEnabled);
   initAlphaTab();
   checkHealth();
