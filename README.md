@@ -38,10 +38,13 @@ A small T5 encoder-decoder (2.79M params) reads symbolic MIDI note events (`NOTE
 Time is quantised to a 20-tick grid at PPQ 960. `TIME_SHIFT` is compositional with 11 values (20–3840 ticks). 
 
 
+### Other notes
 Training corpus: GuitarSet (360 tracks, 62k notes, split by performance).
 
 A separate XGBoost model trained on my own data is used for guitar-specific tab corrections: notably, dead (muted) notes are changed to a percussive X in the output tablature.  
 
-Based on **Fretting-Transformer: Encoder-Decoder Model for MIDI to Tablature Transcription** (Hamberger et al., arXiv:2506.14223, ICMC 2025).
-
 See `docs/` for format specs, data contract, labelling workflow, cluster notes, and verification.
+
+This project is based on **Fretting-Transformer: Encoder-Decoder Model for MIDI to Tablature Transcription** (Hamberger et al., arXiv:2506.14223, ICMC 2025).
+
+
