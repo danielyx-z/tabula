@@ -93,13 +93,12 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
   const AUDIO_NAME = /\.(wav|flac|ogg|oga|mp3|m4a|aac|aif|aiff|opus|wma)$/i;
 
-  // PDF export stays out of the initial page weight: the libraries and the
-  // score font are fetched the first time the user asks for a PDF.
+  // PDF export stays out of the initial page weight: the libraries are fetched
+  // the first time the user asks for a PDF.
   const PDF_LIBS = [
     "/static/vendor/jspdf.umd.min.js",
     "/static/vendor/svg2pdf.umd.min.js",
   ];
-  const PDF_FONT = { name: "TabulaMusic", url: "/static/vendor/tabula-music.ttf" };
   const A4_WIDTH = 595.28;
   const A4_HEIGHT = 841.89;
   const PDF_MARGIN = 34; // 12 mm
@@ -1176,36 +1175,6 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     return pdfLibsPromise;
   }
 
-  function asDataUrl(url) {
-    return fetch(url, { cache: "force-cache" })
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error(`The PDF font returned HTTP ${response.status}.`);
-        }
-        return response.blob();
-      })
-      .then(
-        (blob) =>
-          new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(String(reader.result));
-            reader.onerror = () => reject(new Error("The PDF font could not be read."));
-            reader.readAsDataURL(blob);
-          })
-      );
-  }
-
-  async function registerPdfFont(doc) {
-    const dataUrl = await asDataUrl(PDF_FONT.url);
-    const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
-    doc.addFileToVFS("tabula-music.ttf", base64);
-    // alphaTab's markup can ask for bold or italic; map every style onto the
-    // single music font so svg2pdf never falls back to Times.
-    ["normal", "bold", "italic", "bolditalic"].forEach((style) => {
-      doc.addFont("tabula-music.ttf", PDF_FONT.name, style);
-    });
-  }
-
   function svgSize(svg) {
     const width = parseFloat(svg.getAttribute("width"));
     const height = parseFloat(svg.getAttribute("height"));
@@ -1220,16 +1189,10 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     const clone = svg.cloneNode(true);
     // alphaTab writes absolute pixel sizes but no viewBox; svg2pdf needs one
     // to scale the system into the page width.
-    clone.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    if (!clone.hasAttribute("viewBox")) {
+      clone.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    }
     clone.removeAttribute("style");
-    clone.querySelectorAll("text").forEach((node) => {
-      ["style", "font-family"].forEach((attribute) => {
-        const value = node.getAttribute(attribute);
-        if (value) {
-          node.setAttribute(attribute, value.replace(/alphaTab\d*/g, PDF_FONT.name));
-        }
-      });
-    });
     return clone;
   }
 
@@ -1269,7 +1232,6 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
         format: "a4",
         compress: true,
       });
-      await registerPdfFont(doc);
 
       const contentWidth = A4_WIDTH - PDF_MARGIN * 2;
       const contentBottom = A4_HEIGHT - PDF_MARGIN;
@@ -1679,7 +1641,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
           1,
           Math.round(Number(response.headers.get("Retry-After")) || 0) || 30
         );
-        setStatus(`The converter is busy, try again in ${retryAfter}s.`);
+        setStatus(`The converter is busy, try again in ${retryAfter}s`);
         setState("empty");
         return;
       }
@@ -2268,6 +2230,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   setFollow(followEnabled);
   setTabOnly(tabOnly);
   setLoop(loopEnabled);
+  updatePdfAvailability();
   initAlphaTab();
   checkHealth();
   renderRecent();
