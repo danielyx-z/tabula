@@ -7,11 +7,11 @@ I'd frequently listen to guitar covers on Youtube but many would have paid or no
 
 https://github.com/user-attachments/assets/1c53f549-2176-48d3-8766-60d2aff74caf
 
-**Tabula** Identifies dead notes correctly
+**Tabula** Correctly identifies dead notes :)
 
 https://github.com/user-attachments/assets/b8bcb013-845f-485a-9496-07aff17de8b7
 
-**Songscription** Fails to identify dead notes
+**Songscription** Fails to identify dead notes, although timing is cleaner than Tabula
 
 https://github.com/user-attachments/assets/58a79516-ab12-4169-a119-5717edb3888e
 
