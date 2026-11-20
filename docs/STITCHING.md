@@ -346,10 +346,13 @@ a sustained note and a later attack on the same string, the exporter ends the
 earlier note at that attack (and drops exact same-tick duplicates) so the
 written GP5 stays valid.  The count is reported as `gp5.overlap_trimmed`.
 
-The GP5 writer does not emit ties.  A note continuation after a beat or measure
-boundary is re-articulated as a normal attack instead of adding a silent tie
-destination.  Leading measures with no performance are dropped so the score
-starts at the first bar containing notes.
+The GP5 writer does not emit ties and never re-strikes a note.  Each MIDI note
+is one attack at its own tick; a note still sounding when a beat or bar line
+arrives simply ends there, because a beat cannot cross a measure.  Re-striking
+it would invent an attack the performance does not have.  A note that starts in
+the final grid step of a bar and rings past it is notated on the bar line.
+Leading measures with no performance are dropped so the score starts at the
+first bar containing notes.
 
 Tempo changes smaller than 10 BPM from the last retained tempo are suppressed
 when writing GP5.  MuScriptor emits small tempo drifts for expressive playing;

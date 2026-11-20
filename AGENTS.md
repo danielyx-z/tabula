@@ -212,7 +212,10 @@ is off by default; enable it only if memory becomes tight.
   `render()`), persisted as `tabula:tabOnly`. The score hides dynamics via
   `notation.elements` (`NotationElement.EffectDynamics -> false`) and hides
   rest glyphs in the rendered SVG (SMuFL U+E4E0..U+E4EF) after every render,
-  via a childList MutationObserver on the score element.
+  via a childList MutationObserver on the score element. Space always toggles
+  play/pause, even when a toolbar button holds focus (keydown and keyup are
+  prevented). PDF export is client-side (vendored jsPDF + svg2pdf) and
+  paginates the already-vector score SVGs onto A4.
 
 ## Fixed bugs (recent)
 
@@ -320,13 +323,12 @@ is off by default; enable it only if memory becomes tight.
   its notated length at velocity 95 — a damped chug instead of a silent tick or
   an open low E. Verified through alphaTab's MIDI generator: program changes at
   8880/10560/12000 and notes of 480-543 ticks on channel 0.
-- **Dead notes are audible** — `apply_predictions` stores the source note's
-  `dur` (not `1`) and `gp5.build_gp5` writes it. alphaTab's
-  `MidiFileGenerator` turns a GP dead note into a fixed ~60-tick click whatever
-  the notated length, so the vendored `alphaTab.core.min.mjs` is patched —
-  `static $k` 30 -> 200 (now ~0.2-0.5 s). See `webapp/static/alphatab/README.md`;
-  re-apply on upgrade. Space in the workbench always toggles play/pause now,
-  even when a toolbar button holds focus (keydown + keyup are prevented).
+  Dead notes keep their length: `apply_predictions` stores the source note's
+  `dur` (not `1`), and the
+  vendored `alphaTab.core.min.mjs` is patched (`static $k` 30 -> 200) because
+  `MidiFileGenerator` otherwise turns a GP dead note into a fixed ~60-tick
+  click whatever the notated length. See `webapp/static/alphatab/README.md`;
+  re-apply on upgrade.
 - **Dead-note threshold is 0.65 in the app** — `data/models/dead_notes` ships
   a 0.9 cutoff, which left two muted plucks in `clip_audio` bar 4 sounding
   pitched (classifier dead scores 0.84 and 0.67). `TABULA_DEAD_THRESHOLD`
@@ -335,10 +337,10 @@ is off by default; enable it only if memory becomes tight.
   the per-note scores are identical across builds.
 - **GP5 grid: 32nds, one flat tempo** — the grid is 120 ticks (a 32nd), so
   onsets follow the MIDI within a 32nd (median 20 ticks, max 100) instead of
-  being dragged onto 16ths; nothing shorter than a 32nd is written. Rests use
-  plain values (no dots, `_undot_rests`) so a hidden rest cannot leave a stray
-  augmentation dot behind, and adjacent rests are merged first
-  (`_merge_rest_beats`). Playback stays at a single tempo: MuScriptor's
+  being dragged onto 16ths; nothing shorter than a 32nd is written.
+  `_rebuild_rests` merges adjacent rest beats and splits them into plain
+  values (no dots) so a hidden rest cannot leave a stray augmentation dot
+  behind. Playback stays at a single tempo: MuScriptor's
   expressive drifts (< 10 BPM from the last kept value) are dropped, so the
   score does not drift against itself. A note that starts in the last grid step
   of a bar and rings past it is notated on the bar line.
@@ -351,16 +353,10 @@ is off by default; enable it only if memory becomes tight.
   measures with no performance are dropped. Automatic H/P defaults to
   confidence 0.85, gap 0.35 beats, interval 5 semitones and ring tolerance 40;
   chord H/P remains off.
-- **Rest beats are merged** — runs are split independently, so merging the
-  spans afterwards (`_merge_rest_beats`) and re-splitting greedily avoids two
-  32nd rests in a row where a 16th belongs. Adjacent rests inside a measure are
-  now maximal (960+240, 720+120); rests are never merged across a bar line.
-- **GP5 dropped end-of-bar notes** — a note starting in the last half of a
-  16th (it rounds up to `slots`, one past the final slot) matched no slot and
-  disappeared from the score; `clip_audio` lost 7 groups at bar ends. The
-  writer clamps the first slot to `slots - 1`, so those notes land on the last
-  16th of the bar. With that and the continuation fix, the GP5's pitched
-  attacks are exactly MuScriptor's, minus the dead-note onsets.
+- **GP5 notes at a bar line** — a note that rounds past the final slot of a
+  measure used to vanish; it is now clamped into the last slot, and one that
+  starts in the final grid step *and* rings past the bar is notated on the bar
+  line. Pitched attacks then match MuScriptor's, minus the dead-note onsets.
 - **GP5 grid-boundary collision** — a sustained note ending just after a
   measure boundary and the next note on the same string starting a few ticks
   later could round into the same grid slot. Both were written into the same

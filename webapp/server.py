@@ -918,6 +918,127 @@ def label_delete(session_id: str):
     return {"ok": True}
 
 
+def _stitch_argv(
+    stage: str,
+    *,
+    normalized_audio: Path | None,
+    midi_path: Path,
+    out_dir: Path,
+    title: str = "",
+    beam: int = 1,
+    capo: str = "auto",
+    force: bool = False,
+) -> list[str]:
+    """Argument list for one ``stitch_tab.py`` stage."""
+    argv = [
+        PYTHON, str(REPO / "scripts" / "stitch_tab.py"),
+        "--audio", str(normalized_audio),
+        "--midi", str(midi_path),
+        "--out-dir", str(out_dir),
+        "--stage", stage,
+    ]
+    if stage == "tab":
+        argv += [
+            "--checkpoint", str(CHECKPOINT),
+            "--vocab", str(VOCAB),
+            "--beam", str(beam),
+            "--capo", capo,
+            "--max-capo", str(MAX_CAPO),
+        ]
+        if force:
+            argv.append("--force")
+    elif stage == "provisional":
+        argv += ["--title", title, "--capo", capo]
+    elif stage == "stitch":
+        argv += ["--title", title, "--width", "120", "--capo", capo]
+        if DEAD_THRESHOLD:
+            argv += ["--dead-threshold", DEAD_THRESHOLD]
+    return argv
+
+
+def _midi2tab_argv(
+    midi_path: Path, out_dir: Path, *, beam: int, capo: str
+) -> list[str]:
+    return [
+        PYTHON, str(REPO / "scripts" / "midi2tab.py"), str(midi_path),
+        "--checkpoint", str(CHECKPOINT),
+        "--vocab", str(VOCAB),
+        "--out-dir", str(out_dir),
+        "--beam", str(beam),
+        "--max-fret", "6",
+        "--capo", capo,
+        "--max-capo", str(MAX_CAPO),
+        "--width", "120",
+        "--no-audio",
+    ]
+
+
+def _build_job_result(
+    *,
+    job_dir: Path,
+    job_id: str,
+    title: str,
+    audio_name: str | None,
+    midi_name: str,
+    audio_mode: bool,
+    exported: dict,
+    pipeline: dict | None,
+    started: float,
+) -> dict:
+    """Read the artifacts, write report.json and return the API payload."""
+    final_json = job_dir / "out" / "tabula" / "final.json"
+    report_json = job_dir / "out" / "tabula" / "report.json"
+    try:
+        records = _load_notes(final_json)
+        report = _load_json(report_json)
+    except (OSError, ValueError) as exc:
+        raise job_queue.JobFailed(
+            "The conversion artifacts could not be read.", str(exc)
+        ) from exc
+
+    capo = int(report.get("capo", 0))
+    summary = _summary(report, records, exported, pipeline)
+    files = {
+        "audio": audio_name,
+        "midi": midi_name,
+        "title": title,
+    }
+    report_payload = dict(report)
+    report_payload["summary"] = summary
+    report_payload["files"] = files
+    if pipeline is not None:
+        report_payload["pipeline"] = pipeline
+    try:
+        (job_dir / "report.json").write_text(
+            json.dumps(report_payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        raise job_queue.JobFailed(
+            "The job report could not be written.", str(exc)
+        ) from exc
+
+    elapsed = round(time.time() - started, 1)
+    base = f"/api/jobs/{job_id}"
+    urls = {
+        "gp5": f"{base}/score.gp5",
+        "midi": f"{base}/final.mid",
+        "tab": f"{base}/final_tab.txt",
+        "report": f"{base}/report.json",
+    }
+    if audio_mode:
+        urls["audio"] = f"{base}/source.wav"
+    return {
+        "id": job_id,
+        "title": title,
+        "capo": capo,
+        "elapsed": elapsed,
+        "files": files,
+        "summary": summary,
+        "urls": urls,
+    }
+
+
 def _convert_job(
     *,
     job_id: str,
@@ -968,13 +1089,12 @@ def _convert_job(
             else:
                 detect_log = (job_dir / "detect.log").open("w", encoding="utf-8")
                 detect_proc = subprocess.Popen(
-                    [
-                        PYTHON, str(REPO / "scripts" / "stitch_tab.py"),
-                        "--audio", str(normalized_audio),
-                        "--midi", str(midi_path),
-                        "--out-dir", str(out_dir),
-                        "--stage", "detect",
-                    ],
+                    _stitch_argv(
+                        "detect",
+                        normalized_audio=normalized_audio,
+                        midi_path=midi_path,
+                        out_dir=out_dir,
+                    ),
                     cwd=str(REPO),
                     stdout=detect_log,
                     stderr=subprocess.STDOUT,
@@ -1059,19 +1179,15 @@ def _convert_job(
     if audio_mode:
         tab_log = (job_dir / "tab.log").open("w", encoding="utf-8")
         tab_proc = subprocess.Popen(
-            [
-                PYTHON, str(REPO / "scripts" / "stitch_tab.py"),
-                "--audio", str(normalized_audio),
-                "--midi", str(midi_path),
-                "--out-dir", str(out_dir),
-                "--stage", "tab",
-                "--checkpoint", str(CHECKPOINT),
-                "--vocab", str(VOCAB),
-                "--beam", str(beam),
-                "--capo", capo,
-                "--max-capo", str(MAX_CAPO),
-                "--force",
-            ],
+            _stitch_argv(
+                "tab",
+                normalized_audio=normalized_audio,
+                midi_path=midi_path,
+                out_dir=out_dir,
+                beam=beam,
+                capo=capo,
+                force=True,
+            ),
             cwd=str(REPO),
             stdout=tab_log,
             stderr=subprocess.STDOUT,
@@ -1116,15 +1232,14 @@ def _convert_job(
         preview_log = (job_dir / "preview.log").open("w", encoding="utf-8")
         try:
             subprocess.run(
-                [
-                    PYTHON, str(REPO / "scripts" / "stitch_tab.py"),
-                    "--audio", str(normalized_audio),
-                    "--midi", str(midi_path),
-                    "--out-dir", str(out_dir),
-                    "--stage", "provisional",
-                    "--title", title,
-                    "--capo", capo,
-                ],
+                _stitch_argv(
+                    "provisional",
+                    normalized_audio=normalized_audio,
+                    midi_path=midi_path,
+                    out_dir=out_dir,
+                    title=title,
+                    capo=capo,
+                ),
                 cwd=str(REPO),
                 stdout=preview_log,
                 stderr=subprocess.STDOUT,
@@ -1165,13 +1280,12 @@ def _convert_job(
         align_log = (job_dir / "align.log").open("w", encoding="utf-8")
         try:
             align_result = subprocess.run(
-                [
-                    PYTHON, str(REPO / "scripts" / "stitch_tab.py"),
-                    "--audio", str(normalized_audio),
-                    "--midi", str(midi_path),
-                    "--out-dir", str(out_dir),
-                    "--stage", "align",
-                ],
+                _stitch_argv(
+                    "align",
+                    normalized_audio=normalized_audio,
+                    midi_path=midi_path,
+                    out_dir=out_dir,
+                ),
                 cwd=str(REPO),
                 stdout=align_log,
                 stderr=subprocess.STDOUT,
@@ -1197,21 +1311,14 @@ def _convert_job(
         stitch_log = (job_dir / "stitch.log").open("w", encoding="utf-8")
         try:
             result = subprocess.run(
-                [
-                    PYTHON, str(REPO / "scripts" / "stitch_tab.py"),
-                    "--audio", str(normalized_audio),
-                    "--midi", str(midi_path),
-                    "--out-dir", str(out_dir),
-                    "--stage", "stitch",
-                    "--title", title,
-                    "--width", "120",
-                    "--capo", capo,
-                    *(
-                        ["--dead-threshold", DEAD_THRESHOLD]
-                        if DEAD_THRESHOLD
-                        else []
-                    ),
-                ],
+                _stitch_argv(
+                    "stitch",
+                    normalized_audio=normalized_audio,
+                    midi_path=midi_path,
+                    out_dir=out_dir,
+                    title=title,
+                    capo=capo,
+                ),
                 cwd=str(REPO),
                 stdout=stitch_log,
                 stderr=subprocess.STDOUT,
@@ -1228,18 +1335,7 @@ def _convert_job(
             if not stitch_log.closed:
                 stitch_log.close()
     else:
-        command = [
-            PYTHON, str(REPO / "scripts" / "midi2tab.py"), str(midi_path),
-            "--checkpoint", str(CHECKPOINT),
-            "--vocab", str(VOCAB),
-            "--out-dir", str(out_dir),
-            "--beam", str(beam),
-            "--max-fret", "6",
-            "--capo", capo,
-            "--max-capo", str(MAX_CAPO),
-            "--width", "120",
-            "--no-audio",
-        ]
+        command = _midi2tab_argv(midi_path, out_dir, beam=beam, capo=capo)
         try:
             result = _run_conversion(command)
         except subprocess.TimeoutExpired as exc:
@@ -1312,55 +1408,17 @@ def _convert_job(
                 "The Guitar Pro tab could not be written.", str(exc)
             ) from exc
 
-    try:
-        records = _load_notes(final_json)
-        report = _load_json(report_json)
-    except (OSError, ValueError) as exc:
-        raise job_queue.JobFailed(
-            "The conversion artifacts could not be read.", str(exc)
-        ) from exc
-
-    capo = int(report.get("capo", 0))
-    summary = _summary(report, records, exported, pipeline)
-    files = {
-        "audio": audio_name,
-        "midi": midi_name,
-        "title": title,
-    }
-    report_payload = dict(report)
-    report_payload["summary"] = summary
-    report_payload["files"] = files
-    if pipeline is not None:
-        report_payload["pipeline"] = pipeline
-    try:
-        (job_dir / "report.json").write_text(
-            json.dumps(report_payload, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-    except OSError as exc:
-        raise job_queue.JobFailed(
-            "The job report could not be written.", str(exc)
-        ) from exc
-
-    elapsed = round(time.time() - started, 1)
-    base = f"/api/jobs/{job_id}"
-    urls = {
-        "gp5": f"{base}/score.gp5",
-        "midi": f"{base}/final.mid",
-        "tab": f"{base}/final_tab.txt",
-        "report": f"{base}/report.json",
-    }
-    if audio_mode:
-        urls["audio"] = f"{base}/source.wav"
-    return {
-        "id": job_id,
-        "title": title,
-        "capo": capo,
-        "elapsed": elapsed,
-        "files": files,
-        "summary": summary,
-        "urls": urls,
-    }
+    return _build_job_result(
+        job_dir=job_dir,
+        job_id=job_id,
+        title=title,
+        audio_name=audio_name,
+        midi_name=midi_name,
+        audio_mode=audio_mode,
+        exported=exported,
+        pipeline=pipeline,
+        started=started,
+    )
 
 
 @app.post("/api/convert")
@@ -1606,6 +1664,24 @@ def job_file(job_id: str, name: str):
     raise HTTPException(status_code=404)
 
 
+def _rewrite_gp5_title(job_dir: Path, title: str) -> None:
+    """Keep the sheet's own title in sync with the take title.
+
+    Both the legacy root file and the audio pipeline's out/song.gp5 are updated
+    in place.  A title change must never break the take, so failures are
+    swallowed: the report still carries the new name.
+    """
+    for gp5_path in (job_dir / "score.gp5", job_dir / "out" / "song.gp5"):
+        if not gp5_path.is_file():
+            continue
+        try:
+            song = guitarpro.parse(str(gp5_path))
+            song.title = title
+            guitarpro.write(song, str(gp5_path), version=(5, 1, 0))
+        except Exception:  # noqa: BLE001 - cosmetic, never fatal
+            pass
+
+
 @app.patch("/api/jobs/{job_id}/title")
 async def job_set_title(job_id: str, request: Request):
     if not re.fullmatch(r"[0-9a-f]{32}", job_id):
@@ -1647,19 +1723,7 @@ async def job_set_title(job_id: str, request: Request):
         tmp.replace(report_path)
     except OSError as exc:
         return _error("The title could not be saved.", 500, str(exc))
-    # Keep the sheet's own title in sync with the take title.  Both the legacy
-    # root file and the audio pipeline's out/song.gp5 are updated in place.
-    for gp5_path in (job_dir / "score.gp5", job_dir / "out" / "song.gp5"):
-        if not gp5_path.is_file():
-            continue
-        try:
-            song = guitarpro.parse(str(gp5_path))
-            song.title = title
-            guitarpro.write(song, str(gp5_path), version=(5, 1, 0))
-        except Exception:
-            # A title change should never break the take; the report still
-            # carries the new name even if this file cannot be rewritten.
-            pass
+    _rewrite_gp5_title(job_dir, title)
     return {"id": job_id, "title": title}
 
 

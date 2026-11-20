@@ -31,9 +31,9 @@ Klang.io transcription quality is technically correct, but it strips away the de
 
 
 ### How does it work?
-A small T5 encoder-decoder (2.79M params) reads symbolic MIDI note events (`NOTE_ON`, `NOTE_OFF`, `TIME_SHIFT`) and writes tablature events (`TAB`, `TIME_SHIFT`). A local web app wraps the model: download audio from Youtube with yd-dlp, transcribe audio with MuScriptor, label dead notes from the recording, export Guitar Pro 5 scores.
+A small T5 encoder-decoder (2.79M params) reads symbolic MIDI note events (`NOTE_ON`, `NOTE_OFF`, `TIME_SHIFT`) and writes tablature events (`TAB`, `TIME_SHIFT`). A local web app wraps the model: download audio from Youtube with yd-dlp, transcribe audio with MuScriptor, label dead notes from the recording, and export a PDF of the tab.
 
-**Pipeline:** audio → MuScriptor → MIDI → T5 → tab events → playability pass (string assignment, capo, collision fixing) → audio onset analysis (dead notes, articulations) → export (.gp5, .mid, .wav, ASCII tab).
+**Pipeline:** audio → MuScriptor → MIDI → T5 → tab events → playability pass (string assignment, capo, collision fixing) → audio onset analysis (dead notes, articulations) → export (PDF, .mid, .wav, ASCII tab).
 
 Time is quantised to a 20-tick grid at PPQ 960. `TIME_SHIFT` is compositional with 11 values (20–3840 ticks). 
 
