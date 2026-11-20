@@ -45,6 +45,6 @@ A separate XGBoost model trained on my own data is used for guitar-specific tab 
 
 See `docs/` for format specs, data contract, labelling workflow, cluster notes, and verification.
 
-This project is based on **Fretting-Transformer: Encoder-Decoder Model for MIDI to Tablature Transcription** (Hamberger et al., arXiv:2506.14223, ICMC 2025).
+This project is based on the paper **Fretting-Transformer: Encoder-Decoder Model for MIDI to Tablature Transcription**.
 
 
