@@ -156,7 +156,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   let isMuted = localStorage.getItem("tabula:isMuted") === "1";
   let followEnabled = localStorage.getItem("tabula:followEnabled") !== "0"; // on by default
   let loopEnabled = localStorage.getItem("tabula:loopEnabled") === "1";
-  let tabOnly = localStorage.getItem("tabula:tabOnly") === "1";
+  let tabOnly = localStorage.getItem("tabula:tabOnly") !== "0";
   let programmaticScrollUntil = 0;
 
   const MAX_RECENT = 5;
