@@ -22,6 +22,7 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -44,8 +45,10 @@ if str(_EARLY_REPO / "src") not in sys.path:
 
 try:
     from webapp.gp5 import build_gp5 as build_legacy_gp5
+    from webapp import job_queue
 except ImportError:  # Allow ``python webapp/server.py`` as well as ``-m webapp.server``.
     from gp5 import build_gp5 as build_legacy_gp5
+    import job_queue
 
 from transcribe import MuscriptorUnavailable, default_model, transcribe_audio
 from tabfeatures.labeling.store import (
@@ -65,12 +68,14 @@ from audio.synth import DEFAULT_SF2, render_midi_file_to_wav, render_note_sample
 
 REPO = Path(__file__).resolve().parents[1]
 WEB = Path(__file__).resolve().parent
-JOBS = WEB / "jobs"
 
 
 def _project_path(value: str | Path) -> Path:
     path = Path(value).expanduser()
     return path if path.is_absolute() else (REPO / path)
+
+
+JOBS = _project_path(os.environ.get("TABULA_JOBS_DIR") or WEB / "jobs")
 
 
 CHECKPOINT = _project_path(os.environ.get(
@@ -102,6 +107,9 @@ MUSCRIPTOR_QUANTIZE = os.environ.get("TABULA_MUSCRIPTOR_QUANTIZE", "0") != "0"
 # empty string to fall back to the model's own threshold.
 DEAD_THRESHOLD = os.environ.get("TABULA_DEAD_THRESHOLD", "0.65").strip()
 MAX_CAPO = min(6, int(os.environ.get("TABULA_MAX_CAPO", "6")))
+# Behind Cloudflare the interactive docs are dead weight (and advertise the
+# API), so a public deployment can switch them off.
+PUBLIC = os.environ.get("TABULA_PUBLIC", "0") != "0"
 
 AUDIO_SUFFIXES = {
     ".wav", ".flac", ".ogg", ".oga", ".mp3", ".m4a", ".aac",
@@ -111,18 +119,37 @@ MIDI_SUFFIXES = {".mid", ".midi"}
 
 CONVERT_LOCK = threading.Lock()
 JOBS.mkdir(parents=True, exist_ok=True)
+# One conversion at a time keeps the GPU work serialised; two takes may wait.
+QUEUE = job_queue.JobQueue(max_waiting=2)
+BUDGET = job_queue.Budget(JOBS / ".budget.sqlite3")
 MONITOR_SAMPLE_ROOT = _project_path(
     os.environ.get("TABULA_MONITOR_SAMPLES", "data/models/monitor_samples")
 )
 CACHE_ROOT = _project_path(os.environ.get("TABULA_CACHE", "data/cache"))
 CACHE_VERSION = "v1"
 
+
+def _startup_maintenance() -> None:
+    """Clear interrupted takes and drop expired ones before serving."""
+    recovered = job_queue.recover_jobs(JOBS)
+    if recovered:
+        print(f"Jobs: marked {recovered} interrupted take(s) as failed.", flush=True)
+    job_queue.cleanup_jobs(JOBS, running=QUEUE.active())
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    _startup_maintenance()
+    yield
+
+
 app = FastAPI(
     title="Tabula",
     description="Audio + MIDI to Guitar Pro tablature.",
-    docs_url="/api/docs",
+    docs_url=None if PUBLIC else "/api/docs",
     redoc_url=None,
-    openapi_url="/api/openapi.json",
+    openapi_url=None if PUBLIC else "/api/openapi.json",
+    lifespan=_lifespan,
 )
 templates = Jinja2Templates(directory=str(WEB / "templates"))
 
@@ -139,16 +166,6 @@ for suffix, mime in (
     (".wav", "audio/wav"),
 ):
     mimetypes.add_type(mime, suffix)
-
-
-def _cleanup_jobs(max_age_seconds: int = 24 * 60 * 60) -> None:
-    now = time.time()
-    for path in JOBS.iterdir():
-        try:
-            if path.is_dir() and now - path.stat().st_mtime > max_age_seconds:
-                shutil.rmtree(path, ignore_errors=True)
-        except OSError:
-            pass
 
 
 def _load_json(path: Path):
@@ -297,6 +314,22 @@ def _error(message: str, status: int = 400, detail: str | None = None):
     if detail:
         payload["detail"] = detail
     return JSONResponse(payload, status_code=status)
+
+
+def _rate_limited(message: str, retry_after: int = 60):
+    return JSONResponse(
+        {"error": message},
+        status_code=429,
+        headers={"Retry-After": str(retry_after)},
+    )
+
+
+def _client_ip(request: Request) -> str:
+    """The caller's address, honouring the first hop Caddy/Cloudflare adds."""
+    forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    if forwarded:
+        return forwarded
+    return request.client.host if request.client else "unknown"
 
 
 @app.get("/")
@@ -885,8 +918,454 @@ def label_delete(session_id: str):
     return {"ok": True}
 
 
+def _convert_job(
+    *,
+    job_id: str,
+    job_dir: Path,
+    out_dir: Path,
+    midi_path: Path,
+    audio_path: Path | None,
+    normalized_audio: Path | None,
+    audio_mode: bool,
+    has_audio: bool,
+    has_midi: bool,
+    link: str,
+    audio_name: str | None,
+    midi_original_name: str | None,
+    capo: str,
+    guitar: str,
+    beam: int,
+) -> dict:
+    """Run one accepted take; return the result payload or raise ``JobFailed``.
+
+    The uploads are already saved and the job directory exists, so failures
+    here leave ``out/status.json`` behind for the polling UI.
+    """
+    detect_proc: subprocess.Popen | None = None
+    detect_log = None
+    detect_cache: Path | None = None
+    detect_cached = False
+    audio_digest = ""
+    midi_cache: Path | None = None
+    if audio_mode:
+        assert normalized_audio is not None
+    try:
+        if audio_mode:
+            if has_audio:
+                source_audio = audio_path
+            else:
+                source_audio, audio_name = _download_audio(link, job_dir)
+            normalized_audio = _normalize_audio(source_audio, normalized_audio)
+            audio_digest = _file_digest(normalized_audio)
+            detect_signature = (
+                f"{CACHE_VERSION}:{audio_digest}:"
+                "sr=22050:delta=0.05:wait=2:before=0.03:after=0.18"
+            )
+            detect_key = hashlib.sha1(detect_signature.encode("utf-8")).hexdigest()
+            detect_cache = _cache_file("audio_events", detect_key, ".json")
+            if _cache_restore(detect_cache, out_dir / "audio_events.json"):
+                detect_cached = True
+            else:
+                detect_log = (job_dir / "detect.log").open("w", encoding="utf-8")
+                detect_proc = subprocess.Popen(
+                    [
+                        PYTHON, str(REPO / "scripts" / "stitch_tab.py"),
+                        "--audio", str(normalized_audio),
+                        "--midi", str(midi_path),
+                        "--out-dir", str(out_dir),
+                        "--stage", "detect",
+                    ],
+                    cwd=str(REPO),
+                    stdout=detect_log,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+            _write_job_progress(
+                job_dir,
+                {
+                    "stage": "audio",
+                    "message": (
+                        "Using cached audio analysis…"
+                        if detect_cached
+                        else (
+                            "Detecting note attacks…"
+                            if has_midi
+                            else "Transcribing with MuScriptor and detecting note attacks…"
+                        )
+                    ),
+                    "tab": "",
+                },
+            )
+        if not has_midi:
+            midi_signature = (
+                f"{CACHE_VERSION}:{audio_digest}:{MUSCRIPTOR_MODEL}:"
+                f"instrument={_guitar_instrument(guitar)}:"
+                f"quantize={int(MUSCRIPTOR_QUANTIZE)}:grid={MUSCRIPTOR_GRID}"
+            )
+            midi_key = hashlib.sha1(midi_signature.encode("utf-8")).hexdigest()
+            midi_cache = _cache_file("muscriptor", midi_key, ".mid")
+            if not _cache_restore(midi_cache, midi_path):
+                try:
+                    _local_transcribe(normalized_audio, midi_path, guitar=guitar)
+                except MuscriptorUnavailable as exc:
+                    raise MuscriptorUnavailable(str(exc)) from exc
+                except RuntimeError as exc:
+                    raise RuntimeError(f"MuScriptor transcription failed: {exc}") from exc
+                _cache_store(midi_path, midi_cache)
+        # MuScriptor writes its notes shifted forward so bar 1 lands on tick 0
+        # and records the shift in a marker.  Fold it in once, for both a fresh
+        # transcription and an uploaded MIDI, so the tab opens on the
+        # recording's timeline instead of a phantom silent bar.
+        normalise_bar_offset(midi_path)
+    except MuscriptorUnavailable as exc:
+        _stop_process(detect_proc)
+        if detect_log is not None:
+            detect_log.close()
+        raise job_queue.JobFailed("Local MuScriptor is not available.", str(exc)) from exc
+    except DownloadUnavailable as exc:
+        _stop_process(detect_proc)
+        if detect_log is not None:
+            detect_log.close()
+        raise job_queue.JobFailed("Link downloads are not available.", str(exc)) from exc
+    except DownloadError as exc:
+        _stop_process(detect_proc)
+        if detect_log is not None:
+            detect_log.close()
+        raise job_queue.JobFailed("The link could not be downloaded.", str(exc)) from exc
+    except (OSError, ValueError, RuntimeError) as exc:
+        _stop_process(detect_proc)
+        if detect_log is not None:
+            detect_log.close()
+        raise job_queue.JobFailed(
+            str(exc) or "The upload could not be saved."
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - surfaced as a local error
+        _stop_process(detect_proc)
+        if detect_log is not None:
+            detect_log.close()
+        raise job_queue.JobFailed("The upload could not be saved.", str(exc)) from exc
+
+    if midi_original_name:
+        midi_name = midi_original_name
+    elif audio_name:
+        midi_name = f"{Path(audio_name).stem}.mid"
+    else:
+        midi_name = "transcribed.mid"
+    title = Path(audio_name or midi_name).stem or "Untitled take"
+    started = time.time()
+
+    tab_proc: subprocess.Popen | None = None
+    tab_log = None
+    if audio_mode:
+        tab_log = (job_dir / "tab.log").open("w", encoding="utf-8")
+        tab_proc = subprocess.Popen(
+            [
+                PYTHON, str(REPO / "scripts" / "stitch_tab.py"),
+                "--audio", str(normalized_audio),
+                "--midi", str(midi_path),
+                "--out-dir", str(out_dir),
+                "--stage", "tab",
+                "--checkpoint", str(CHECKPOINT),
+                "--vocab", str(VOCAB),
+                "--beam", str(beam),
+                "--capo", capo,
+                "--max-capo", str(MAX_CAPO),
+                "--force",
+            ],
+            cwd=str(REPO),
+            stdout=tab_log,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        # Wait for the tab decoder first.  The draft score can be published
+        # while the audio onset detector is still running.
+        try:
+            tab_rc = tab_proc.wait(timeout=CONVERT_TIMEOUT)
+        except subprocess.TimeoutExpired as exc:
+            _stop_process(detect_proc)
+            _stop_process(tab_proc)
+            if detect_log is not None and not detect_log.closed:
+                detect_log.close()
+            if tab_log is not None:
+                tab_log.close()
+            raise job_queue.JobFailed(
+                "The conversion timed out.",
+                f"The take did not finish within {CONVERT_TIMEOUT} seconds.",
+            ) from exc
+        finally:
+            if tab_log is not None and not tab_log.closed:
+                tab_log.close()
+        if tab_rc != 0:
+            _stop_process(detect_proc)
+            if detect_log is not None and not detect_log.closed:
+                detect_log.close()
+            log = _log_tail(job_dir / "tab.log")
+            raise job_queue.JobFailed(
+                "The tab could not be built.", log or f"Exit code {tab_rc}"
+            )
+
+        try:
+            progress_path = out_dir / "tabula" / "progress.json"
+            progress = _load_json(progress_path) if progress_path.is_file() else {}
+            if isinstance(progress, dict):
+                progress["duration"] = round(float(_audio_duration(normalized_audio)), 3)
+                _write_job_progress(job_dir, progress)
+        except Exception:  # noqa: BLE001 - draft metadata is optional
+            pass
+
+        preview_log = (job_dir / "preview.log").open("w", encoding="utf-8")
+        try:
+            subprocess.run(
+                [
+                    PYTHON, str(REPO / "scripts" / "stitch_tab.py"),
+                    "--audio", str(normalized_audio),
+                    "--midi", str(midi_path),
+                    "--out-dir", str(out_dir),
+                    "--stage", "provisional",
+                    "--title", title,
+                    "--capo", capo,
+                ],
+                cwd=str(REPO),
+                stdout=preview_log,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=CONVERT_TIMEOUT,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        finally:
+            preview_log.close()
+
+        # Only now wait for the audio detector; the draft score is already
+        # available in progress.json.
+        if detect_cached:
+            detect_rc = 0
+        else:
+            try:
+                detect_rc = detect_proc.wait(timeout=CONVERT_TIMEOUT) if detect_proc else 1
+            except subprocess.TimeoutExpired as exc:
+                _stop_process(detect_proc)
+                if detect_log is not None and not detect_log.closed:
+                    detect_log.close()
+                raise job_queue.JobFailed(
+                    "The conversion timed out.",
+                    f"The take did not finish within {CONVERT_TIMEOUT} seconds.",
+                ) from exc
+            finally:
+                if detect_log is not None and not detect_log.closed:
+                    detect_log.close()
+        if detect_rc != 0:
+            log = _log_tail(job_dir / "detect.log")
+            raise job_queue.JobFailed(
+                "Audio analysis failed.", log or f"Exit code {detect_rc}"
+            )
+        if detect_cache is not None and not detect_cached:
+            _cache_store(out_dir / "audio_events.json", detect_cache)
+
+        align_log = (job_dir / "align.log").open("w", encoding="utf-8")
+        try:
+            align_result = subprocess.run(
+                [
+                    PYTHON, str(REPO / "scripts" / "stitch_tab.py"),
+                    "--audio", str(normalized_audio),
+                    "--midi", str(midi_path),
+                    "--out-dir", str(out_dir),
+                    "--stage", "align",
+                ],
+                cwd=str(REPO),
+                stdout=align_log,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=CONVERT_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired as exc:
+            align_log.close()
+            raise job_queue.JobFailed(
+                "The conversion timed out.",
+                f"The take did not finish within {CONVERT_TIMEOUT} seconds.",
+            ) from exc
+        finally:
+            if not align_log.closed:
+                align_log.close()
+        if align_result.returncode != 0:
+            log = _log_tail(job_dir / "align.log")
+            raise job_queue.JobFailed(
+                "Audio/MIDI alignment failed.",
+                log or f"Exit code {align_result.returncode}",
+            )
+
+        stitch_log = (job_dir / "stitch.log").open("w", encoding="utf-8")
+        try:
+            result = subprocess.run(
+                [
+                    PYTHON, str(REPO / "scripts" / "stitch_tab.py"),
+                    "--audio", str(normalized_audio),
+                    "--midi", str(midi_path),
+                    "--out-dir", str(out_dir),
+                    "--stage", "stitch",
+                    "--title", title,
+                    "--width", "120",
+                    "--capo", capo,
+                    *(
+                        ["--dead-threshold", DEAD_THRESHOLD]
+                        if DEAD_THRESHOLD
+                        else []
+                    ),
+                ],
+                cwd=str(REPO),
+                stdout=stitch_log,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=CONVERT_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stitch_log.close()
+            raise job_queue.JobFailed(
+                "The conversion timed out.",
+                f"The take did not finish within {CONVERT_TIMEOUT} seconds.",
+            ) from exc
+        finally:
+            if not stitch_log.closed:
+                stitch_log.close()
+    else:
+        command = [
+            PYTHON, str(REPO / "scripts" / "midi2tab.py"), str(midi_path),
+            "--checkpoint", str(CHECKPOINT),
+            "--vocab", str(VOCAB),
+            "--out-dir", str(out_dir),
+            "--beam", str(beam),
+            "--max-fret", "6",
+            "--capo", capo,
+            "--max-capo", str(MAX_CAPO),
+            "--width", "120",
+            "--no-audio",
+        ]
+        try:
+            result = _run_conversion(command)
+        except subprocess.TimeoutExpired as exc:
+            raise job_queue.JobFailed(
+                "The conversion timed out.",
+                f"The take did not finish within {CONVERT_TIMEOUT} seconds.",
+            ) from exc
+        except OSError as exc:
+            raise job_queue.JobFailed(
+                "The conversion process could not start.", str(exc)
+            ) from exc
+
+    if result.returncode != 0:
+        log = (result.stderr or "") + ("\n" + result.stdout if result.stdout else "")
+        if audio_mode:
+            # The audio path redirects the child's output to stitch.log, so
+            # ``result.stdout`` is empty. Read the real message from the file,
+            # otherwise every stitch failure shows a bare "Exit code 1".
+            tail = _log_tail(job_dir / "stitch.log")
+            if tail:
+                log = f"{log}\n{tail}" if log.strip() else tail
+        log = log[-8000:].strip() or f"Exit code {result.returncode}"
+        raise job_queue.JobFailed(_conversion_error_message(log, audio_mode), log)
+
+    pipeline = None
+    if audio_mode:
+        final_json = out_dir / "tabula" / "final.json"
+        report_json = out_dir / "tabula" / "report.json"
+        final_mid = out_dir / "tabula" / "final.mid"
+        gp5_path = out_dir / "song.gp5"
+        tab_path = out_dir / "tab_with_features.txt"
+        pipeline_path = out_dir / "pipeline_report.json"
+        required = (final_json, report_json, final_mid, gp5_path, tab_path, pipeline_path)
+        missing = [str(path.name) for path in required if not path.exists()]
+        if missing:
+            raise job_queue.JobFailed(
+                "The conversion finished without its expected artifacts.",
+                f"Missing: {', '.join(missing)} in {out_dir}",
+            )
+        try:
+            pipeline = _load_json(pipeline_path)
+            exported = pipeline.get("gp5") or {}
+        except (OSError, ValueError) as exc:
+            raise job_queue.JobFailed(
+                "The pipeline report could not be read.", str(exc)
+            ) from exc
+    else:
+        final_json = out_dir / "final.json"
+        report_json = out_dir / "report.json"
+        final_mid = out_dir / "final.mid"
+        tab_path = out_dir / "final_tab.txt"
+        gp5_path = job_dir / "score.gp5"
+        if not final_json.exists() or not report_json.exists() or not final_mid.exists():
+            raise job_queue.JobFailed(
+                "The conversion finished without its expected artifacts.",
+                f"Missing one of final.json, report.json, final.mid in {out_dir}",
+            )
+        try:
+            records = _load_notes(final_json)
+            report = _load_json(report_json)
+            exported = build_legacy_gp5(
+                records,
+                final_mid,
+                gp5_path,
+                capo=int(report.get("capo", 0)),
+                title=title,
+            )
+        except Exception as exc:  # noqa: BLE001 - surface a useful local error
+            raise job_queue.JobFailed(
+                "The Guitar Pro tab could not be written.", str(exc)
+            ) from exc
+
+    try:
+        records = _load_notes(final_json)
+        report = _load_json(report_json)
+    except (OSError, ValueError) as exc:
+        raise job_queue.JobFailed(
+            "The conversion artifacts could not be read.", str(exc)
+        ) from exc
+
+    capo = int(report.get("capo", 0))
+    summary = _summary(report, records, exported, pipeline)
+    files = {
+        "audio": audio_name,
+        "midi": midi_name,
+        "title": title,
+    }
+    report_payload = dict(report)
+    report_payload["summary"] = summary
+    report_payload["files"] = files
+    if pipeline is not None:
+        report_payload["pipeline"] = pipeline
+    try:
+        (job_dir / "report.json").write_text(
+            json.dumps(report_payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        raise job_queue.JobFailed(
+            "The job report could not be written.", str(exc)
+        ) from exc
+
+    elapsed = round(time.time() - started, 1)
+    base = f"/api/jobs/{job_id}"
+    urls = {
+        "gp5": f"{base}/score.gp5",
+        "midi": f"{base}/final.mid",
+        "tab": f"{base}/final_tab.txt",
+        "report": f"{base}/report.json",
+    }
+    if audio_mode:
+        urls["audio"] = f"{base}/source.wav"
+    return {
+        "id": job_id,
+        "title": title,
+        "capo": capo,
+        "elapsed": elapsed,
+        "files": files,
+        "summary": summary,
+        "urls": urls,
+    }
+
+
 @app.post("/api/convert")
 def convert(
+    request: Request,
     midi: UploadFile | None = File(None),
     file: UploadFile | None = File(None),
     audio: UploadFile | None = File(None),
@@ -970,6 +1449,12 @@ def convert(
         job_id = requested_job
     else:
         job_id = uuid.uuid4().hex
+
+    client = _client_ip(request)
+    blocked = BUDGET.blocked(client)
+    if blocked:
+        return _rate_limited(blocked)
+
     job_dir = JOBS / job_id
     out_dir = job_dir / "out"
     try:
@@ -994,441 +1479,96 @@ def convert(
     )
 
     midi_path = job_dir / "transcribed.mid"
-    audio_path = None
-    normalized_audio = None
+    audio_path: Path | None = None
+    normalized_audio: Path | None = None
     audio_name = None
     if has_audio:
         audio_name = audio_original.name if audio_original else f"recording{audio_suffix}"
         audio_path = job_dir / f"upload_audio{audio_suffix}"
-        normalized_audio = job_dir / "source.wav"
-    elif has_link:
+    if audio_mode:
         normalized_audio = job_dir / "source.wav"
 
-    detect_proc: subprocess.Popen | None = None
-    detect_log = None
-    detect_cache: Path | None = None
-    detect_cached = False
-    audio_digest = ""
-    midi_cache: Path | None = None
+    # The multipart spool is closed once the response is sent, so the files
+    # have to reach the job directory before the job is handed to the worker.
     try:
-        if audio_mode:
-            if has_audio:
-                _save_upload(audio_upload, audio_path)
-                if audio_path.stat().st_size == 0:
-                    raise ValueError("That recording is empty.")
-                if _size_mb(audio_path) > MAX_AUDIO_MB:
-                    raise ValueError(f"The source recording is larger than {MAX_AUDIO_MB} MB.")
-                source_audio = audio_path
-            else:
-                source_audio, audio_name = _download_audio(link, job_dir)
-            normalized_audio = _normalize_audio(source_audio, normalized_audio)
-            audio_digest = _file_digest(normalized_audio)
-            detect_signature = (
-                f"{CACHE_VERSION}:{audio_digest}:"
-                "sr=22050:delta=0.05:wait=2:before=0.03:after=0.18"
-            )
-            detect_key = hashlib.sha1(detect_signature.encode("utf-8")).hexdigest()
-            detect_cache = _cache_file("audio_events", detect_key, ".json")
-            if _cache_restore(detect_cache, out_dir / "audio_events.json"):
-                detect_cached = True
-            else:
-                detect_log = (job_dir / "detect.log").open("w", encoding="utf-8")
-                detect_proc = subprocess.Popen(
-                    [
-                        PYTHON, str(REPO / "scripts" / "stitch_tab.py"),
-                        "--audio", str(normalized_audio),
-                        "--midi", str(midi_path),
-                        "--out-dir", str(out_dir),
-                        "--stage", "detect",
-                    ],
-                    cwd=str(REPO),
-                    stdout=detect_log,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                )
-            _write_job_progress(
-                job_dir,
-                {
-                    "stage": "audio",
-                    "message": (
-                        "Using cached audio analysis…"
-                        if detect_cached
-                        else (
-                            "Detecting note attacks…"
-                            if has_midi
-                            else "Transcribing with MuScriptor and detecting note attacks…"
-                        )
-                    ),
-                    "tab": "",
-                },
-            )
+        if has_audio:
+            _save_upload(audio_upload, audio_path)
+            if audio_path.stat().st_size == 0:
+                raise ValueError("That recording is empty.")
+            if _size_mb(audio_path) > MAX_AUDIO_MB:
+                raise ValueError(f"The source recording is larger than {MAX_AUDIO_MB} MB.")
         if has_midi:
             _save_upload(midi_upload, midi_path)
             if midi_path.stat().st_size == 0:
                 raise ValueError("That MIDI file is empty.")
             if _size_mb(midi_path) > MAX_MIDI_MB:
                 raise ValueError(f"The MIDI transcription is larger than {MAX_MIDI_MB} MB.")
-        else:
-            midi_signature = (
-                f"{CACHE_VERSION}:{audio_digest}:{MUSCRIPTOR_MODEL}:"
-                f"instrument={_guitar_instrument(guitar)}:"
-                f"quantize={int(MUSCRIPTOR_QUANTIZE)}:grid={MUSCRIPTOR_GRID}"
-            )
-            midi_key = hashlib.sha1(midi_signature.encode("utf-8")).hexdigest()
-            midi_cache = _cache_file("muscriptor", midi_key, ".mid")
-            if not _cache_restore(midi_cache, midi_path):
-                try:
-                    _local_transcribe(normalized_audio, midi_path, guitar=guitar)
-                except MuscriptorUnavailable as exc:
-                    raise MuscriptorUnavailable(str(exc)) from exc
-                except RuntimeError as exc:
-                    raise RuntimeError(f"MuScriptor transcription failed: {exc}") from exc
-                _cache_store(midi_path, midi_cache)
-        # MuScriptor writes its notes shifted forward so bar 1 lands on tick 0
-        # and records the shift in a marker.  Fold it in once, for both a fresh
-        # transcription and an uploaded MIDI, so the tab opens on the
-        # recording's timeline instead of a phantom silent bar.
-        normalise_bar_offset(midi_path)
-    except MuscriptorUnavailable as exc:
-        _stop_process(detect_proc)
-        if detect_log is not None:
-            detect_log.close()
-        shutil.rmtree(job_dir, ignore_errors=True)
-        return _error("Local MuScriptor is not available.", 500, str(exc))
-    except DownloadUnavailable as exc:
-        _stop_process(detect_proc)
-        if detect_log is not None:
-            detect_log.close()
-        shutil.rmtree(job_dir, ignore_errors=True)
-        return _error("Link downloads are not available.", 500, str(exc))
-    except DownloadError as exc:
-        _stop_process(detect_proc)
-        if detect_log is not None:
-            detect_log.close()
-        shutil.rmtree(job_dir, ignore_errors=True)
-        return _error("The link could not be downloaded.", 400, str(exc))
-    except (OSError, ValueError, RuntimeError) as exc:
-        _stop_process(detect_proc)
-        if detect_log is not None:
-            detect_log.close()
+    except (OSError, ValueError) as exc:
         shutil.rmtree(job_dir, ignore_errors=True)
         return _error(str(exc) or "The upload could not be saved.", 400)
     except Exception as exc:  # noqa: BLE001 - surfaced as a local error
-        _stop_process(detect_proc)
-        if detect_log is not None:
-            detect_log.close()
         shutil.rmtree(job_dir, ignore_errors=True)
         return _error("The upload could not be saved.", 500, str(exc))
 
-    if midi_original is not None:
-        midi_name = midi_original.name
-    elif audio_name:
-        midi_name = f"{Path(audio_name).stem}.mid"
-    else:
-        midi_name = "transcribed.mid"
-    title = Path(audio_name or midi_name).stem or "Untitled take"
-    started = time.time()
-
-    tab_proc: subprocess.Popen | None = None
-    tab_log = None
-    if audio_mode:
-        tab_log = (job_dir / "tab.log").open("w", encoding="utf-8")
-        tab_proc = subprocess.Popen(
-            [
-                PYTHON, str(REPO / "scripts" / "stitch_tab.py"),
-                "--audio", str(normalized_audio),
-                "--midi", str(midi_path),
-                "--out-dir", str(out_dir),
-                "--stage", "tab",
-                "--checkpoint", str(CHECKPOINT),
-                "--vocab", str(VOCAB),
-                "--beam", str(beam),
-                "--capo", capo,
-                "--max-capo", str(MAX_CAPO),
-                "--force",
-            ],
-            cwd=str(REPO),
-            stdout=tab_log,
-            stderr=subprocess.STDOUT,
-            text=True,
+    def run() -> dict:
+        return _convert_job(
+            job_id=job_id,
+            job_dir=job_dir,
+            out_dir=out_dir,
+            midi_path=midi_path,
+            audio_path=audio_path,
+            normalized_audio=normalized_audio,
+            audio_mode=audio_mode,
+            has_audio=has_audio,
+            has_midi=has_midi,
+            link=link,
+            audio_name=audio_name,
+            midi_original_name=midi_original.name if midi_original else None,
+            capo=capo,
+            guitar=guitar,
+            beam=beam,
         )
-        # Wait for the tab decoder first.  The draft score can be published
-        # while the audio onset detector is still running.
-        try:
-            tab_rc = tab_proc.wait(timeout=CONVERT_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            _stop_process(detect_proc)
-            _stop_process(tab_proc)
-            if detect_log is not None and not detect_log.closed:
-                detect_log.close()
-            if tab_log is not None:
-                tab_log.close()
-            return _error(
-                "The conversion timed out.",
-                504,
-                f"The take did not finish within {CONVERT_TIMEOUT} seconds.",
-            )
-        finally:
-            if tab_log is not None and not tab_log.closed:
-                tab_log.close()
-        if tab_rc != 0:
-            _stop_process(detect_proc)
-            if detect_log is not None and not detect_log.closed:
-                detect_log.close()
-            log = _log_tail(job_dir / "tab.log")
-            return _error("The tab could not be built.", 500, log or f"Exit code {tab_rc}")
-
-        try:
-            progress_path = out_dir / "tabula" / "progress.json"
-            progress = _load_json(progress_path) if progress_path.is_file() else {}
-            if isinstance(progress, dict):
-                progress["duration"] = round(float(_audio_duration(normalized_audio)), 3)
-                _write_job_progress(job_dir, progress)
-        except Exception:  # noqa: BLE001 - draft metadata is optional
-            pass
-
-        preview_log = (job_dir / "preview.log").open("w", encoding="utf-8")
-        try:
-            subprocess.run(
-                [
-                    PYTHON, str(REPO / "scripts" / "stitch_tab.py"),
-                    "--audio", str(normalized_audio),
-                    "--midi", str(midi_path),
-                    "--out-dir", str(out_dir),
-                    "--stage", "provisional",
-                    "--title", title,
-                    "--capo", capo,
-                ],
-                cwd=str(REPO),
-                stdout=preview_log,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=CONVERT_TIMEOUT,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        finally:
-            preview_log.close()
-
-        # Only now wait for the audio detector; the draft score is already
-        # available in progress.json.
-        if detect_cached:
-            detect_rc = 0
-        else:
-            try:
-                detect_rc = detect_proc.wait(timeout=CONVERT_TIMEOUT) if detect_proc else 1
-            except subprocess.TimeoutExpired:
-                _stop_process(detect_proc)
-                if detect_log is not None and not detect_log.closed:
-                    detect_log.close()
-                return _error(
-                    "The conversion timed out.",
-                    504,
-                    f"The take did not finish within {CONVERT_TIMEOUT} seconds.",
-                )
-            finally:
-                if detect_log is not None and not detect_log.closed:
-                    detect_log.close()
-        if detect_rc != 0:
-            log = _log_tail(job_dir / "detect.log")
-            return _error("Audio analysis failed.", 500, log or f"Exit code {detect_rc}")
-        if detect_cache is not None and not detect_cached:
-            _cache_store(out_dir / "audio_events.json", detect_cache)
-
-        align_log = (job_dir / "align.log").open("w", encoding="utf-8")
-        try:
-            align_result = subprocess.run(
-                [
-                    PYTHON, str(REPO / "scripts" / "stitch_tab.py"),
-                    "--audio", str(normalized_audio),
-                    "--midi", str(midi_path),
-                    "--out-dir", str(out_dir),
-                    "--stage", "align",
-                ],
-                cwd=str(REPO),
-                stdout=align_log,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=CONVERT_TIMEOUT,
-            )
-        except subprocess.TimeoutExpired:
-            align_log.close()
-            return _error(
-                "The conversion timed out.",
-                504,
-                f"The take did not finish within {CONVERT_TIMEOUT} seconds.",
-            )
-        finally:
-            if not align_log.closed:
-                align_log.close()
-        if align_result.returncode != 0:
-            log = _log_tail(job_dir / "align.log")
-            return _error(
-                "Audio/MIDI alignment failed.",
-                500,
-                log or f"Exit code {align_result.returncode}",
-            )
-
-        stitch_log = (job_dir / "stitch.log").open("w", encoding="utf-8")
-        try:
-            result = subprocess.run(
-                [
-                    PYTHON, str(REPO / "scripts" / "stitch_tab.py"),
-                    "--audio", str(normalized_audio),
-                    "--midi", str(midi_path),
-                    "--out-dir", str(out_dir),
-                    "--stage", "stitch",
-                    "--title", title,
-                    "--width", "120",
-                    "--capo", capo,
-                    *(
-                        ["--dead-threshold", DEAD_THRESHOLD]
-                        if DEAD_THRESHOLD
-                        else []
-                    ),
-                ],
-                cwd=str(REPO),
-                stdout=stitch_log,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=CONVERT_TIMEOUT,
-            )
-        except subprocess.TimeoutExpired:
-            stitch_log.close()
-            return _error(
-                "The conversion timed out.",
-                504,
-                f"The take did not finish within {CONVERT_TIMEOUT} seconds.",
-            )
-        finally:
-            if not stitch_log.closed:
-                stitch_log.close()
-    else:
-        command = [
-            PYTHON, str(REPO / "scripts" / "midi2tab.py"), str(midi_path),
-            "--checkpoint", str(CHECKPOINT),
-            "--vocab", str(VOCAB),
-            "--out-dir", str(out_dir),
-            "--beam", str(beam),
-            "--max-fret", "6",
-            "--capo", capo,
-            "--max-capo", str(MAX_CAPO),
-            "--width", "120",
-            "--no-audio",
-        ]
-        try:
-            result = _run_conversion(command)
-        except subprocess.TimeoutExpired:
-            return _error(
-                "The conversion timed out.",
-                504,
-                f"The take did not finish within {CONVERT_TIMEOUT} seconds.",
-            )
-        except OSError as exc:
-            return _error("The conversion process could not start.", 500, str(exc))
-
-    if result.returncode != 0:
-        log = (result.stderr or "") + ("\n" + result.stdout if result.stdout else "")
-        if audio_mode:
-            # The audio path redirects the child's output to stitch.log, so
-            # ``result.stdout`` is empty. Read the real message from the file,
-            # otherwise every stitch failure shows a bare "Exit code 1".
-            tail = _log_tail(job_dir / "stitch.log")
-            if tail:
-                log = f"{log}\n{tail}" if log.strip() else tail
-        log = log[-8000:].strip() or f"Exit code {result.returncode}"
-        return _error(_conversion_error_message(log, audio_mode), 500, log)
-
-    pipeline = None
-    if audio_mode:
-        final_json = out_dir / "tabula" / "final.json"
-        report_json = out_dir / "tabula" / "report.json"
-        final_mid = out_dir / "tabula" / "final.mid"
-        gp5_path = out_dir / "song.gp5"
-        tab_path = out_dir / "tab_with_features.txt"
-        pipeline_path = out_dir / "pipeline_report.json"
-        required = (final_json, report_json, final_mid, gp5_path, tab_path, pipeline_path)
-        missing = [str(path.name) for path in required if not path.exists()]
-        if missing:
-            return _error(
-                "The conversion finished without its expected artifacts.",
-                500,
-                f"Missing: {', '.join(missing)} in {out_dir}",
-            )
-        try:
-            pipeline = _load_json(pipeline_path)
-            exported = pipeline.get("gp5") or {}
-        except (OSError, ValueError) as exc:
-            return _error("The pipeline report could not be read.", 500, str(exc))
-    else:
-        final_json = out_dir / "final.json"
-        report_json = out_dir / "report.json"
-        final_mid = out_dir / "final.mid"
-        tab_path = out_dir / "final_tab.txt"
-        gp5_path = job_dir / "score.gp5"
-        if not final_json.exists() or not report_json.exists() or not final_mid.exists():
-            return _error(
-                "The conversion finished without its expected artifacts.",
-                500,
-                f"Missing one of final.json, report.json, final.mid in {out_dir}",
-            )
-        try:
-            records = _load_notes(final_json)
-            report = _load_json(report_json)
-            exported = build_legacy_gp5(
-                records,
-                final_mid,
-                gp5_path,
-                capo=int(report.get("capo", 0)),
-                title=title,
-            )
-        except Exception as exc:  # noqa: BLE001 - surface a useful local error
-            return _error("The Guitar Pro tab could not be written.", 500, str(exc))
 
     try:
-        records = _load_notes(final_json)
-        report = _load_json(report_json)
-    except (OSError, ValueError) as exc:
-        return _error("The conversion artifacts could not be read.", 500, str(exc))
+        status = QUEUE.submit(job_id, job_dir, run)
+    except job_queue.QueueFull:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        return _rate_limited("The tab queue is full. Try again in a minute.")
+    BUDGET.consume(client)
+    # A take that finished before this response was built still reports the
+    # accepted state; its poll already carries the result.
+    state = status["state"]
+    if state not in {job_queue.QUEUED, job_queue.RUNNING}:
+        state = job_queue.RUNNING
+    position = status["queue_position"]
+    return JSONResponse(
+        {
+            "id": job_id,
+            "state": state,
+            "queue_position": position if isinstance(position, int) else 0,
+            "poll": f"/api/jobs/{job_id}/status.json",
+        },
+        status_code=202,
+    )
 
-    capo = int(report.get("capo", 0))
-    summary = _summary(report, records, exported, pipeline)
-    files = {
-        "audio": audio_name,
-        "midi": midi_name,
-        "title": title,
-    }
-    report_payload = dict(report)
-    report_payload["summary"] = summary
-    report_payload["files"] = files
-    if pipeline is not None:
-        report_payload["pipeline"] = pipeline
-    try:
-        (job_dir / "report.json").write_text(
-            json.dumps(report_payload, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-    except OSError as exc:
-        return _error("The job report could not be written.", 500, str(exc))
 
-    elapsed = round(time.time() - started, 1)
-    base = f"/api/jobs/{job_id}"
-    urls = {
-        "gp5": f"{base}/score.gp5",
-        "midi": f"{base}/final.mid",
-        "tab": f"{base}/final_tab.txt",
-        "report": f"{base}/report.json",
-    }
-    if audio_mode:
-        urls["audio"] = f"{base}/source.wav"
+@app.get("/api/jobs/{job_id}/status.json")
+def job_status(job_id: str):
+    if not re.fullmatch(r"[0-9a-f]{32}", job_id):
+        raise HTTPException(status_code=404)
+    payload = QUEUE.status(job_id)
+    if payload is None:
+        payload = job_queue.read_status(JOBS / job_id)
+    if payload is None:
+        raise HTTPException(status_code=404)
     return {
-        "id": job_id,
-        "title": title,
-        "capo": capo,
-        "elapsed": elapsed,
-        "files": files,
-        "summary": summary,
-        "urls": urls,
+        "id": payload.get("id", job_id),
+        "state": payload.get("state", job_queue.ERROR),
+        "queue_position": payload.get("queue_position"),
+        "message": payload.get("message", ""),
+        "result": payload.get("result"),
+        "error": payload.get("error"),
+        "detail": payload.get("detail"),
     }
 
 
@@ -1621,7 +1761,6 @@ def main() -> int:
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
-    _cleanup_jobs()
     host = _resolve_host(args.host)
     dns = _tailscale_dns()
     print("Tabula web app")
@@ -1631,7 +1770,10 @@ def main() -> int:
         print(f"  Local:   http://{host}:{args.port}")
     if host.startswith("100.") and dns:
         print(f"  Tailnet: http://{dns}:{args.port}")
-    print(f"  API:     http://{host}:{args.port}/api/docs")
+    print(
+        f"  API:     http://{host}:{args.port}"
+        + ("" if PUBLIC else "/api/docs")
+    )
     print(f"  Checkpoint: {CHECKPOINT}")
     print(f"  Vocab:      {VOCAB}")
     if not CHECKPOINT.exists() or not VOCAB.exists():

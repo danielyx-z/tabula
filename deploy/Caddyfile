@@ -1,0 +1,97 @@
+# Tabula — Caddy reverse proxy in front of the local uvicorn app.
+#
+# Topology:
+#
+#   browser --HTTPS--> Cloudflare edge --tunnel--> cloudflared --> Caddy :8080
+#                                                                   |
+#                                                                   v
+#                                                          uvicorn 127.0.0.1:8000
+#
+# Cloudflare terminates TLS, so Caddy speaks plain HTTP.  cloudflared must
+# point at this listener (http://127.0.0.1:8080), never at uvicorn, otherwise
+# the compression, body cap, cache policy and security headers below are
+# bypassed.
+#
+# Optional tailnet/LAN listener: keep the host-agnostic site block and extend
+# the bind line, for example
+#
+#     bind 127.0.0.1 100.111.69.56
+#
+# Caddy binds every listed address at startup and refuses to start if one is
+# missing, so the tailnet address stays commented out by default (the quick
+# tunnel only needs loopback).  Add it when `tailscale ip -4` reports it.
+#
+# Run:
+#   deploy/bin/caddy run --config deploy/Caddyfile --adapter caddyfile
+
+# Global options.
+{
+	servers {
+		# cloudflared connects from loopback and Cloudflare puts the visitor's
+		# address in X-Forwarded-For / CF-Connecting-IP.  Trust only the
+		# loopback proxy so Caddy computes the real client address; otherwise
+		# every visitor appears as 127.0.0.1 and the app's per-IP budget
+		# collapses into one shared global budget.  Direct tailnet clients
+		# are not trusted and cannot spoof the header.
+		trusted_proxies static 127.0.0.1/32
+	}
+}
+
+# The site address is host-agnostic on purpose: cloudflared forwards the
+# original Host header (<random>.trycloudflare.com), so a site block keyed on
+# 127.0.0.1 would 404 every tunnel request.  `bind` keeps the socket itself on
+# loopback.
+:8080 {
+	# Keep the proxy off the LAN; Cloudflare reaches it over loopback.
+	bind 127.0.0.1 100.111.69.56
+
+	encode zstd gzip
+
+	# App-side cap is 20 MB (TABULA_MAX_AUDIO_MB); leave headroom for
+	# multipart framing so the app, not the proxy, produces the error message.
+	request_body {
+		max_size 25MB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+
+		# alphaTab loads its renderer as a module Web Worker and its metronome
+		# as an AudioWorklet from the same origin; alphaTab 1.9 also wraps the
+		# worker in a blob URL in some paths.  Both must be allowed, and
+		# script-src 'self' is enough because the bundles are served locally
+		# (no CDN, no eval).  Keep worker-src and child-src in sync: Safari
+		# still falls back to child-src for workers.
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; child-src 'self' blob:"
+
+		-Server
+	}
+
+	# Vendored assets (alphaTab ~1.2 MB bundle, soundfont, Bravura fonts) are
+	# versioned by content in practice and safe to pin in the browser.
+	@immutable {
+		path /static/*
+		not path /static/app.js /static/label.js /static/style.css /static/label.css
+	}
+	header @immutable Cache-Control "public, max-age=604800, immutable"
+
+	# Application code and HTML change on every deploy.  Revalidate so a
+	# refresh cannot run last week's JS against this week's API.
+	@mutable path / /label /static/app.js /static/label.js /static/style.css /static/label.css
+	header @mutable Cache-Control "max-age=0, must-revalidate"
+
+	# Job progress is polled; never let a cache answer it.
+	header /api/* Cache-Control "no-store"
+
+	# Access log to stderr, which is the journal for caddy.service and
+	# deploy/logs/caddy.log for public.sh.  Useful for tracking job ids and
+	# abusive source addresses while there is no WAF in front of the tunnel.
+	log {
+		output stderr
+		format console
+	}
+
+	reverse_proxy 127.0.0.1:8000
+}

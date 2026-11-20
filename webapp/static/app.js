@@ -74,7 +74,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   const factHigh = byId("fact-high");
   const factDropped = byId("fact-dropped");
   const factMatch = byId("fact-match");
-  const downloadGp5 = byId("download-gp5");
+  const downloadPdf = byId("download-pdf");
   const downloadMidi = byId("download-midi");
   const downloadTab = byId("download-tab");
   const downloadAudio = byId("download-audio");
@@ -93,6 +93,19 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
   const AUDIO_NAME = /\.(wav|flac|ogg|oga|mp3|m4a|aac|aif|aiff|opus|wma)$/i;
 
+  // PDF export stays out of the initial page weight: the libraries and the
+  // score font are fetched the first time the user asks for a PDF.
+  const PDF_LIBS = [
+    "/static/vendor/jspdf.umd.min.js",
+    "/static/vendor/svg2pdf.umd.min.js",
+  ];
+  const PDF_FONT = { name: "TabulaMusic", url: "/static/vendor/tabula-music.ttf" };
+  const A4_WIDTH = 595.28;
+  const A4_HEIGHT = 841.89;
+  const PDF_MARGIN = 34; // 12 mm
+  const PDF_SYSTEM_GAP = 10;
+  const JOB_POLL_MS = 700;
+
   const LayoutMode = AlphaTab && AlphaTab.LayoutMode;
   const ScrollMode = AlphaTab && AlphaTab.ScrollMode;
   const StaveProfile = AlphaTab && AlphaTab.StaveProfile;
@@ -106,6 +119,9 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   let abortController = null;
   let progressTimer = null;
   let currentJobId = "";
+  let queueWait = false;
+  let pdfBusy = false;
+  let pdfLibsPromise = null;
   let provisionalLoaded = false;
   let lastConverted = false;
   let lastFileName = "";
@@ -217,6 +233,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
       window.clearInterval(progressTimer);
       progressTimer = null;
     }
+    queueWait = false;
     streamPreview.hidden = true;
     streamMeta.textContent = "";
     streamStatus.textContent = "Waiting for the transcription…";
@@ -236,6 +253,9 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
   function updateStreamProgress(payload) {
     if (!payload) return;
+    // The queue position would otherwise be overwritten by the older progress
+    // file the server writes before the job starts.
+    if (queueWait) return;
     const tab = typeof payload.tab === "string" ? payload.tab : "";
     const notes = Number(payload.notes) || 0;
     const done = Number(payload.chunks_done) || 0;
@@ -285,6 +305,136 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     };
     progressTimer = window.setInterval(poll, 400);
     poll();
+  }
+
+  function abortError() {
+    const error = new Error("Cancelled");
+    error.name = "AbortError";
+    return error;
+  }
+
+  // Resolves after `ms`, but rejects as soon as the conversion is cancelled.
+  function wait(ms, signal) {
+    return new Promise((resolve, reject) => {
+      if (signal && signal.aborted) {
+        reject(abortError());
+        return;
+      }
+      const onAbort = () => {
+        window.clearTimeout(timer);
+        reject(abortError());
+      };
+      const timer = window.setTimeout(() => {
+        if (signal) signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  function isConvertResult(payload) {
+    return Boolean(payload && payload.urls && payload.urls.gp5);
+  }
+
+  function showQueueWait(position) {
+    const place = Number(position);
+    queueWait = true;
+    streamPreview.hidden = false;
+    loadingState.classList.add("has-stream");
+    streamTab.hidden = true;
+    streamTab.textContent = "";
+    streamStatus.hidden = false;
+    streamStatus.textContent =
+      Number.isFinite(place) && place > 0
+        ? `Waiting in queue (position ${place})…`
+        : "Waiting in queue…";
+    streamMeta.textContent = "queued";
+  }
+
+  function showStreamMessage(message) {
+    if (!message || !streamTab.hidden) return;
+    streamPreview.hidden = false;
+    loadingState.classList.add("has-stream");
+    streamStatus.hidden = false;
+    streamStatus.textContent = message;
+    streamMeta.textContent = "working";
+  }
+
+  // POST /api/convert now queues the job and returns 202; the result arrives
+  // through status.json. Servers without that endpoint return it inline.
+  async function awaitJob(jobId, initial, signal) {
+    if (isConvertResult(initial)) return initial;
+    if (!jobId) throw new Error("The converter returned an incomplete result.");
+
+    currentJobId = jobId;
+    startStreamProgress(jobId);
+
+    let misses = 0;
+    while (true) {
+      let response = null;
+      try {
+        response = await fetch(`/api/jobs/${jobId}/status.json`, {
+          cache: "no-store",
+          headers: { Accept: "application/json" },
+          signal,
+        });
+      } catch (error) {
+        if (error && error.name === "AbortError") throw error;
+        response = null;
+      }
+
+      if (response && response.status === 404) {
+        // A job id from an older server has no status file; trust the POST.
+        if (isConvertResult(initial)) return initial;
+        throw new Error("The converter did not return a result.");
+      }
+
+      if (!response || !response.ok) {
+        misses += 1;
+        if (misses >= 5) {
+          throw new Error(
+            response
+              ? `The converter status returned HTTP ${response.status}.`
+              : "The converter stopped responding."
+          );
+        }
+        await wait(JOB_POLL_MS, signal);
+        continue;
+      }
+
+      misses = 0;
+      let status = null;
+      try {
+        status = await response.json();
+      } catch (error) {
+        status = null;
+      }
+      if (!status) {
+        await wait(JOB_POLL_MS, signal);
+        continue;
+      }
+
+      if (status.state === "queued") {
+        showQueueWait(status.queue_position);
+      } else {
+        queueWait = false;
+        if (status.state === "running") showStreamMessage(status.message);
+      }
+
+      if (status.state === "done") {
+        if (!isConvertResult(status.result)) {
+          throw new Error("The converter returned an incomplete result.");
+        }
+        return status.result;
+      }
+      if (status.state === "error") {
+        const failure = new Error(status.error || "The conversion failed.");
+        failure.detail = status.detail || "";
+        throw failure;
+      }
+
+      await wait(JOB_POLL_MS, signal);
+    }
   }
 
   function setState(name) {
@@ -486,6 +636,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   }
 
   function updatePlayAvailability() {
+    updatePdfAvailability();
     if (!api || !scoreReady) {
       playButton.disabled = true;
       seek.disabled = true;
@@ -980,12 +1131,189 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
   function updateDownloadNames(title) {
     const slug = slugify(title || "tabula");
-    downloadGp5.setAttribute("download", `${slug}.gp5`);
+    downloadPdf.setAttribute("download", `${slug}.pdf`);
     downloadMidi.setAttribute("download", `${slug}.mid`);
     downloadTab.setAttribute("download", `${slug}_tab.txt`);
     downloadReport.setAttribute("download", `${slug}_report.json`);
     if (!downloadAudio.hidden) {
       downloadAudio.setAttribute("download", `${slug}_recording.wav`);
+    }
+  }
+
+  // ---------- PDF export ----------
+
+  function updatePdfAvailability() {
+    const ready = Boolean(scoreReady && !pdfBusy);
+    downloadPdf.classList.toggle("is-disabled", !ready);
+    downloadPdf.classList.toggle("is-busy", pdfBusy);
+    downloadPdf.setAttribute("aria-disabled", ready ? "false" : "true");
+  }
+
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = src;
+      script.async = true;
+      script.addEventListener("load", () => resolve());
+      script.addEventListener("error", () => {
+        script.remove();
+        reject(new Error(`Could not load ${src}.`));
+      });
+      document.head.appendChild(script);
+    });
+  }
+
+  function loadPdfLibs() {
+    if (pdfLibsPromise) return pdfLibsPromise;
+    pdfLibsPromise = PDF_LIBS.reduce(
+      (chain, src) => chain.then(() => loadScript(src)),
+      Promise.resolve()
+    ).catch((error) => {
+      // A failed load should be retryable on the next click.
+      pdfLibsPromise = null;
+      throw error;
+    });
+    return pdfLibsPromise;
+  }
+
+  function asDataUrl(url) {
+    return fetch(url, { cache: "force-cache" })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`The PDF font returned HTTP ${response.status}.`);
+        }
+        return response.blob();
+      })
+      .then(
+        (blob) =>
+          new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result));
+            reader.onerror = () => reject(new Error("The PDF font could not be read."));
+            reader.readAsDataURL(blob);
+          })
+      );
+  }
+
+  async function registerPdfFont(doc) {
+    const dataUrl = await asDataUrl(PDF_FONT.url);
+    const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+    doc.addFileToVFS("tabula-music.ttf", base64);
+    // alphaTab's markup can ask for bold or italic; map every style onto the
+    // single music font so svg2pdf never falls back to Times.
+    ["normal", "bold", "italic", "bolditalic"].forEach((style) => {
+      doc.addFont("tabula-music.ttf", PDF_FONT.name, style);
+    });
+  }
+
+  function svgSize(svg) {
+    const width = parseFloat(svg.getAttribute("width"));
+    const height = parseFloat(svg.getAttribute("height"));
+    if (Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) {
+      return { width, height };
+    }
+    const box = svg.getBoundingClientRect();
+    return { width: box.width, height: box.height };
+  }
+
+  function preparePdfSvg(svg, width, height) {
+    const clone = svg.cloneNode(true);
+    // alphaTab writes absolute pixel sizes but no viewBox; svg2pdf needs one
+    // to scale the system into the page width.
+    clone.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    clone.removeAttribute("style");
+    clone.querySelectorAll("text").forEach((node) => {
+      ["style", "font-family"].forEach((attribute) => {
+        const value = node.getAttribute(attribute);
+        if (value) {
+          node.setAttribute(attribute, value.replace(/alphaTab\d*/g, PDF_FONT.name));
+        }
+      });
+    });
+    return clone;
+  }
+
+  async function exportPdf() {
+    if (pdfBusy) return;
+    if (!scoreReady) {
+      setPlayerStatus("The tab is still loading; try the PDF again in a moment.");
+      return;
+    }
+
+    const systems = Array.from(alphaTabEl.querySelectorAll("svg.at-surface-svg"));
+    if (!systems.length) {
+      setPlayerStatus("The score has not been laid out yet; try the PDF again in a moment.");
+      return;
+    }
+
+    pdfBusy = true;
+    updatePdfAvailability();
+    setPlayerStatus("Preparing the PDF…");
+    const title = currentTitle || lastFileName || "tabula";
+    const fileName = `${slugify(title)}.pdf`;
+
+    try {
+      await loadPdfLibs();
+      const JsPdf = window.jspdf && window.jspdf.jsPDF;
+      // The UMD build exports a namespace object; accept either shape.
+      const svgModule = window.svg2pdf;
+      const renderSvg =
+        typeof svgModule === "function" ? svgModule : svgModule && svgModule.svg2pdf;
+      if (!JsPdf || typeof renderSvg !== "function") {
+        throw new Error("The PDF libraries did not load.");
+      }
+
+      const doc = new JsPdf({
+        orientation: "portrait",
+        unit: "pt",
+        format: "a4",
+        compress: true,
+      });
+      await registerPdfFont(doc);
+
+      const contentWidth = A4_WIDTH - PDF_MARGIN * 2;
+      const contentBottom = A4_HEIGHT - PDF_MARGIN;
+      let cursor = PDF_MARGIN;
+      let drawn = 0;
+
+      for (const svg of systems) {
+        const { width, height } = svgSize(svg);
+        if (!(width > 0) || !(height > 0)) continue;
+
+        let drawWidth = contentWidth;
+        let drawHeight = (height * contentWidth) / width;
+        if (drawHeight > contentBottom - PDF_MARGIN) {
+          drawHeight = contentBottom - PDF_MARGIN;
+          drawWidth = (width * drawHeight) / height;
+        }
+
+        if (drawn > 0 && cursor + drawHeight > contentBottom) {
+          doc.addPage();
+          cursor = PDF_MARGIN;
+        }
+
+        await renderSvg(preparePdfSvg(svg, width, height), doc, {
+          x: PDF_MARGIN,
+          y: cursor,
+          width: drawWidth,
+          height: drawHeight,
+        });
+        cursor += drawHeight + PDF_SYSTEM_GAP;
+        drawn += 1;
+      }
+
+      if (!drawn) {
+        throw new Error("The score has no systems to export.");
+      }
+
+      doc.save(fileName);
+      setPlayerStatus(`Saved ${fileName}`);
+    } catch (error) {
+      const reason = error && error.message ? error.message : "unknown error";
+      setPlayerStatus(`The PDF could not be produced: ${reason}`);
+    } finally {
+      pdfBusy = false;
+      updatePdfAvailability();
     }
   }
 
@@ -1137,7 +1465,6 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     currentTimeEl.textContent = "0:00";
     seek.value = "0";
 
-    downloadGp5.href = payload.urls.gp5;
     downloadMidi.href = payload.urls.midi;
     downloadTab.href = payload.urls.tab;
     downloadReport.href = payload.urls.report;
@@ -1325,7 +1652,6 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     body.append("guitar", guitarSelect ? guitarSelect.value : "acoustic");
     body.append("fast", fastMode.checked ? "1" : "0");
     body.append("job_id", jobId);
-    startStreamProgress(jobId);
 
     const signal = abortController && abortController.signal;
 
@@ -1348,17 +1674,32 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
         data = null;
       }
 
+      if (response.status === 429) {
+        const retryAfter = Math.max(
+          1,
+          Math.round(Number(response.headers.get("Retry-After")) || 0) || 30
+        );
+        setStatus(`The converter is busy, try again in ${retryAfter}s.`);
+        setState("empty");
+        return;
+      }
+
       if (!response.ok) {
         const message = (data && data.error) || `The converter returned HTTP ${response.status}.`;
         const failure = new Error(message);
         failure.detail = (data && data.detail) || "";
         throw failure;
       }
-      if (!data || !data.urls || !data.urls.gp5) {
+
+      if (!data || (!data.id && !isConvertResult(data))) {
         throw new Error("The converter returned an incomplete result.");
       }
 
-      handleConverted(data);
+      const result = await awaitJob(data.id, data, signal);
+      if (abortController && abortController.signal.aborted) {
+        return;
+      }
+      handleConverted(result);
     } catch (error) {
       if (error.name === "AbortError") {
         setStatus("Conversion cancelled.", "info");
@@ -1641,6 +1982,11 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
   startOverButton.addEventListener("click", startOver);
   cancelButton.addEventListener("click", cancelConversion);
+
+  downloadPdf.addEventListener("click", (event) => {
+    event.preventDefault();
+    exportPdf();
+  });
 
   playButton.addEventListener("click", () => {
     if (!api || !scoreReady) {

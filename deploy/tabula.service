@@ -1,0 +1,42 @@
+[Unit]
+Description=Tabula web app (uvicorn on 127.0.0.1:8000)
+Documentation=file:/home/daniel/Projects/tabula/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=daniel
+Group=daniel
+WorkingDirectory=/home/daniel/Projects/tabula
+
+Environment=PYTHONUNBUFFERED=1
+Environment=TABULA_PUBLIC=1
+Environment=TABULA_ALLOW_URLS=0
+Environment=TABULA_MAX_AUDIO_MB=20
+Environment=TABULA_JOBS_DIR=/var/lib/tabula/jobs
+
+ExecStart=/home/daniel/Projects/tabula/.venv/bin/python3 -m webapp.server --host 127.0.0.1 --port 8000
+
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+# Conversions are CPU/GPU heavy; keep one runaway take from eating the host.
+MemoryMax=6G
+MemoryAccounting=yes
+TasksMax=512
+LimitNOFILE=65536
+
+# Modest hardening.  The repo lives under /home/daniel, so ProtectHome must
+# stay off: jobs, caches and labels are written there.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

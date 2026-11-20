@@ -1,0 +1,37 @@
+[Unit]
+Description=Cloudflare quick tunnel for Tabula (trycloudflare.com)
+Documentation=file:/home/daniel/Projects/tabula/deploy/README.md
+After=network-online.target caddy.service
+Wants=network-online.target caddy.service
+
+[Service]
+Type=simple
+User=daniel
+Group=daniel
+WorkingDirectory=/home/daniel/Projects/tabula
+
+# Quick tunnels need no account and no credentials.  The public URL is random,
+# changes on every restart, and is printed to the journal in a banner like:
+#   https://<random-words>.trycloudflare.com
+# Watch it with:
+#   journalctl -u cloudflared-quick -f
+ExecStart=/home/daniel/Projects/tabula/deploy/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8080
+
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+
+# journald captures both streams, so the printed URL survives restarts.
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

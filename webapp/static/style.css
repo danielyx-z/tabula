@@ -676,6 +676,17 @@ body.is-resizing-rail * {
   font-weight: 650;
 }
 
+.export-link.is-disabled {
+  color: var(--muted);
+  text-decoration-color: var(--line);
+  cursor: default;
+}
+
+.export-link.is-busy {
+  cursor: progress;
+  opacity: 0.7;
+}
+
 .export-ext {
   color: var(--muted);
   font-weight: 500;

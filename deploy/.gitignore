@@ -1,0 +1,4 @@
+# Downloaded binaries and runtime state — never commit.
+bin/
+logs/
+*.pid

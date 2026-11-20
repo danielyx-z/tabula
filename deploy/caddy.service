@@ -1,0 +1,41 @@
+[Unit]
+Description=Caddy reverse proxy for Tabula
+Documentation=file:/home/daniel/Projects/tabula/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=daniel
+Group=daniel
+WorkingDirectory=/home/daniel/Projects/tabula
+
+# Keep Caddy's data (certificates, autosave) out of the repo but writable by
+# the service user.  The config lives at /etc/caddy/Caddyfile by convention;
+# point it at the repo file, e.g.
+#   sudo install -d /etc/caddy
+#   sudo ln -sfn /home/daniel/Projects/tabula/deploy/Caddyfile /etc/caddy/Caddyfile
+# If you installed Caddy with apt instead of deploy/install.sh, change
+# ExecStart to /usr/bin/caddy.
+Environment=XDG_DATA_HOME=/var/lib/tabula-caddy
+StateDirectory=tabula-caddy
+StateDirectoryMode=0700
+
+ExecStart=/home/daniel/Projects/tabula/deploy/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+ExecReload=/home/daniel/Projects/tabula/deploy/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+
+Restart=always
+RestartSec=2
+TimeoutStopSec=15
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/tabula-caddy
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target
