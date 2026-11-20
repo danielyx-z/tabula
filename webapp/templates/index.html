@@ -112,18 +112,17 @@
                 <label class="adv-row" for="beam-select">
                   <span class="adv-copy">
                     <span class="adv-label">Beam search</span>
-                    <span class="adv-hint">1 is greedy and fastest; more paths is slower.</span>
+                    <span class="adv-hint">1 is greedy and fastest; 4 is slower but more accurate.</span>
                   </span>
                   <select id="beam-select" class="adv-select">
                     <option value="1" selected>1 · greedy</option>
                     <option value="4">4</option>
-                    <option value="8">8 · wide</option>
                   </select>
                 </label>
                 <label class="adv-row" for="quantize-select">
                   <span class="adv-copy">
                     <span class="adv-label">Quantize</span>
-                    <span class="adv-hint">Audio only: snap MuScriptor's timing to a grid.</span>
+                    <span class="adv-hint">Snap MuScriptor's timing to a grid (audio only).</span>
                   </span>
                   <select id="quantize-select" class="adv-select">
                     <option value="off"{% if quantize_default == "off" %} selected{% endif %}>Off</option>

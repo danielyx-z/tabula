@@ -221,8 +221,9 @@ a:hover {
   background: var(--red);
 }
 
-.server-dot[data-state="public"] {
-  background: var(--accent);
+.server-dot[data-state="public"],
+.server-dot[data-state="ok"] {
+  background: var(--green);
 }
 
 .server-dot[data-state="checking"] {
@@ -847,7 +848,7 @@ body.is-resizing-rail * {
 .hero-tab-track {
   display: flex;
   width: max-content;
-  animation: hero-tab-scroll 110s linear infinite;
+  animation: hero-tab-scroll 140s linear infinite;
 }
 
 .hero-tab-sheet {
