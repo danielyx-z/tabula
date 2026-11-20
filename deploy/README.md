@@ -10,7 +10,7 @@ browser --HTTPS--> Cloudflare edge --tunnel--> cloudflared --> Caddy :8080 --> u
 - **Caddy** terminates on loopback, enforces body limits, CSP, cache headers, trusted proxies.
 - **uvicorn** runs the FastAPI app.
 
-## Named tunnel (permanent, `tabula.danielyx.net`)
+## Named tunnel (permanent, `tabula.yuxuanz.xyz`)
 
 ### Prerequisites
 

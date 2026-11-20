@@ -22,7 +22,7 @@ CADDY_CONFIG="${SCRIPT_DIR}/Caddyfile"
 CLOUDFLARED_CONFIG="${HOME}/.cloudflared/config.yml"
 UPSTREAM="http://127.0.0.1:8000"
 TUNNEL_TARGET="http://127.0.0.1:8080"
-PUBLIC_URL="https://tabula.danielyx.net"
+PUBLIC_URL="https://tabula.yuxuanz.xyz"
 
 CADDY_PID="${LOG_DIR}/caddy.pid"
 CLOUDFLARED_PID="${LOG_DIR}/cloudflared.pid"
