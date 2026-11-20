@@ -1,8 +1,7 @@
 # Tabula
 
-**Live demo:** [https://tabula.yuxuanz.xyz](https://tabula.yuxuanz.xyz) — upload a recording, get a tab (PDF, MIDI, ASCII). Runs on a named Cloudflare tunnel.
 
-I'd frequently listen to guitar covers on Youtube but many would have paid or no sheets, so I built this to help me transcribe audio into guitar tabs.
+I'd frequently listen to guitar covers on Youtube but many would have paid or no sheets, so I built this to help me transcribe audio into guitar tabs. Live Demo at [https://tabula.yuxuanz.xyz](https://tabula.yuxuanz.xyz) - Runs on my GPU, may return OOM if I'm training other models at the time.
 
 ### Comparison Against Leading Models (Songscription (paid), Klang.io (paid), Muscriptor (free))
 **Original Audio:** *Lover Girl* by Laufey, played by matthewnjee on YouTube
