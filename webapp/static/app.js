@@ -1041,14 +1041,15 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     recentList.hidden = arr.length === 0;
     recentList.innerHTML = arr
       .map((entry) => {
-        const dead = Number(entry.dead_notes) || 0;
-        const detail = [`${entry.notes || 0} notes`];
-        if (dead > 0) detail.push(`${dead} dead`);
+        const d = entry.date ? new Date(entry.date) : null;
+        const meta = d
+          ? d.toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+          : "—";
         return `<button type="button" class="recent-item" data-id="${escapeHtml(
           entry.id
         )}" title="${escapeHtml(entry.name)}" aria-label="Open ${escapeHtml(entry.name)}">
             <span class="recent-name">${escapeHtml(entry.name)}</span>
-            <span class="recent-meta">${escapeHtml(detail.join(" · "))}</span>
+            <span class="recent-meta">${escapeHtml(meta)}</span>
           </button>`;
       })
       .join("");
