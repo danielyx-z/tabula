@@ -1,7 +1,7 @@
 # Tabula
 
 
-I'd frequently listen to guitar covers on Youtube but many would have paid or no sheets, so I built this to help me transcribe audio into guitar tabs. Live Demo at [https://tabula.yuxuanz.xyz](https://tabula.yuxuanz.xyz) - Runs on my GPU, may return OOM if I'm training other models at the time.
+I'd frequently listen to guitar covers on Youtube but many would have paid or no sheets, so I built this to help me transcribe audio into guitar tabs. A live [Demo](https://tabula.yuxuanz.xyz) is hosted on my GPU, but it may return OOM if I'm training other models at the time.
 
 ### Comparison Against Leading Models (Songscription (paid), Klang.io (paid), Muscriptor (free))
 **Original Audio:** *Lover Girl* by Laufey, played by matthewnjee on YouTube
@@ -49,9 +49,6 @@ See `docs/` for format specs, data contract, labelling workflow, cluster notes, 
 ### Known limitations
 
 - **Fingerstyle focus** — Tabula is trained on GuitarSet (clean, single-note lines and fingerstyle pieces).  It does not model strummed chords, rhythmic scratches, or percussive strumming patterns well.  Expect missing or inaccurate notes on heavily strummed material.
-- **No singing / mixed audio** — The audio front-end (MuScriptor) expects solo guitar.  Vocals, drums, or other instruments will confuse the transcription.
-- **Single guitar** — Multi-guitar arrangements are not supported; the model outputs one tab track.
-- **Dead-note classifier threshold** — The default 0.65 threshold is conservative.  Some muted hits may appear as pitched notes; lowering the threshold in *Advanced* catches more but adds false positives.
 - **GP5 timing is flattened** — The exported Guitar Pro file uses a single tempo (the last retained value from the source).  Expressive tempo changes smaller than 10 BPM are dropped so the score does not drift against itself.
 
 This project is based on the paper **Fretting-Transformer: Encoder-Decoder Model for MIDI to Tablature Transcription**.
