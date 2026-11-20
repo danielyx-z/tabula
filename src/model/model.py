@@ -66,6 +66,3 @@ def count_parameters(model) -> tuple[int, int]:
     return total, trainable
 
 
-def get_model_size_mb(model) -> float:
-    total, _ = count_parameters(model)
-    return total * 4 / (1024 ** 2)

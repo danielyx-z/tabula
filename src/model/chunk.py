@@ -250,11 +250,3 @@ def make_inference_chunks(
     return chunks
 
 
-def make_chunks_from_notes(
-    notes: list[Note],
-    vocab: Vocab,
-    track_id: Any,
-    cfg: ChunkConfig = CFG,
-) -> list[Chunk]:
-    """Backwards-compatible alias for :func:`make_training_chunks`."""
-    return make_training_chunks(notes, vocab, track_id, cfg)

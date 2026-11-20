@@ -104,9 +104,6 @@ def positions(
     return out
 
 
-def is_playable(pitch: int, tuning: tuple[int, ...], frets: int, capo: int = 0) -> bool:
-    return bool(positions(pitch, tuning, frets, capo))
-
 
 def midi_to_freq(pitch: int) -> float:
     return 440.0 * 2.0 ** ((pitch - 69) / 12.0)

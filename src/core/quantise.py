@@ -139,14 +139,6 @@ def decode_shifts(tokens: list[str]) -> list[int]:
     return [token_to_shift(t) for t in tokens if t.startswith("TIME_SHIFT<")]
 
 
-def shifts_roundtrip_error(original_shifts: list[int]) -> tuple[int, int]:
-    """Check round-trip fidelity. Returns (exact_matches, total_shifts)."""
-    exact = 0
-    for shift in original_shifts:
-        if sum(decompose_shift(shift)) == quantise_tick(shift):
-            exact += 1
-    return exact, len(original_shifts)
-
 
 def quantise_notes(
     notes: list[Note],

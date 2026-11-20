@@ -216,10 +216,3 @@ def load_note_groups(
     }
 
 
-def flatten_notes(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return every note in a :func:`load_note_groups` payload."""
-    return [
-        note
-        for group in payload.get("groups", [])
-        for note in group.get("notes", [])
-    ]

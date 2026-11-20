@@ -143,9 +143,6 @@ def iter_tracks(
             yield meta, notes[offsets[int(i)] : offsets[int(i) + 1]]
 
 
-def read_manifest(root: str | Path) -> dict:
-    return json.loads((Path(root) / "manifest.json").read_text(encoding="utf-8"))
-
 
 def write_manifest(root: str | Path, manifest: dict) -> None:
     path = Path(root) / "manifest.json"

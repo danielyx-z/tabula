@@ -84,6 +84,3 @@ def render_tab(notes: list[Note], width: int = 120, capo: int = 0) -> str:
     return "\n".join(lines)
 
 
-def midi_to_tab(midi_path: str) -> str:
-    """Placeholder: MIDI -> tab (requires model inference)."""
-    return f"# midi2tab {midi_path}\n# Not implemented yet - needs model checkpoint"

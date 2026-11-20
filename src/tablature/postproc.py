@@ -63,20 +63,6 @@ def _first_valid(
     return 1, max(0, min(frets, pitch - tuning[0]))
 
 
-def decode_to_notes(
-    dec_ids: list[int],
-    vocab,
-    enc_notes: list[Note],
-    tuning: tuple[int, ...] = STANDARD,
-) -> list[DecodedNote]:
-    """Decode TAB ids and align them to ``enc_notes`` (compatibility helper)."""
-    tabs: list[tuple[int, int]] = []
-    for tok_id in dec_ids:
-        tok = vocab.id_to_token.get(tok_id, "")
-        if tok.startswith("TAB<"):
-            tabs.append(parse_tab(tok))
-    return postprocess(tabs, enc_notes, mode="full", tuning=tuning)
-
 
 def _overlaps(
     assigned: dict[int, list[DecodedNote]],

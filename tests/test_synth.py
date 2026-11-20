@@ -10,7 +10,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import numpy as np  # noqa: E402
 
 from audio.synth import synthesize  # noqa: E402
-from core.fretboard import midi_to_freq  # noqa: E402
 from core.schema import Note  # noqa: E402
 
 SR = 44100

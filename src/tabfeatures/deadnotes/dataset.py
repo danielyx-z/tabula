@@ -12,7 +12,6 @@ from tabfeatures.labeling.store import (
     list_sessions,
     read_candidates,
     read_meta,
-    session_dir,
 )
 
 from .features import FeatureConfig, extract_group_rows

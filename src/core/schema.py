@@ -41,10 +41,3 @@ class Track:
         return max((n.t + n.dur for n in self.notes), default=0)
 
 
-@dataclass(slots=True)
-class Reject:
-    source: str
-    song: str
-    index: int
-    reason: str
-    detail: str = ""

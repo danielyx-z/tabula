@@ -48,7 +48,7 @@ from core.quantise import quantise_notes, ticks_to_seconds  # noqa: E402
 from tablature.metrics import compute_difficulty, compute_rhythm_metrics  # noqa: E402
 from corpus.parse.midi import parse_midi  # noqa: E402
 from tablature.playability import SOFT_FRET, playability_pass  # noqa: E402
-from tablature.postproc import DecodedNote, repair_overlaps  # noqa: E402
+from tablature.postproc import DecodedNote  # noqa: E402
 from tablature.render import render_tab  # noqa: E402
 from tablature.stream import decode_tab_stream  # noqa: E402
 from tablature.tokenizer import PAD_TOKEN, Vocab  # noqa: E402

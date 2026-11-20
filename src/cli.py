@@ -14,7 +14,6 @@ of the predicted tab.
 from __future__ import annotations
 
 import argparse
-import sys
 import tempfile
 from pathlib import Path
 

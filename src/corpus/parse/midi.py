@@ -47,9 +47,6 @@ def _ticks_from_seconds(pm: pretty_midi.PrettyMIDI, seconds: float) -> int:
     return int(round(ticks_at_file_res * PPQ / pm.resolution))
 
 
-def _seconds_from_ticks(pm: pretty_midi.PrettyMIDI, ticks: int) -> float:
-    return pm.tick_to_time(ticks)
-
 
 def parse_midi(
     path: str | Path,

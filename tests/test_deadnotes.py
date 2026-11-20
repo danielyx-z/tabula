@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import math
 import sys
 from pathlib import Path
@@ -18,7 +17,6 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from tabfeatures.deadnotes.features import (  # noqa: E402
     FEATURE_NAMES,
-    AudioContext,
     FeatureConfig,
     extract_group_rows,
 )

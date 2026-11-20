@@ -37,13 +37,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from corpus.dataset import iter_tracks  # noqa: E402
-from core.fretboard import STANDARD, format_tuning  # noqa: E402
+from core.fretboard import STANDARD  # noqa: E402
 from core.schema import Note  # noqa: E402
 from core.quantise import GRID  # noqa: E402
 from model.chunk import ChunkConfig, make_inference_chunks, make_training_chunks  # noqa: E402
 from tablature.tokenizer import (  # noqa: E402
-    EOS_TOKEN, UNK_TOKEN, Vocab, build_base_vocab, notes_to_events,
-    notes_to_target, parse_tab,
+    UNK_TOKEN, Vocab, build_base_vocab, notes_to_events, notes_to_target,
 )
 
 FAILURES: list[str] = []

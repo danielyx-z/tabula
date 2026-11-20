@@ -9,15 +9,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-from core.fretboard import STANDARD
 from core.quantise import (
     GRID,
     SHIFT_VOCAB,
-    decode_shifts,
     encode_shifts,
     quantise_tick,
     shift_to_token,
-    token_to_shift,
 )
 from core.schema import Note
 
@@ -53,10 +50,6 @@ def parse_note_on(tok: str) -> int:
     assert tok.startswith("NOTE_ON<") and tok.endswith(">")
     return int(tok[8:-1])
 
-
-def parse_note_off(tok: str) -> int:
-    assert tok.startswith("NOTE_OFF<") and tok.endswith(">")
-    return int(tok[9:-1])
 
 
 def parse_tab(tok: str) -> tuple[int, int]:
