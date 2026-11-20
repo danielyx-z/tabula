@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# Start or stop the public quick-tunnel stack without systemd.
+# Start or stop the named-tunnel stack without systemd.
 #
-#   deploy/public.sh          start Caddy + cloudflared, print the public URL
+#   deploy/public.sh          start Caddy + cloudflared (tabula.danielyx.net)
 #   deploy/public.sh stop     stop the processes started by this script
 #   deploy/public.sh status   show pid/log state
 #
 # Caddy listens on 127.0.0.1:8080 and proxies to uvicorn on 127.0.0.1:8000.
-# cloudflared creates an anonymous quick tunnel and prints a random
-# https://*.trycloudflare.com URL.  The URL changes every start.
+# cloudflared runs a named tunnel (tabula) to tabula.danielyx.net.
 #
 # This script does not start uvicorn; run the app first:
 #   .venv/bin/python3 -m webapp.server --host 127.0.0.1 --port 8000
@@ -20,8 +19,10 @@ LOG_DIR="${SCRIPT_DIR}/logs"
 CADDY="${BIN_DIR}/caddy"
 CLOUDFLARED="${BIN_DIR}/cloudflared"
 CADDY_CONFIG="${SCRIPT_DIR}/Caddyfile"
+CLOUDFLARED_CONFIG="${HOME}/.cloudflared/config.yml"
 UPSTREAM="http://127.0.0.1:8000"
 TUNNEL_TARGET="http://127.0.0.1:8080"
+PUBLIC_URL="https://tabula.danielyx.net"
 
 CADDY_PID="${LOG_DIR}/caddy.pid"
 CLOUDFLARED_PID="${LOG_DIR}/cloudflared.pid"
@@ -63,8 +64,7 @@ stop_process() {
 }
 
 stop() {
-	echo "Stopping Tabula quick-tunnel stack"
-	# Stop the tunnel first so visitors see a clean failure, then Caddy.
+	echo "Stopping Tabula named-tunnel stack"
 	stop_process cloudflared "$CLOUDFLARED_PID"
 	stop_process caddy "$CADDY_PID"
 	echo "Stopped."
@@ -72,7 +72,7 @@ stop() {
 
 status() {
 	local name pidfile pid state
-	echo "Tabula quick-tunnel status"
+	echo "Tabula named-tunnel status"
 	for name in caddy cloudflared; do
 		if [ "$name" = caddy ]; then pidfile="$CADDY_PID"; else pidfile="$CLOUDFLARED_PID"; fi
 		if pid_alive "$pidfile"; then
@@ -83,16 +83,11 @@ status() {
 		fi
 		printf '  %-12s %s\n' "$name" "$state"
 	done
-	if [ -f "$CLOUDFLARED_LOG" ]; then
-		local url
-		url="$(grep -Eo 'https://[A-Za-z0-9.-]+\.trycloudflare\.com' "$CLOUDFLARED_LOG" | tail -n 1 || true)"
-		[ -n "$url" ] && echo "  url          ${url}"
-	fi
+	echo "  url          ${PUBLIC_URL}"
 	echo "  logs         ${LOG_DIR}"
 }
 
 wait_http() {
-	# wait_http <url> <seconds>
 	local url="$1" seconds="$2" i
 	for i in $(seq 1 "$seconds"); do
 		if curl -fsS --max-time 2 -o /dev/null "$url"; then
@@ -104,11 +99,13 @@ wait_http() {
 }
 
 start() {
-	echo "Starting Tabula quick-tunnel stack"
+	echo "Starting Tabula named-tunnel stack (${PUBLIC_URL})"
 
 	[ -x "$CADDY" ] || die "missing ${CADDY}; run deploy/install.sh first."
 	[ -x "$CLOUDFLARED" ] || die "missing ${CLOUDFLARED}; run deploy/install.sh first."
 	[ -f "$CADDY_CONFIG" ] || die "missing ${CADDY_CONFIG}."
+	[ -f "$CLOUDFLARED_CONFIG" ] || die "missing ${CLOUDFLARED_CONFIG}."
+	[ -f "${HOME}/.cloudflared/5ea4e618-321b-4567-be84-5a107a4650a3.json" ] || die "missing tunnel credentials."
 
 	if pid_alive "$CADDY_PID" || pid_alive "$CLOUDFLARED_PID"; then
 		die "already running; use 'deploy/public.sh stop' or 'status' first."
@@ -138,35 +135,19 @@ start() {
 	echo "  caddy ready (pid $(cat "$CADDY_PID"))"
 
 	echo "  starting cloudflared (log: ${CLOUDFLARED_LOG})"
-	nohup "$CLOUDFLARED" tunnel --no-autoupdate --url "$TUNNEL_TARGET" >>"$CLOUDFLARED_LOG" 2>&1 &
+	nohup "$CLOUDFLARED" --config "$CLOUDFLARED_CONFIG" tunnel run tabula >>"$CLOUDFLARED_LOG" 2>&1 &
 	echo "$!" >"$CLOUDFLARED_PID"
 
-	echo "  waiting for the public URL (cloudflare side can take a few seconds)"
-	url=""
-	for i in $(seq 1 60); do
-		url="$(grep -Eo 'https://[A-Za-z0-9.-]+\.trycloudflare\.com' "$CLOUDFLARED_LOG" | head -n 1 || true)"
-		[ -n "$url" ] && break
-		if ! pid_alive "$CLOUDFLARED_PID"; then
-			break
-		fi
-		sleep 1
-	done
-
-	if [ -z "$url" ]; then
-		echo "--- ${CLOUDFLARED_LOG} ---" >&2
-		tail -n 40 "$CLOUDFLARED_LOG" >&2 || true
-		stop
-		die "cloudflared did not print a trycloudflare URL."
-	fi
+	echo "  waiting for tunnel to connect..."
+	sleep 5
 
 	echo
-	echo "Public URL: ${url}"
+	echo "Public URL: ${PUBLIC_URL}"
 	echo "  caddy:       pid $(cat "$CADDY_PID")  (${CADDY_PID})"
 	echo "  cloudflared: pid $(cat "$CLOUDFLARED_PID")  (${CLOUDFLARED_PID})"
 	echo "  logs:        ${LOG_DIR}"
 	echo
 	echo "Stop with: ${SCRIPT_DIR}/public.sh stop"
-	echo "The URL is random and changes on every start."
 }
 
 case "${1:-start}" in

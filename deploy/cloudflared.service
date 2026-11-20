@@ -1,0 +1,32 @@
+[Unit]
+Description=Cloudflare named tunnel for Tabula (tabula.danielyx.net)
+Documentation=file:/home/daniel/Projects/tabula/deploy/README.md
+After=network-online.target caddy.service
+Wants=network-online.target caddy.service
+
+[Service]
+Type=simple
+User=daniel
+Group=daniel
+WorkingDirectory=/home/daniel/Projects/tabula
+Environment=HOME=/home/daniel
+# Named tunnel using credentials file and config.yml at ~/.cloudflared/
+ExecStart=/home/daniel/Projects/tabula/deploy/bin/cloudflared --config /home/daniel/.cloudflared/config.yml tunnel run tabula
+
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target
