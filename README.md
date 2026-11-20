@@ -46,6 +46,14 @@ A separate XGBoost model trained on my own data is used for guitar-specific tab 
 
 See `docs/` for format specs, data contract, labelling workflow, cluster notes, and verification.
 
+### Known limitations
+
+- **Fingerstyle focus** — Tabula is trained on GuitarSet (clean, single-note lines and fingerstyle pieces).  It does not model strummed chords, rhythmic scratches, or percussive strumming patterns well.  Expect missing or inaccurate notes on heavily strummed material.
+- **No singing / mixed audio** — The audio front-end (MuScriptor) expects solo guitar.  Vocals, drums, or other instruments will confuse the transcription.
+- **Single guitar** — Multi-guitar arrangements are not supported; the model outputs one tab track.
+- **Dead-note classifier threshold** — The default 0.65 threshold is conservative.  Some muted hits may appear as pitched notes; lowering the threshold in *Advanced* catches more but adds false positives.
+- **GP5 timing is flattened** — The exported Guitar Pro file uses a single tempo (the last retained value from the source).  Expressive tempo changes smaller than 10 BPM are dropped so the score does not drift against itself.
+
 This project is based on the paper **Fretting-Transformer: Encoder-Decoder Model for MIDI to Tablature Transcription**.
 
 
