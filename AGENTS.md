@@ -215,7 +215,14 @@ is off by default; enable it only if memory becomes tight.
   via a childList MutationObserver on the score element. Space always toggles
   play/pause, even when a toolbar button holds focus (keydown and keyup are
   prevented). PDF export is client-side (vendored jsPDF + svg2pdf) and
-  paginates the already-vector score SVGs onto A4.
+  paginates the already-vector score SVGs onto A4. The empty state is a
+  marquee of a real transcribed riff (`.hero-tab`, two copies, 48 s loop,
+  masked edges, no fake notation). Uploads are capped at 20 MB
+  (`TABULA_MAX_AUDIO_MB` default 20) and the drop zone just says
+  "Audio · N MB max". The labeller is private: `/label`, `/api/label/*` and
+  `/api/monitor/*` return 404 unless the client address is loopback, LAN or
+  tailnet (`_is_private_client`), and the footer link is only rendered for
+  those callers.
 
 ## Fixed bugs (recent)
 
@@ -367,6 +374,9 @@ is off by default; enable it only if memory becomes tight.
 - **Nylon/classical lead** — all output MIDI string tracks and the synthesis
   temp MIDI use GM program 24 (Acoustic Guitar (nylon) / Live HQ "Concert
   Nylon Guitar") instead of program 25 steel, so the WAVs are nylon.
+- **ASCII tab padding** — `render_tab_with_features` used to pad each cell
+  with spaces ("6  "); the unused part of a cell is now string dashes ("6--")
+  so the text tab has no gaps after notes.
 - **One `playability_pass`** — `scripts/midi2tab.py` carried a duplicate copy
   of the pass; it now imports `tablature.playability.playability_pass`, so the
   CLI and library cannot drift apart.

@@ -789,59 +789,76 @@ body.is-resizing-rail * {
   margin: 0 auto;
 }
 
+/* Hero: a real transcription scrolling through, no fake notation. */
+.hero-tab {
+  overflow: hidden;
+  align-self: center;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: rgba(255, 253, 248, 0.55);
+  padding: 22px 0;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 8%,
+    #000 92%,
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 8%,
+    #000 92%,
+    transparent
+  );
+}
+
+.hero-tab-track {
+  display: flex;
+  width: max-content;
+  animation: hero-tab-scroll 48s linear infinite;
+}
+
+.hero-tab-sheet {
+  margin: 0;
+  padding: 0 26px 0 18px;
+  color: var(--ink-soft);
+  font-family: ui-monospace, "SFMono-Regular", "DejaVu Sans Mono", Menlo,
+    Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.75;
+  white-space: pre;
+}
+
+@keyframes hero-tab-scroll {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-tab-track {
+    animation: none;
+  }
+}
+
 .empty-visual {
+  align-self: center;
   width: 100%;
   max-width: 340px;
   justify-self: end;
 }
 
-.empty-visual svg {
-  display: block;
-  width: 100%;
-  height: auto;
-  overflow: visible;
-}
 
-.empty-strings path {
-  stroke: var(--line-strong);
-  stroke-width: 1;
-}
 
-.empty-bars path {
-  stroke: var(--line-strong);
-  stroke-width: 1.1;
-}
 
-.empty-highlight {
-  fill: var(--accent-soft);
-  stroke: var(--accent);
-  stroke-width: 1.1;
-  opacity: 0.9;
-}
 
-.empty-cursor {
-  stroke: var(--accent);
-  stroke-width: 1.4;
-  opacity: 0.85;
-}
 
-.empty-numbers text {
-  fill: var(--ink);
-  font-family: var(--font-sans);
-  font-size: 14px;
-  font-weight: 600;
-}
 
-.empty-ticks path {
-  stroke: var(--line);
-  stroke-width: 1;
-}
 
-.empty-ticks text {
-  fill: var(--muted);
-  font-family: var(--font-sans);
-  font-size: 10px;
-}
 
 .empty-copy h1 {
   max-width: 12ch;
@@ -1978,59 +1995,14 @@ body.is-resizing-rail * {
   max-width: 400px;
 }
 
-.empty-sources rect {
-  fill: rgba(255, 253, 248, 0.52);
-  stroke: var(--line);
-  stroke-width: 1;
-}
 
-.source-label {
-  fill: var(--muted);
-  font-family: var(--font-sans);
-  font-size: 8.5px;
-  font-weight: 600;
-  letter-spacing: 0.12em;
-}
 
-.source-wave {
-  fill: none;
-  stroke: var(--accent);
-  stroke-width: 1.4;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
 
-.source-note {
-  fill: none;
-  stroke: var(--ink-soft);
-  stroke-width: 1.4;
-  stroke-linecap: round;
-}
 
-.empty-sources ellipse {
-  fill: var(--ink-soft);
-}
 
-.empty-connectors path {
-  fill: none;
-  stroke: var(--line-strong);
-  stroke-width: 1;
-}
 
-.empty-connectors circle {
-  fill: var(--accent);
-}
 
-.tab-strings,
-.tab-bars {
-  fill: none;
-  stroke: var(--line-strong);
-  stroke-width: 1;
-}
 
-.empty-tab .tab-bars {
-  stroke-width: 1.1;
-}
 
 /* ---------- Loading mark: a scan across the strings ---------- */
 .working-mark {

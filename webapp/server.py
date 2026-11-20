@@ -83,7 +83,7 @@ CHECKPOINT = _project_path(os.environ.get(
 ))
 VOCAB = _project_path(os.environ.get("TABULA_VOCAB", "vocab/canonical.json"))
 PYTHON = os.environ.get("TABULA_PYTHON", sys.executable)
-MAX_AUDIO_MB = int(os.environ.get("TABULA_MAX_AUDIO_MB", "96"))
+MAX_AUDIO_MB = int(os.environ.get("TABULA_MAX_AUDIO_MB", "20"))
 MAX_MIDI_MB = int(os.environ.get("TABULA_MAX_MIDI_MB", "8"))
 MAX_UPLOAD_MB = int(
     os.environ.get("TABULA_MAX_UPLOAD_MB", str(MAX_AUDIO_MB + MAX_MIDI_MB + 16))
@@ -344,6 +344,7 @@ def index(request: Request):
             "checkpoint_ready": CHECKPOINT.exists(),
             "vocab_ready": VOCAB.exists(),
             "url_downloads": ALLOW_URLS and _ytdlp_available(),
+            "labeller_local": _is_private_client(_client_ip(request)),
         },
     )
 
@@ -1725,6 +1726,51 @@ async def job_set_title(job_id: str, request: Request):
         return _error("The title could not be saved.", 500, str(exc))
     _rewrite_gp5_title(job_dir, title)
     return {"id": job_id, "title": title}
+
+
+# The dead-note labeller is a private tool: it only answers requests from the
+# tailnet, the LAN or the loopback interface, never through the public tunnel.
+_PRIVATE_NETWORKS = tuple(
+    ipaddress.ip_network(value)
+    for value in (
+        "127.0.0.0/8",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "100.64.0.0/10",  # tailscale CGNAT
+        "169.254.0.0/16",
+        "::1/128",
+        "fc00::/7",
+        "fe80::/10",
+    )
+)
+
+
+def _is_private_client(ip: str) -> bool:
+    try:
+        address = ipaddress.ip_address(str(ip).split("%")[0])
+    except ValueError:
+        return False
+    if address.version == 6 and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return any(
+        address in network
+        for network in _PRIVATE_NETWORKS
+        if network.version == address.version
+    )
+
+
+@app.middleware("http")
+async def _labeller_local_only(request: Request, call_next):
+    path = request.url.path
+    if (
+        path == "/label"
+        or path.startswith("/label/")
+        or path.startswith("/api/label/")
+        or path.startswith("/api/monitor/")
+    ) and not _is_private_client(_client_ip(request)):
+        return PlainTextResponse("Not found", status_code=404)
+    return await call_next(request)
 
 
 @app.middleware("http")

@@ -463,7 +463,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
   function validateFile(kind, file) {
     if (kind !== "audio" || !AUDIO_NAME.test(file.name || "")) {
-      return "Choose an audio recording (WAV, FLAC, OGG, MP3, M4A).";
+      return "Choose an audio recording.";
     }
     if (!file.size) {
       return "That file is empty.";

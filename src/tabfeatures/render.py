@@ -102,8 +102,8 @@ def render_tab_with_features(
         bar = slot // int(slots_per_bar)
         relative = slot % int(slots_per_bar)
         position = bar * stride + relative * int(cell_width)
-        for offset in range(int(cell_width)):
-            rows[string][position + offset] = " "
+        # Pad the unused part of the cell with string dashes, not spaces: a
+        # note should read "6--" on the line, not "6  " with a gap.
         for offset, char in enumerate(text[: int(cell_width)]):
             rows[string][position + offset] = char
 

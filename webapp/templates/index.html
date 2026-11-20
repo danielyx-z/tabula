@@ -50,7 +50,7 @@
                   <span class="pair-copy">
                     <span class="pair-kicker">Source audio</span>
                     <span id="audio-title" class="pair-title">Add the recording</span>
-                    <span id="audio-meta" class="pair-meta">WAV, FLAC, OGG, MP3 · {{ max_audio_mb }} MB</span>
+                    <span id="audio-meta" class="pair-meta">Audio · {{ max_audio_mb }} MB max</span>
                   </span>
                   <span id="audio-action" class="pair-action">Browse</span>
                 </label>
@@ -213,51 +213,26 @@
       <section class="score-stage" aria-label="Tab and playback" aria-busy="false">
         <div id="empty-state" class="state empty-state">
           <div class="empty-visual" aria-hidden="true">
-            <svg viewBox="0 0 420 280">
-              <g class="empty-sources">
-                <rect x="2" y="62" width="112" height="62" rx="2" />
-                <text x="14" y="80" class="source-label">AUDIO</text>
-                <path class="source-wave" d="M12 96h8l4-10 6 24 6-30 5 20 6-12 7 10h9" />
-                <rect x="2" y="156" width="112" height="62" rx="2" />
-                <text x="14" y="174" class="source-label">MIDI</text>
-                <path class="source-note" d="M37 201v-23l20-4v23" />
-                <ellipse cx="33" cy="201" rx="5" ry="3.5" />
-                <ellipse cx="53" cy="197" rx="5" ry="3.5" />
-              </g>
-              <g class="empty-connectors">
-                <path d="M116 93c20 0 20 39 36 39" />
-                <path d="M116 187c20 0 20-39 36-39" />
-                <circle cx="152" cy="132" r="2.4" />
-              </g>
-              <g class="empty-tab">
-                <path class="tab-strings" d="M160 72H408M160 96H408M160 120H408M160 144H408M160 168H408M160 192H408" />
-                <path class="tab-bars" d="M160 60v144M244 60v144M326 60v144M408 60v144" />
-                <rect class="empty-highlight" x="244" y="62" width="82" height="140" rx="2" />
-                <path class="empty-cursor" d="M285 62v140" />
-                <g class="empty-numbers">
-                  <text x="180" y="78">0</text>
-                  <text x="204" y="102">2</text>
-                  <text x="226" y="126">3</text>
-                  <text x="258" y="78">3</text>
-                  <text x="280" y="102">2</text>
-                  <text x="302" y="126">0</text>
-                  <text x="342" y="150">2</text>
-                  <text x="364" y="174">3</text>
-                  <text x="386" y="198">0</text>
-                </g>
-                <g class="empty-ticks">
-                  <path d="M160 60v-5M244 60v-5M326 60v-5M408 60v-5" />
-                  <text x="160" y="48">1</text>
-                  <text x="244" y="48">2</text>
-                  <text x="326" y="48">3</text>
-                </g>
-              </g>
-            </svg>
+            <div class="hero-tab">
+              <div class="hero-tab-track">
+                <pre class="hero-tab-sheet">  E4|---------------6  ---6  ---------5  ---5  ------|---4  ---4  ---------3  ---3  ---------2  ---|
+ B3|---------------7  ---7  ---------4  ---4  ------|---4  ---4  ---------4  ---4  ---------4  ---|
+ G3|---------------8  ---8  ------------------------|--------------------------------------------|
+ D3|------------------------------------------------|--------------------------------------------|
+ A2|---------------------2  ---------2  ---2  ------|---2  ---2  ---------2  ---2  ---------2  ---|
+ E2|---------------7  ------------------------------|--------------------------------------------|</pre>
+                <pre class="hero-tab-sheet">  E4|---------------6  ---6  ---------5  ---5  ------|---4  ---4  ---------3  ---3  ---------2  ---|
+ B3|---------------7  ---7  ---------4  ---4  ------|---4  ---4  ---------4  ---4  ---------4  ---|
+ G3|---------------8  ---8  ------------------------|--------------------------------------------|
+ D3|------------------------------------------------|--------------------------------------------|
+ A2|---------------------2  ---------2  ---2  ------|---2  ---2  ---------2  ---2  ---------2  ---|
+ E2|---------------7  ------------------------------|--------------------------------------------|</pre>
+              </div>
+            </div>
           </div>
           <div class="empty-copy">
             <h1>Turn a take into a tab you can hear.</h1>
             <p class="empty-lede">Upload a recording. Tabula transcribes it locally, aligns the attacks, replaces percussion and other non-note hits with dead notes, adds articulations, chooses a capo, and writes a Guitar Pro tab with the performance’s own tempo.</p>
-            <p class="fine-print">Nylon guitar <span class="fine-sep">·</span> source tempo map <span class="fine-sep">·</span> both files stay on this machine</p>
 
             <section id="recent-takes" class="recent-takes" hidden>
               <h2>Recent takes</h2>
@@ -384,7 +359,7 @@
       <p>
         Tabula <span class="footer-sep">·</span> a local audio-to-tab workbench.
         <span class="footer-sep">·</span>
-        <a class="footer-link" href="/label">Dead-note labeller</a>
+        {% if labeller_local %}<a class="footer-link" href="/label">Dead-note labeller</a>{% endif %}
       </p>
       <p>
         Rendered and played by
