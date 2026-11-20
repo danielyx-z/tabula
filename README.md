@@ -44,12 +44,11 @@ Training corpus: GuitarSet (360 tracks, 62k notes, split by performance).
 
 A separate XGBoost model trained on my own data is used for guitar-specific tab corrections: notably, dead (muted) notes are changed to a percussive X in the output tablature.  
 
+Tabula is trained on clean, single-note lines and fingerstyle pieces.  It does not model strummed chords well, and is not intended to do so.
+
 See `docs/` for format specs, data contract, labelling workflow, cluster notes, and verification.
 
-### Known limitations
 
-- **Fingerstyle focus** — Tabula is trained on GuitarSet (clean, single-note lines and fingerstyle pieces).  It does not model strummed chords, rhythmic scratches, or percussive strumming patterns well.  Expect missing or inaccurate notes on heavily strummed material.
-- **GP5 timing is flattened** — The exported Guitar Pro file uses a single tempo (the last retained value from the source).  Expressive tempo changes smaller than 10 BPM are dropped so the score does not drift against itself.
 
 This project is based on the paper **Fretting-Transformer: Encoder-Decoder Model for MIDI to Tablature Transcription**.
 
