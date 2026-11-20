@@ -18,7 +18,6 @@ import mido
 PPQ = 960
 GP_START = 960
 GRID_MAX = 120
-GRID_FINE = 120
 
 _DURATIONS = (
     (3840, 1, False),
@@ -114,97 +113,23 @@ def _grid_for(length: int) -> int:
     return grid
 
 
-def _fit_grid(length: int, onsets: list[int], start: int) -> int:
-    """16th-note grid, dropping to 32nds only when a note needs it.
+def _rebuild_rests(voice, grid: int) -> None:
+    """Merge adjacent rest beats, then split them into plain values.
 
-    Onsets land on the coarsest grid that can hold them: if every attack sits
-    within a quarter of a 16th of a 16th-note slot the measure stays on 16ths,
-    which keeps the sheet simple.  A single stray onset switches that measure
-    to 32nds so it is not dragged a long way out of time.
-    """
-    coarse = _grid_for(length)
-    fine = max(20, math.gcd(length, GRID_FINE))
-    if fine >= coarse:
-        return coarse
-    # 16ths unless quantising would put two separate attacks in one slot; only
-    # then is the measure written on 32nds so both survive.
-    slots: dict[int, set[int]] = {}
-    for onset in onsets:
-        slot = int(round((onset - start) / coarse))
-        slots.setdefault(slot, set()).add(int(onset))
-    if any(len(onsets_at_slot) > 1 for onsets_at_slot in slots.values()):
-        return fine
-    return coarse
-
-
-_PLAIN_DURATIONS = (
-    (3840, 1),
-    (1920, 2),
-    (960, 4),
-    (480, 8),
-    (240, 16),
-    (120, 32),
-    (60, 64),
-)
-
-
-def _split_plain(slots: int, grid: int) -> list[tuple[gp.Duration, int]]:
-    """Split a span into values without dots (used for silent rests)."""
-    remaining = slots * grid
-    result: list[tuple[gp.Duration, int]] = []
-    for ticks, denominator in _PLAIN_DURATIONS:
-        if ticks % grid != 0:
-            continue
-        while ticks <= remaining:
-            result.append((gp.Duration(denominator), ticks // grid))
-            remaining -= ticks
-    if remaining:
-        raise ValueError(f"cannot represent {remaining} ticks on a {grid}-tick grid")
-    return result
-
-
-def _undot_rests(voice, grid: int) -> None:
-    """Rebuild dotted rests without dots.
-
-    Rests are hidden in the app, but a dotted rest leaves its augmentation dot
-    behind (a separate glyph).  Splitting into plain values keeps the sheet
-    free of stray dots without touching any note value.
+    Runs are split independently, so two 32nd rests can end up side by side
+    where one 16th belongs; merging the span first and re-splitting greedily
+    gives the fewest, largest rests.  Dots are dropped because a hidden rest
+    would otherwise leave its augmentation dot on the staff.
     """
     beats = list(voice.beats)
     if not beats:
         return
     rebuilt = []
-    for beat in beats:
-        if beat.status is not gp.BeatStatus.rest or not beat.duration.isDotted:
-            rebuilt.append(beat)
-            continue
-        cursor = beat.start
-        for duration, part_slots in _split_plain(
-            int(beat.duration.time) // grid, grid
-        ):
-            fresh = gp.Beat(voice, duration=duration, start=cursor)
-            fresh.status = gp.BeatStatus.rest
-            rebuilt.append(fresh)
-            cursor += part_slots * grid
-    voice.beats = rebuilt
-
-
-def _merge_rest_beats(voice, grid: int) -> None:
-    """Collapse adjacent rest beats and split them again greedily.
-
-    Runs are split independently, so two 32nd rests can end up side by side
-    where one 16th rest belongs.  Merging the span first and re-splitting from
-    the longest value gives the fewest, largest rests.
-    """
-    beats = list(voice.beats)
-    if not beats:
-        return
-    merged = []
     index = 0
     while index < len(beats):
         beat = beats[index]
         if beat.status != gp.BeatStatus.rest:
-            merged.append(beat)
+            rebuilt.append(beat)
             index += 1
             continue
         total = 0
@@ -215,23 +140,32 @@ def _merge_rest_beats(voice, grid: int) -> None:
         slots = total // grid
         if slots <= 0:
             continue
-        for duration, part_slots in _split_durations(slots, grid):
+        for duration, part_slots in _split_durations(slots, grid, dotted=False):
             fresh = gp.Beat(voice, duration=duration, start=cursor)
             fresh.status = gp.BeatStatus.rest
-            merged.append(fresh)
+            rebuilt.append(fresh)
             cursor += part_slots * grid
-    voice.beats = merged
+    voice.beats = rebuilt
 
 
-def _split_durations(slots: int, grid: int) -> list[tuple[gp.Duration, int]]:
+def _split_durations(
+    slots: int, grid: int, *, dotted: bool = True
+) -> list[tuple[gp.Duration, int]]:
+    """Split a span greedily from the longest value.
+
+    ``dotted=False`` keeps silent rests dot-free: a dotted rest still renders
+    its augmentation dot even though the rest itself is hidden.
+    """
     remaining = slots * grid
     result: list[tuple[gp.Duration, int]] = []
-    for ticks, denominator, dotted in _DURATIONS:
+    for ticks, denominator, is_dotted in _DURATIONS:
+        if is_dotted and not dotted:
+            continue
         if ticks % grid != 0:
             continue
         while ticks <= remaining:
             result.append(
-                (gp.Duration(denominator, isDotted=dotted), ticks // grid)
+                (gp.Duration(denominator, isDotted=is_dotted), ticks // grid)
             )
             remaining -= ticks
     if remaining:
@@ -360,6 +294,66 @@ def _apply_features(note: gp.Note, feature: dict[str, Any] | None) -> None:
         note.effect.bend = _bend_effect(bend)
 
 
+def _dead_records(
+    dead_notes: Iterable[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Turn dead-note markers into percussive records (plus a skip count).
+
+    Dead notes keep the source note's length: alphaTab turns that into a thump
+    of the same duration instead of a single-tick click.
+    """
+    records: list[dict[str, Any]] = []
+    skipped = 0
+    for raw in dead_notes:
+        try:
+            string = int(raw["s"])
+            tick = int(raw["t"])
+        except (KeyError, TypeError, ValueError):
+            skipped += 1
+            continue
+        if string not in _TUNING_BY_CANONICAL_STRING or tick < 0:
+            skipped += 1
+            continue
+        records.append(
+            {
+                "t": tick,
+                "dur": max(480, int(raw.get("dur", 480))),
+                "pitch": None,
+                "s": string,
+                "f": 0,
+                "kind": "dead",
+                "staccato": bool(
+                    raw.get("staccato")
+                    or raw.get("kind") == "body_percussion"
+                ),
+            }
+        )
+    return records, skipped
+
+
+def _apply_program_changes(track) -> None:
+    """Play dead notes with GM program 28 (muted electric guitar).
+
+    The nylon program is restored on the next beat, so the switch stays local
+    to the damped chug.
+    """
+    program = 24
+    for measure in track.measures:
+        for voice in measure.voices:
+            for beat in voice.beats:
+                wants = (
+                    28
+                    if any(note.type == gp.NoteType.dead for note in beat.notes)
+                    else 24
+                )
+                if wants == program:
+                    continue
+                change = beat.effect.mixTableChange or gp.MixTableChange()
+                change.instrument = gp.MixTableItem(value=wants, allTracks=True)
+                beat.effect.mixTableChange = change
+                program = wants
+
+
 def build_gp5(
     notes: Iterable[dict[str, Any]],
     timing_midi: str | Path,
@@ -395,34 +389,10 @@ def build_gp5(
             }
         )
 
-    dead_count = 0
-    for raw in dead_notes or []:
-        try:
-            string = int(raw["s"])
-            tick = int(raw["t"])
-        except (KeyError, TypeError, ValueError):
-            skipped += 1
-            continue
-        if string not in _TUNING_BY_CANONICAL_STRING or tick < 0:
-            skipped += 1
-            continue
-        # Dead notes keep the source note's length; alphaTab turns that into a
-        # thump of the same duration.
-        records.append(
-            {
-                "t": tick,
-                "dur": max(480, int(raw.get("dur", 480))),
-                "pitch": None,
-                "s": string,
-                "f": 0,
-                "kind": "dead",
-                "staccato": bool(
-                    raw.get("staccato")
-                    or raw.get("kind") == "body_percussion"
-                ),
-            }
-        )
-        dead_count += 1
+    dead_records, skipped_dead = _dead_records(dead_notes or [])
+    records.extend(dead_records)
+    skipped += skipped_dead
+    dead_count = len(dead_records)
 
     records.sort(key=lambda n: (n["t"], n["s"], n["kind"]))
     overlap_trimmed = _resolve_string_overlaps(records)
@@ -505,11 +475,7 @@ def build_gp5(
         absolute_start = lead_start + start
         end = start + length
         absolute_end = absolute_start + length
-        grid = _fit_grid(
-            length,
-            [int(note["t"]) for note in records if start <= note["t"] < end],
-            start,
-        )
+        grid = _grid_for(length)
         slots = length // grid
 
         local: list[tuple[int, int, int, bool]] = []
@@ -654,8 +620,7 @@ def build_gp5(
                 total_beats += 1
                 part_start += part_slots
 
-        _merge_rest_beats(voice, grid)
-        _undot_rests(voice, grid)
+        _rebuild_rests(voice, grid)
 
         for slot, bpm in tempo_by_slot.items():
             tick = GP_START + start + slot * grid
@@ -678,24 +643,7 @@ def build_gp5(
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    # Dead notes are played with GM program 28 (muted electric guitar) so they
-    # sound like a damped chug rather than an open low string; the nylon
-    # program is restored on the next beat.
-    program = 24
-    for measure in track.measures:
-        for voice in measure.voices:
-            for beat in voice.beats:
-                wants = (
-                    28
-                    if any(note.type == gp.NoteType.dead for note in beat.notes)
-                    else 24
-                )
-                if wants == program:
-                    continue
-                change = beat.effect.mixTableChange or gp.MixTableChange()
-                change.instrument = gp.MixTableItem(value=wants, allTracks=True)
-                beat.effect.mixTableChange = change
-                program = wants
+    _apply_program_changes(track)
 
     gp.write(song, str(out_path), version=(5, 1, 0))
 
