@@ -215,14 +215,21 @@ is off by default; enable it only if memory becomes tight.
   via a childList MutationObserver on the score element. Space always toggles
   play/pause, even when a toolbar button holds focus (keydown and keyup are
   prevented). PDF export is client-side (vendored jsPDF + svg2pdf) and
-  paginates the already-vector score SVGs onto A4. The empty state is a
-  marquee of a real transcribed riff (`.hero-tab`, two copies, 48 s loop,
-  masked edges, no fake notation). Uploads are capped at 20 MB
-  (`TABULA_MAX_AUDIO_MB` default 20) and the drop zone just says
-  "Audio · N MB max". The labeller is private: `/label`, `/api/label/*` and
-  `/api/monitor/*` return 404 unless the client address is loopback, LAN or
-  tailnet (`_is_private_client`), and the footer link is only rendered for
-  those callers.
+  paginates the already-vector score SVGs onto A4. The empty state is
+  `templates/_hero_tab.html`: eight real bars of one transcription, fixed
+  string labels on the left, bars scrolling under them in a masked marquee
+  (two copies, 110 s loop, dashes only — no fake notation, and every line's
+  bar lines land on the same column). The "New take" picker is always open;
+  `Advanced` (`#advanced-control`) holds beam search, MuScriptor quantization
+  (off / 1/16 / 1/32 / 1/64, audio only) and the dead-note threshold; there is
+  no "fast draft" checkbox. Uploads are capped at 20 MB (`TABULA_MAX_AUDIO_MB`
+  default 20) and the drop zone just says "Audio · N MB max". The top-right
+  pill reads "local server" (green) for loopback/LAN/tailnet clients and
+  "public demo" (accent) otherwise. The labeller is private: `/label`,
+  `/api/label/*` and `/api/monitor/*` return 404 unless the client address is
+  loopback, LAN or tailnet (`_is_private_client`), and the footer link is only
+  rendered for those callers. The footer links to the GitHub source instead of
+  claiming a local-only workbench.
 
 ## Fixed bugs (recent)
 

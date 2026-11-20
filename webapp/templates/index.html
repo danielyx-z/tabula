@@ -8,7 +8,7 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2320231e'/%3E%3Cpath d='M7 9h18M7 13h18M7 17h18M7 21h18M7 25h18' stroke='%23f3eee3' stroke-width='1.2' opacity='.65'/%3E%3Ccircle cx='13' cy='17' r='2.6' fill='%23c2663d'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
+<body data-client-local="{{ '1' if client_local else '0' }}">
   <div class="app-shell">
     <header class="topbar">
       <a class="wordmark" href="/" aria-label="Tabula, home">
@@ -20,24 +20,20 @@
         <span>tabula</span>
       </a>
       <div class="topbar-meta" aria-label="Server status">
-        <span id="server-dot" class="server-dot" data-state="{{ 'ok' if checkpoint_ready and vocab_ready else 'down' }}" aria-hidden="true"></span>
-        <span id="server-label">{% if checkpoint_ready and vocab_ready %}local server{% else %}unavailable{% endif %}</span>
+        <span id="server-dot" class="server-dot" data-state="{% if not (checkpoint_ready and vocab_ready) %}down{% elif client_local %}ok{% else %}public{% endif %}" aria-hidden="true"></span>
+        <span id="server-label">{% if not (checkpoint_ready and vocab_ready) %}unavailable{% elif client_local %}local server{% else %}public demo{% endif %}</span>
       </div>
     </header>
 
     <main class="workspace">
       <aside class="control-rail" aria-label="Session controls">
         <section class="rail-section upload-section" aria-labelledby="upload-title">
-          <details id="upload-details" class="upload-details" open>
-            <summary class="upload-summary">
-              <h2 id="upload-title">New take</h2>
-              <span class="summary-subtitle">Add a recording. Transcription runs locally.</span>
-              <span class="summary-cue" aria-hidden="true">
-                <svg viewBox="0 0 20 20"><path d="M5 8l5 5 5-5"/></svg>
-              </span>
-            </summary>
+          <div class="section-heading upload-heading">
+            <h2 id="upload-title">New take</h2>
+            <p>Add a recording and get its tab.</p>
+          </div>
 
-            <form id="upload-form" novalidate
+          <form id="upload-form" novalidate
                 data-max-audio-mb="{{ max_audio_mb }}">
             <div class="file-pair" aria-label="Source files">
               <div id="audio-row" class="pair-row" data-slot="audio">
@@ -77,7 +73,7 @@
             </div>
             {% endif %}
 
-            <p class="pair-note">{% if url_downloads %}Add a recording or paste a link.{% else %}Add a recording.{% endif %} The local MuScriptor small model transcribes it on this PC, then Tabula builds the tab.</p>
+            <p class="pair-note">{% if url_downloads %}Add a recording or paste a link.{% else %}Add a recording.{% endif %} Tabula transcribes it, then builds the tab.</p>
 
             <label class="guitar-control" for="guitar-select">
               <span class="guitar-copy">
@@ -107,13 +103,45 @@
               </select>
             </label>
 
-            <label class="fast-control" for="fast-mode">
-              <input id="fast-mode" type="checkbox" checked>
-              <span class="fast-copy">
-                <span class="fast-label">Fast draft</span>
-                <span class="fast-hint">Greedy decode; uncheck for beam search.</span>
-              </span>
-            </label>
+            <details id="advanced-control" class="advanced-control">
+              <summary>
+                <span class="advanced-label">Advanced</span>
+                <span class="advanced-hint">Decode, grid, dead notes</span>
+              </summary>
+              <div class="advanced-body">
+                <label class="adv-row" for="beam-select">
+                  <span class="adv-copy">
+                    <span class="adv-label">Beam search</span>
+                    <span class="adv-hint">1 is greedy and fastest; more paths is slower.</span>
+                  </span>
+                  <select id="beam-select" class="adv-select">
+                    <option value="1" selected>1 · greedy</option>
+                    <option value="4">4</option>
+                    <option value="8">8 · wide</option>
+                  </select>
+                </label>
+                <label class="adv-row" for="quantize-select">
+                  <span class="adv-copy">
+                    <span class="adv-label">Quantize</span>
+                    <span class="adv-hint">Audio only: snap MuScriptor's timing to a grid.</span>
+                  </span>
+                  <select id="quantize-select" class="adv-select">
+                    <option value="off"{% if quantize_default == "off" %} selected{% endif %}>Off</option>
+                    <option value="4"{% if quantize_default == "4" %} selected{% endif %}>1/16</option>
+                    <option value="8"{% if quantize_default == "8" %} selected{% endif %}>1/32</option>
+                    <option value="16"{% if quantize_default == "16" %} selected{% endif %}>1/64</option>
+                  </select>
+                </label>
+                <label class="adv-row" for="dead-threshold">
+                  <span class="adv-copy">
+                    <span class="adv-label">Dead-note threshold</span>
+                    <span class="adv-hint">Higher keeps only confident muted hits.</span>
+                  </span>
+                  <input id="dead-threshold" class="adv-input" type="number"
+                         min="0" max="1" step="0.05" value="{{ dead_threshold }}">
+                </label>
+              </div>
+            </details>
 
             <button type="submit" id="convert-button" class="button button-primary" disabled>
               <span class="button-spinner" aria-hidden="true"></span>
@@ -126,8 +154,7 @@
               Cancel
             </button>
             <p id="form-status" class="form-status" role="status" aria-live="polite"></p>
-            </form>
-          </details>
+          </form>
         </section>
 
         <section id="session-panel" class="rail-section session-section" aria-labelledby="session-title" hidden>
@@ -213,26 +240,11 @@
       <section class="score-stage" aria-label="Tab and playback" aria-busy="false">
         <div id="empty-state" class="state empty-state">
           <div class="empty-visual" aria-hidden="true">
-            <div class="hero-tab">
-              <div class="hero-tab-track">
-                <pre class="hero-tab-sheet">  E4|---------------6  ---6  ---------5  ---5  ------|---4  ---4  ---------3  ---3  ---------2  ---|
- B3|---------------7  ---7  ---------4  ---4  ------|---4  ---4  ---------4  ---4  ---------4  ---|
- G3|---------------8  ---8  ------------------------|--------------------------------------------|
- D3|------------------------------------------------|--------------------------------------------|
- A2|---------------------2  ---------2  ---2  ------|---2  ---2  ---------2  ---2  ---------2  ---|
- E2|---------------7  ------------------------------|--------------------------------------------|</pre>
-                <pre class="hero-tab-sheet">  E4|---------------6  ---6  ---------5  ---5  ------|---4  ---4  ---------3  ---3  ---------2  ---|
- B3|---------------7  ---7  ---------4  ---4  ------|---4  ---4  ---------4  ---4  ---------4  ---|
- G3|---------------8  ---8  ------------------------|--------------------------------------------|
- D3|------------------------------------------------|--------------------------------------------|
- A2|---------------------2  ---------2  ---2  ------|---2  ---2  ---------2  ---2  ---------2  ---|
- E2|---------------7  ------------------------------|--------------------------------------------|</pre>
-              </div>
-            </div>
+            {% include "_hero_tab.html" %}
           </div>
           <div class="empty-copy">
-            <h1>Turn a take into a tab you can hear.</h1>
-            <p class="empty-lede">Upload a recording. Tabula transcribes it locally, aligns the attacks, replaces percussion and other non-note hits with dead notes, adds articulations, chooses a capo, and writes a Guitar Pro tab with the performance’s own tempo.</p>
+            <h1>No tab?<br>No problem.</h1>
+            <p class="empty-lede">Drop in a recording. Tabula transcribes it, places every attack, turns percussion and other non-note hits into dead notes, adds articulations, picks a capo, and writes a tab you can play or print.</p>
 
             <section id="recent-takes" class="recent-takes" hidden>
               <h2>Recent takes</h2>
@@ -357,15 +369,15 @@
 
     <footer class="site-footer">
       <p>
-        Tabula <span class="footer-sep">·</span> a local audio-to-tab workbench.
-        <span class="footer-sep">·</span>
-        {% if labeller_local %}<a class="footer-link" href="/label">Dead-note labeller</a>{% endif %}
+        Tabula <span class="footer-sep">·</span>
+        <a class="footer-link" href="https://github.com/danielyx-z/tabula" target="_blank" rel="noreferrer">source on GitHub</a>
+        {% if labeller_local %}<span class="footer-sep">·</span><a class="footer-link" href="/label">Dead-note labeller</a>{% endif %}
       </p>
       <p>
         Rendered and played by
         <a href="https://www.alphatab.net/" target="_blank" rel="noreferrer">alphaTab</a>.
         {% if not checkpoint_ready or not vocab_ready %}
-          <span class="footer-warning">Model files are missing on this PC.</span>
+          <span class="footer-warning">Model files are missing on the server.</span>
         {% endif %}
       </p>
     </footer>

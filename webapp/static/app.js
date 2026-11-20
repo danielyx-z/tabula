@@ -6,7 +6,7 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   const byId = (id) => document.getElementById(id);
 
   const form = byId("upload-form");
-  const uploadDetails = byId("upload-details");
+  const clientLocal = document.body.dataset.clientLocal !== "0";
   const audioInput = byId("audio-file");
   const audioRow = byId("audio-row");
   const audioTitle = byId("audio-title");
@@ -22,7 +22,9 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
   const formStatus = byId("form-status");
   const capoSelect = byId("capo-select");
   const guitarSelect = byId("guitar-select");
-  const fastMode = byId("fast-mode");
+  const beamSelect = byId("beam-select");
+  const quantizeSelect = byId("quantize-select");
+  const deadThresholdInput = byId("dead-threshold");
 
   const emptyState = byId("empty-state");
   const loadingState = byId("loading-state");
@@ -441,7 +443,6 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     loadingState.hidden = name !== "loading";
     errorState.hidden = name !== "error";
     scoreView.hidden = name !== "score";
-    uploadDetails.open = name !== "score";
     if (name !== "score") {
       sessionPanel.hidden = true;
     }
@@ -577,7 +578,9 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     }
     capoSelect.disabled = value;
     if (guitarSelect) guitarSelect.disabled = value;
-    fastMode.disabled = value;
+    if (beamSelect) beamSelect.disabled = value;
+    if (quantizeSelect) quantizeSelect.disabled = value;
+    if (deadThresholdInput) deadThresholdInput.disabled = value;
     cancelButton.disabled = !value;
     cancelButton.hidden = !value;
     form.setAttribute("aria-busy", value ? "true" : "false");
@@ -613,8 +616,10 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
 
   function setServerState(ok) {
     serverReady = Boolean(ok);
-    serverDot.dataset.state = ok ? "ok" : "down";
-    serverLabel.textContent = ok ? "local server" : "unavailable";
+    serverDot.dataset.state = ok ? (clientLocal ? "ok" : "public") : "down";
+    serverLabel.textContent = ok
+      ? (clientLocal ? "local server" : "public demo")
+      : "unavailable";
     updateConvertAvailability();
     if (!ok) {
       setStatus("The server isn’t responding. Is the Tabula workbench running?");
@@ -1612,7 +1617,11 @@ import * as AlphaTab from "/static/alphatab/alphaTab.min.mjs";
     }
     body.append("capo", capoSelect.value);
     body.append("guitar", guitarSelect ? guitarSelect.value : "acoustic");
-    body.append("fast", fastMode.checked ? "1" : "0");
+    body.append("beam", beamSelect ? beamSelect.value : "1");
+    if (quantizeSelect) body.append("quantize", quantizeSelect.value);
+    if (deadThresholdInput && deadThresholdInput.value !== "") {
+      body.append("dead_threshold", deadThresholdInput.value);
+    }
     body.append("job_id", jobId);
 
     const signal = abortController && abortController.signal;

@@ -275,10 +275,53 @@ def _guitar_instrument(guitar: str) -> str:
     return GUITAR_INSTRUMENTS.get(guitar, GUITAR_INSTRUMENTS[DEFAULT_GUITAR])
 
 
+def _parse_beam(value: str) -> int:
+    """Validate the decoder beam size (1 = greedy)."""
+    raw = str(value or "").strip()
+    if not raw:
+        return 1
+    try:
+        beam = int(raw)
+    except ValueError as exc:
+        raise ValueError("Choose a beam size between 1 and 8.") from exc
+    if not 1 <= beam <= 8:
+        raise ValueError("Choose a beam size between 1 and 8.")
+    return beam
+
+
+def _parse_quantize(value: str) -> tuple[bool, int]:
+    """Validate MuScriptor's pre-quantization: off, 1/16, 1/32 or 1/64."""
+    raw = str(value or "off").strip().lower()
+    if raw in {"", "off", "0", "none", "no"}:
+        return False, MUSCRIPTOR_GRID
+    if raw not in {"4", "8", "16"}:
+        raise ValueError("Choose a quantization grid of 1/16, 1/32 or 1/64.")
+    return True, int(raw)
+
+
+def _parse_dead_threshold(value: str) -> float | None:
+    """Validate the optional dead-note threshold override."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        threshold = float(raw)
+    except ValueError as exc:
+        raise ValueError(
+            "The dead-note threshold must be a number from 0 to 1."
+        ) from exc
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError("The dead-note threshold must be a number from 0 to 1.")
+    return threshold
+
+
 def _local_transcribe(
     audio_path: Path,
     out_path: Path,
     guitar: str = DEFAULT_GUITAR,
+    *,
+    quantize: bool = MUSCRIPTOR_QUANTIZE,
+    grid: int = MUSCRIPTOR_GRID,
 ) -> None:
     """Run the local small MuScriptor model, preserving the tempo map."""
     transcribe_audio(
@@ -286,8 +329,8 @@ def _local_transcribe(
         out_path,
         model=MUSCRIPTOR_MODEL,
         instrument=_guitar_instrument(guitar),
-        quantize=MUSCRIPTOR_QUANTIZE,
-        grid=MUSCRIPTOR_GRID,
+        quantize=quantize,
+        grid=grid,
         timeout=CONVERT_TIMEOUT,
     )
 
@@ -334,6 +377,7 @@ def _client_ip(request: Request) -> str:
 
 @app.get("/")
 def index(request: Request):
+    local = _is_private_client(_client_ip(request))
     return templates.TemplateResponse(
         request=request,
         name="index.html",
@@ -344,7 +388,12 @@ def index(request: Request):
             "checkpoint_ready": CHECKPOINT.exists(),
             "vocab_ready": VOCAB.exists(),
             "url_downloads": ALLOW_URLS and _ytdlp_available(),
-            "labeller_local": _is_private_client(_client_ip(request)),
+            "client_local": local,
+            "labeller_local": local,
+            "dead_threshold": DEAD_THRESHOLD or "0.65",
+            "quantize_default": (
+                str(MUSCRIPTOR_GRID) if MUSCRIPTOR_QUANTIZE else "off"
+            ),
         },
     )
 
@@ -929,6 +978,7 @@ def _stitch_argv(
     beam: int = 1,
     capo: str = "auto",
     force: bool = False,
+    dead_threshold: float | None = None,
 ) -> list[str]:
     """Argument list for one ``stitch_tab.py`` stage."""
     argv = [
@@ -952,8 +1002,10 @@ def _stitch_argv(
         argv += ["--title", title, "--capo", capo]
     elif stage == "stitch":
         argv += ["--title", title, "--width", "120", "--capo", capo]
-        if DEAD_THRESHOLD:
-            argv += ["--dead-threshold", DEAD_THRESHOLD]
+        if dead_threshold is None:
+            dead_threshold = DEAD_THRESHOLD
+        if dead_threshold:
+            argv += ["--dead-threshold", str(dead_threshold)]
     return argv
 
 
@@ -1057,6 +1109,9 @@ def _convert_job(
     capo: str,
     guitar: str,
     beam: int,
+    quantize: bool,
+    quantize_grid: int,
+    dead_threshold: float | None,
 ) -> dict:
     """Run one accepted take; return the result payload or raise ``JobFailed``.
 
@@ -1121,13 +1176,19 @@ def _convert_job(
             midi_signature = (
                 f"{CACHE_VERSION}:{audio_digest}:{MUSCRIPTOR_MODEL}:"
                 f"instrument={_guitar_instrument(guitar)}:"
-                f"quantize={int(MUSCRIPTOR_QUANTIZE)}:grid={MUSCRIPTOR_GRID}"
+                f"quantize={int(quantize)}:grid={quantize_grid}"
             )
             midi_key = hashlib.sha1(midi_signature.encode("utf-8")).hexdigest()
             midi_cache = _cache_file("muscriptor", midi_key, ".mid")
             if not _cache_restore(midi_cache, midi_path):
                 try:
-                    _local_transcribe(normalized_audio, midi_path, guitar=guitar)
+                    _local_transcribe(
+                        normalized_audio,
+                        midi_path,
+                        guitar=guitar,
+                        quantize=quantize,
+                        grid=quantize_grid,
+                    )
                 except MuscriptorUnavailable as exc:
                     raise MuscriptorUnavailable(str(exc)) from exc
                 except RuntimeError as exc:
@@ -1319,6 +1380,7 @@ def _convert_job(
                     out_dir=out_dir,
                     title=title,
                     capo=capo,
+                    dead_threshold=dead_threshold,
                 ),
                 cwd=str(REPO),
                 stdout=stitch_log,
@@ -1432,6 +1494,9 @@ def convert(
     capo: str = Form("auto"),
     guitar: str = Form("acoustic"),
     fast: str = Form("1"),
+    beam: str = Form(""),
+    quantize: str = Form("off"),
+    dead_threshold: str = Form(""),
     job_id: str = Form(""),
 ):
     if not CHECKPOINT.exists():
@@ -1453,14 +1518,20 @@ def convert(
     try:
         capo = _parse_capo(capo)
         guitar = _parse_guitar(guitar)
+        if str(beam or "").strip():
+            beam_size = _parse_beam(beam)
+        else:
+            # Older clients only sent the "fast draft" checkbox.
+            fast_mode = str(fast or "1").strip().lower() in {
+                "1", "true", "on", "yes"
+            }
+            beam_size = 1 if fast_mode else 4
+        quantize_enabled, quantize_grid = _parse_quantize(quantize)
+        dead_threshold_value = _parse_dead_threshold(dead_threshold)
         if str(url or "").strip():
             link = _validate_url(url)
     except ValueError as exc:
         return _error(str(exc))
-    fast_mode = str(fast or "1").strip().lower() in {
-        "1", "true", "on", "yes"
-    }
-    beam = 1 if fast_mode else 4
 
     has_midi = bool(midi_upload and midi_upload.filename)
     has_audio = bool(audio_upload and audio_upload.filename)
@@ -1585,7 +1656,10 @@ def convert(
             midi_original_name=midi_original.name if midi_original else None,
             capo=capo,
             guitar=guitar,
-            beam=beam,
+            beam=beam_size,
+            quantize=quantize_enabled,
+            quantize_grid=quantize_grid,
+            dead_threshold=dead_threshold_value,
         )
 
     try:
